@@ -1,10 +1,12 @@
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const INDEX_FORMAT = "charter-agreement-protocol-conformance-corpus-index";
 const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
+const MAXIMUM_CORPUS_FILES = 64;
+const MAXIMUM_CORPUS_BYTES = 33_554_432;
 export const CERTIFIED_INDEX_SHA256_BASE64URL = "NiSzeS8F0SXS6ddeeQhOBdsG4BQn8jcxb8DSX1q-oLM";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 
@@ -82,7 +84,10 @@ function exactKeys(object, keys) {
 function walk(root, directory = root) {
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name);
-    return statSync(path).isDirectory() ? walk(root, path) : [relative(root, path).split(sep).join("/")];
+    const stat = lstatSync(path);
+    if (stat.isDirectory()) return walk(root, path);
+    if (!stat.isFile()) throw new Error("non-regular corpus entry");
+    return [{ path: relative(root, path).split(sep).join("/"), size: stat.size }];
   });
 }
 
@@ -106,6 +111,46 @@ function parseJsonBytes(bytes) {
     return ok(JSON.parse(text));
   } catch (_error) {
     return fail("invalid_encoding");
+  }
+}
+
+const JSON_DEFAULT_LIMITS = {
+  max_bytes: 1_048_576,
+  max_depth: 64,
+  max_object_members: 1_024,
+  max_array_items: 4_096,
+  max_string_bytes: 65_536,
+};
+
+function jsonWithinLimits(value, bytes, selected = {}) {
+  const limits = { ...JSON_DEFAULT_LIMITS, ...selected };
+  if (bytes.length > limits.max_bytes) return fail("limit_exceeded");
+
+  function visit(item, depth) {
+    if (typeof item === "string") {
+      if (Buffer.byteLength(item) > limits.max_string_bytes) throw new Error("limit");
+      return;
+    }
+    if (Array.isArray(item)) {
+      if (depth + 1 > limits.max_depth || item.length > limits.max_array_items) throw new Error("limit");
+      item.forEach((child) => visit(child, depth + 1));
+      return;
+    }
+    if (item && typeof item === "object") {
+      const entries = Object.entries(item);
+      if (depth + 1 > limits.max_depth || entries.length > limits.max_object_members) throw new Error("limit");
+      entries.forEach(([key, child]) => {
+        if (Buffer.byteLength(key) > limits.max_string_bytes) throw new Error("limit");
+        visit(child, depth + 1);
+      });
+    }
+  }
+
+  try {
+    visit(value, 0);
+    return ok(value);
+  } catch (_limit) {
+    return fail("limit_exceeded");
   }
 }
 
@@ -200,6 +245,37 @@ function descriptorChain(compacts) {
 
 const REVISION_FIELDS = ["abp_bindings", "attribution_declaration", "charter_id", "effective_from", "extensions", "legal_text", "parties", "precedence_declaration", "prev_revision_digest", "protocol_revision", "receipt_profile", "revision_number", "supersedes", "termination_rules"];
 const REVISION_REQUIRED = ["abp_bindings", "attribution_declaration", "effective_from", "extensions", "legal_text", "parties", "precedence_declaration", "protocol_revision", "receipt_profile", "revision_number", "termination_rules"];
+const EXTENSION_PROFILES = [
+  { namespace: "com.example/pricing-indexed", owner: "Example Charter Profiles", criticality: "critical", state: "active", schema_digest: "sha-256:W88CU79l5r7YYCv2vuUTELifnM4GDKfbZPULSpDgQ2Y", a2a_uri: "https://example.com/charter-profiles/pricing-indexed", promoted_at_revision: null, surface: "charter_revision" },
+  { namespace: "com.example/pricing-indexed-observation", owner: "Example Charter Profiles", criticality: "optional", state: "active", schema_digest: "sha-256:6e4emU-CATXhAVFi9XaIIZUzZbCAQBcGkVwJpkZzWk8", a2a_uri: "https://example.com/charter-profiles/pricing-indexed-observation", promoted_at_revision: null, surface: "receipt" },
+  { namespace: "com.example.charter/default", owner: "Example Charter Profiles", criticality: "optional", state: "active", schema_digest: null, a2a_uri: "https://example.com/charter-profiles/com.example.charter/default", promoted_at_revision: null, surface: "receipt" },
+  { namespace: "com.example/identity-vlei", owner: "Example Charter Profiles", criticality: "optional", state: "reserved", schema_digest: null, a2a_uri: "https://example.com/charter-profiles/identity-vlei", promoted_at_revision: null, surface: "party_descriptor" },
+  { namespace: "com.example/identity-eidas-qeaa", owner: "Example Charter Profiles", criticality: "optional", state: "reserved", schema_digest: null, a2a_uri: "https://example.com/charter-profiles/identity-eidas-qeaa", promoted_at_revision: null, surface: "party_descriptor" },
+  { namespace: "com.example/retired-profile", owner: "Example Charter Profiles", criticality: "critical", state: "retired", schema_digest: null, a2a_uri: "https://example.com/charter-profiles/retired-profile", promoted_at_revision: 1, surface: "charter_revision" },
+];
+
+function criticalRevisionProfile(namespace) {
+  return EXTENSION_PROFILES.find((profile) =>
+    profile.namespace === namespace && profile.criticality === "critical" &&
+    profile.state === "active" && profile.surface === "charter_revision"
+  ) || null;
+}
+
+function extensionRegistryDigest() {
+  const document = Object.fromEntries(EXTENSION_PROFILES.map((profile) => [
+    profile.namespace,
+    {
+      namespace: profile.namespace,
+      owner: profile.owner,
+      criticality: profile.criticality,
+      state: profile.state,
+      schema_digest: profile.schema_digest,
+      a2a_uri: profile.a2a_uri,
+      promoted_at_revision: profile.promoted_at_revision,
+    },
+  ]));
+  return taggedHash("extension_registry", Buffer.from(canonical(document)));
+}
 
 function revisionFromText(text) {
   if (typeof text !== "string") return fail("revision_invalid");
@@ -215,8 +291,9 @@ function revisionFromText(text) {
   if (value.supersedes !== undefined && (!Array.isArray(value.supersedes) || value.supersedes.some((one) => typeof one !== "string"))) return fail("revision_invalid");
   const critical = value.extensions?.critical || {};
   for (const namespace of Object.keys(critical)) {
-    if (namespace !== "com.example/pricing-indexed") return fail("extension_unknown_critical");
-    if (critical[namespace]?.formula !== "index_plus_spread") return fail("constraint_violation");
+    const profile = criticalRevisionProfile(namespace);
+    if (profile === null) return fail("extension_unknown_critical");
+    if (profile.namespace === "com.example/pricing-indexed" && critical[namespace]?.formula !== "index_plus_spread") return fail("constraint_violation");
   }
   const bytes = Buffer.from(text);
   return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
@@ -292,22 +369,69 @@ function governing(chain, at) {
   return finalists.length === 1 ? finalists[0].digest : "contested";
 }
 
+function projectReceipt(claims, chain, governingDigest) {
+  const claimedRevision = chain.accepted.find((one) => one.digest === claims.revision_digest);
+  const governingMatch = governingDigest === "contested" ? "undetermined" :
+    (governingDigest === claims.revision_digest ? "match" : "mismatch");
+
+  if (claimedRevision) {
+    const revision = claimedRevision.value;
+    const charterId = revision.charter_id || claimedRevision.digest;
+    const roles = new Set(revision.parties.map((one) => one.role));
+    const deploymentMatched = revision.abp_bindings.some((binding) =>
+      binding.party_role === claims.agent_party_role &&
+      binding.deployment_digest === claims.deployment_digest
+    );
+    const recognized = claims.charter_id === charterId &&
+      claims.revision_number === revision.revision_number &&
+      roles.has(claims.issuing_party_role) && roles.has(claims.agent_party_role) &&
+      deploymentMatched;
+
+    return recognized ? ok({ governingMatch, chainConflict: "none", deploymentMatched: true }) :
+      fail("receipt_claims_mismatch");
+  }
+
+  const roles = new Set(chain.accepted.flatMap((one) => one.value.parties.map((party) => party.role)));
+  const recognized = claims.charter_id === chain.charterId &&
+    roles.has(claims.issuing_party_role) && roles.has(claims.agent_party_role);
+  if (!recognized) return fail("receipt_claims_mismatch");
+
+  const acceptedHead = Math.max(0, ...chain.accepted.map((one) => one.value.revision_number));
+  const chainConflict = claims.revision_number <= acceptedHead ? "fork_evidenced" : "none";
+  return ok({ governingMatch, chainConflict, deploymentMatched: false });
+}
+
+function receiptSigningKeys(chain, claimedRevision, role) {
+  const revisions = claimedRevision ? [claimedRevision] : chain.accepted;
+  const keys = revisions.flatMap((revision) =>
+    revision.value.parties
+      .filter((party) => party.role === role)
+      .flatMap((party) => {
+        const descriptor = chain.descriptors.descriptors.find((one) =>
+          one.digest === party.party_descriptor_digest
+        );
+        return descriptor?.payload.verification_keys || [];
+      })
+  );
+  return [...new Map(keys.map((key) => [canonical(key), key])).values()];
+}
+
 function receiptFromCompact(compact, chain) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
-  const claimedRevision = chain.revisions.find((one) => one.digest === claims.revision_digest);
-  const signingRevision = claimedRevision || chain.revisions.find((one) => one.value.revision_number === claims.revision_number) || chain.revisions[0];
-  const party = signingRevision.value.parties.find((one) => one.role === claims.agent_party_role);
-  const descriptor = chain.descriptors.descriptors.find((one) => one.digest === party?.party_descriptor_digest);
-  if (!descriptor || !verifyDecodedJws(decoded.value, "cap+receipt", descriptor.payload.verification_keys)) return fail("signature_invalid");
+  const claimedRevision = chain.accepted.find((one) => one.digest === claims.revision_digest);
+  const verifiedPublicKeys = new Set(
+    receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
+      .filter((key) => verifyDecodedJws(decoded.value, "cap+receipt", [key]))
+      .map((key) => key.public_key)
+  );
+  if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
   if (claims.decision === "rejected" && claims.outcome === "effect_committed") return fail("cross_field_invalid");
   const governingDigest = governing(chain, Date.parse(claims.occurred_at));
-  const governingMatch = governingDigest === claims.revision_digest ? "match" : "mismatch";
-  const chainConflict = claimedRevision ? (chain.topology === "forked" ? "fork_evidenced" : "none") : "fork_evidenced";
-  const binding = claimedRevision?.value.abp_bindings.find((one) => one.party_role === claims.agent_party_role);
-  const deploymentMatched = governingMatch === "match" && binding?.deployment_digest === claims.deployment_digest;
-  return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), governingMatch, chainConflict, deploymentMatched, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
+  const projection = projectReceipt(claims, chain, governingDigest);
+  if (!projection.ok) return projection;
+  return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
 }
 
 function execute(one) {
@@ -318,8 +442,9 @@ function execute(one) {
     case "json.decode": {
       if (!("text" in input) && !("bytes_base64url" in input)) return invalid("invalid_type");
       const bytes = "text" in input ? Buffer.from(input.text) : Buffer.from(input.bytes_base64url, "base64url");
-      if (input.limits?.max_bytes !== undefined && bytes.length > input.limits.max_bytes) return invalid("limit_exceeded");
-      return project(parseJsonBytes(bytes), jsonProjection);
+      const decoded = parseJsonBytes(bytes);
+      if (!decoded.ok) return invalid(decoded.code);
+      return project(jsonWithinLimits(decoded.value, bytes, input.limits), jsonProjection);
     }
     case "canonicalization.encode":
       if (input.tag === "object") return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]) => [key, value.value]))) });
@@ -399,7 +524,14 @@ function corpusDigest(index) {
 }
 
 export function loadCorpus(root) {
+  const observedEntries = walk(root);
+  if (observedEntries.length === 0 || observedEntries.length > MAXIMUM_CORPUS_FILES ||
+      observedEntries.reduce((total, entry) => total + entry.size, 0) > MAXIMUM_CORPUS_BYTES) {
+    throw new Error("corpus filesystem bounds");
+  }
+  const observedSizes = new Map(observedEntries.map((entry) => [entry.path, entry.size]));
   const indexBytes = readFileSync(join(root, "index.json"));
+  if (indexBytes.length !== observedSizes.get("index.json")) throw new Error("index changed during read");
   const index = JSON.parse(indexBytes);
   if (canonical(index) !== indexBytes.toString()) throw new Error("non-canonical index");
   if (!exactKeys(index, ["applicability", "corpus_digest", "files", "format", "registry_digest", "total_cases"])) throw new Error("index shape");
@@ -407,10 +539,11 @@ export function loadCorpus(root) {
   if (index.registry_digest !== CERTIFIED_REGISTRY_DIGEST) throw new Error("registry identity");
   if (rawHash(indexBytes) !== CERTIFIED_INDEX_SHA256_BASE64URL) throw new Error("uncertified index");
   const expectedFiles = ["index.json", ...index.files.map((entry) => entry.path)].sort();
-  if (canonical(walk(root).sort()) !== canonical(expectedFiles)) throw new Error("file set");
+  if (canonical(observedEntries.map((entry) => entry.path).sort()) !== canonical(expectedFiles)) throw new Error("file set");
   const cases = [];
   for (const entry of index.files) {
     const bytes = readFileSync(join(root, entry.path));
+    if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
     if (rawHash(bytes) !== entry.sha256_base64url) throw new Error("file hash");
     const file = JSON.parse(bytes);
     if (canonical(file) !== bytes.toString() || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
@@ -472,4 +605,67 @@ export function selfChecks() {
   }
   if (canonical({ b: 1, a: 2 }) !== "{\"a\":2,\"b\":1}") throw new Error("canonical ordering failed");
   if (strictBase64url("AQ==").code !== "base64url_padded") throw new Error("base64url strictness failed");
+
+  const acceptedRevision = {
+    digest: "known-revision",
+    value: {
+      abp_bindings: [{ party_role: "agent", deployment_digest: "known-deployment" }],
+      charter_id: "known-charter",
+      effective_from: "2026-01-01T00:00:00Z",
+      parties: [{ role: "issuer" }, { role: "agent" }],
+      revision_number: 2,
+    },
+  };
+  const projectionChain = {
+    accepted: [acceptedRevision],
+    supersededDigests: [],
+    charterId: "known-charter",
+  };
+  const knownClaims = {
+    charter_id: "known-charter",
+    revision_digest: "known-revision",
+    revision_number: 2,
+    issuing_party_role: "issuer",
+    agent_party_role: "agent",
+    deployment_digest: "known-deployment",
+  };
+  const knownProjection = projectReceipt(knownClaims, projectionChain, "contested");
+  if (!knownProjection.ok || knownProjection.value.chainConflict !== "none" ||
+      knownProjection.value.governingMatch !== "undetermined" || !knownProjection.value.deploymentMatched) {
+    throw new Error("known receipt projection drifted");
+  }
+  const unknownProjection = projectReceipt(
+    { ...knownClaims, revision_digest: "unknown-revision", revision_number: 2 },
+    projectionChain,
+    "known-revision",
+  );
+  if (!unknownProjection.ok || unknownProjection.value.chainConflict !== "fork_evidenced" || unknownProjection.value.deploymentMatched) {
+    throw new Error("unknown receipt projection drifted");
+  }
+  const futureProjection = projectReceipt(
+    { ...knownClaims, revision_digest: "future-revision", revision_number: 3 },
+    projectionChain,
+    "known-revision",
+  );
+  if (!futureProjection.ok || futureProjection.value.chainConflict !== "none") {
+    throw new Error("future receipt projection drifted");
+  }
+  if (projectReceipt({ ...knownClaims, deployment_digest: "wrong" }, projectionChain, "known-revision").ok) {
+    throw new Error("recognized receipt claim validation drifted");
+  }
+  if (jsonWithinLimits({ nested: [["xx"]] }, Buffer.from('{"nested":[["xx"]]}'), { max_depth: 2 }).ok) {
+    throw new Error("JSON depth limit drifted");
+  }
+  if (jsonWithinLimits({ a: 1, b: 2 }, Buffer.from('{"a":1,"b":2}'), { max_object_members: 1 }).ok ||
+      jsonWithinLimits([1, 2], Buffer.from("[1,2]"), { max_array_items: 1 }).ok ||
+      jsonWithinLimits("é", Buffer.from('"é"'), { max_string_bytes: 1 }).ok) {
+    throw new Error("JSON structural limit drifted");
+  }
+  if (criticalRevisionProfile("com.example/pricing-indexed") === null ||
+      criticalRevisionProfile("com.example/retired-profile") !== null) {
+    throw new Error("critical extension registry drifted");
+  }
+  if (extensionRegistryDigest() !== CERTIFIED_REGISTRY_DIGEST) {
+    throw new Error("compiled extension registry identity drifted");
+  }
 }

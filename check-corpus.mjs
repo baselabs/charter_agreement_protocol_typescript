@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const indexFormat = "charter-agreement-protocol-conformance-corpus-index";
 const caseFormat = "charter-agreement-protocol-conformance-cases";
 const separator = "charter-agreement-protocol/corpus-index";
+const maximumCorpusFiles = 64;
+const maximumCorpusBytes = 33_554_432;
 
 const surfaces = [
   "base64url.decode",
@@ -90,7 +92,10 @@ function corpusDigest(index) {
 function walk(root, directory = root) {
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name);
-    return statSync(path).isDirectory() ? walk(root, path) : [relative(root, path).split(sep).join("/")];
+    const stat = lstatSync(path);
+    if (stat.isDirectory()) return walk(root, path);
+    if (!stat.isFile()) throw new Error("non-regular corpus entry");
+    return [{ path: relative(root, path).split(sep).join("/"), size: stat.size }];
   });
 }
 
@@ -100,7 +105,14 @@ function exactKeys(object, keys) {
 }
 
 function check(root) {
+  const observedEntries = walk(root);
+  if (observedEntries.length === 0 || observedEntries.length > maximumCorpusFiles ||
+      observedEntries.reduce((total, entry) => total + entry.size, 0) > maximumCorpusBytes) {
+    throw new Error("corpus filesystem bounds");
+  }
+  const observedSizes = new Map(observedEntries.map((entry) => [entry.path, entry.size]));
   const indexBytes = readFileSync(join(root, "index.json"));
+  if (indexBytes.length !== observedSizes.get("index.json")) throw new Error("index changed during read");
   const index = JSON.parse(indexBytes);
   if (canonical(index) !== indexBytes.toString()) throw new Error("non-canonical index");
   if (!exactKeys(index, ["applicability", "corpus_digest", "files", "format", "registry_digest", "total_cases"])) throw new Error("index shape");
@@ -108,12 +120,13 @@ function check(root) {
   if (!Number.isInteger(index.total_cases) || index.total_cases < 1 || !Array.isArray(index.files)) throw new Error("empty corpus");
 
   const expectedFiles = ["index.json", ...index.files.map((entry) => entry.path)].sort();
-  if (JSON.stringify(walk(root).sort()) !== JSON.stringify(expectedFiles)) throw new Error("file set");
+  if (JSON.stringify(observedEntries.map((entry) => entry.path).sort()) !== JSON.stringify(expectedFiles)) throw new Error("file set");
 
   const allCases = [];
   for (const entry of index.files) {
     if (!exactKeys(entry, ["cases", "path", "sha256_base64url"])) throw new Error("file entry");
     const bytes = readFileSync(join(root, entry.path));
+    if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
     if (hash(bytes) !== entry.sha256_base64url) throw new Error("file hash");
     const file = JSON.parse(bytes);
     if (canonical(file) !== bytes.toString() || !exactKeys(file, ["cases", "format"]) || file.format !== caseFormat || !Array.isArray(file.cases)) throw new Error("case file");
