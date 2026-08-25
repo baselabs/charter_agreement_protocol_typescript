@@ -612,12 +612,21 @@ export function selfChecks() {
       abp_bindings: [{ party_role: "agent", deployment_digest: "known-deployment" }],
       charter_id: "known-charter",
       effective_from: "2026-01-01T00:00:00Z",
-      parties: [{ role: "issuer" }, { role: "agent" }],
+      parties: [
+        { role: "issuer", party_descriptor_digest: "issuer-descriptor" },
+        { role: "agent", party_descriptor_digest: "agent-descriptor" },
+      ],
       revision_number: 2,
     },
   };
   const projectionChain = {
     accepted: [acceptedRevision],
+    descriptors: {
+      descriptors: [
+        { digest: "issuer-descriptor", payload: { verification_keys: [{ key_id: "issuer", public_key: "issuer-key" }] } },
+        { digest: "agent-descriptor", payload: { verification_keys: [{ key_id: "agent", public_key: "agent-key" }] } },
+      ],
+    },
     supersededDigests: [],
     charterId: "known-charter",
   };
@@ -652,6 +661,10 @@ export function selfChecks() {
   }
   if (projectReceipt({ ...knownClaims, deployment_digest: "wrong" }, projectionChain, "known-revision").ok) {
     throw new Error("recognized receipt claim validation drifted");
+  }
+  const issuerKeys = receiptSigningKeys(projectionChain, acceptedRevision, "issuer");
+  if (issuerKeys.length !== 1 || issuerKeys[0].public_key !== "issuer-key") {
+    throw new Error("receipt issuer-key selection drifted");
   }
   if (jsonWithinLimits({ nested: [["xx"]] }, Buffer.from('{"nested":[["xx"]]}'), { max_depth: 2 }).ok) {
     throw new Error("JSON depth limit drifted");
