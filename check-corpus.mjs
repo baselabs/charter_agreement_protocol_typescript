@@ -18,6 +18,8 @@ const surfaces = [
   "acceptance.verify",
   "acceptance.equivocation",
   "termination.verify",
+  "chain.verify",
+  "governing_revision",
 ];
 
 const classes = [
@@ -38,6 +40,9 @@ const classes = [
   "descriptor_superseded",
   "descriptor_fork",
   "equivocation",
+  "chain_fork",
+  "supersession",
+  "precedence_selection",
 ];
 
 const required = {
@@ -52,6 +57,8 @@ const required = {
   "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
   "acceptance.equivocation": ["equivocation"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
+  "chain.verify": ["valid", "chain_fork", "supersession"],
+  "governing_revision": ["precedence_selection"],
 };
 
 function canonical(value) {
