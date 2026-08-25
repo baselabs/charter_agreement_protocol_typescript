@@ -17,6 +17,7 @@ const surfaces = [
   "charter_revision.decode",
   "acceptance.verify",
   "acceptance.equivocation",
+  "termination.verify",
 ];
 
 const classes = [
@@ -50,6 +51,7 @@ const required = {
   "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required"],
   "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
   "acceptance.equivocation": ["equivocation"],
+  "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
 };
 
 function canonical(value) {
