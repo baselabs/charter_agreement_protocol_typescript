@@ -20,6 +20,7 @@ const surfaces = [
   "termination.verify",
   "chain.verify",
   "governing_revision",
+  "receipt.verify",
 ];
 
 const classes = [
@@ -43,6 +44,7 @@ const classes = [
   "chain_fork",
   "supersession",
   "precedence_selection",
+  "outcome_indeterminate",
 ];
 
 const required = {
@@ -59,6 +61,7 @@ const required = {
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
   "chain.verify": ["valid", "chain_fork", "supersession"],
   "governing_revision": ["precedence_selection"],
+  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate"],
 };
 
 function canonical(value) {
