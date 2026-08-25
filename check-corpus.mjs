@@ -12,6 +12,8 @@ const surfaces = [
   "canonicalization.encode",
   "digest.hash",
   "schema.validate",
+  "party_descriptor.verify",
+  "descriptor_chain.verify",
 ];
 
 const classes = [
@@ -27,6 +29,8 @@ const classes = [
   "missing_required",
   "non_canonical_bytes",
   "digest_mismatch",
+  "descriptor_superseded",
+  "descriptor_fork",
 ];
 
 const required = {
@@ -35,6 +39,8 @@ const required = {
   "canonicalization.encode": ["valid", "invalid_encoding", "non_canonical_bytes", "invalid_type"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
+  "party_descriptor.verify": ["valid"],
+  "descriptor_chain.verify": ["descriptor_superseded", "descriptor_fork"],
 };
 
 function canonical(value) {
