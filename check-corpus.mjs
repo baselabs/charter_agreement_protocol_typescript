@@ -15,6 +15,8 @@ const surfaces = [
   "party_descriptor.verify",
   "descriptor_chain.verify",
   "charter_revision.decode",
+  "acceptance.verify",
+  "acceptance.equivocation",
 ];
 
 const classes = [
@@ -34,6 +36,7 @@ const classes = [
   "chain_invalid",
   "descriptor_superseded",
   "descriptor_fork",
+  "equivocation",
 ];
 
 const required = {
@@ -45,6 +48,8 @@ const required = {
   "party_descriptor.verify": ["valid", "signature_invalid"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
   "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required"],
+  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
+  "acceptance.equivocation": ["equivocation"],
 };
 
 function canonical(value) {
