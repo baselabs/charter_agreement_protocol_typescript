@@ -103,7 +103,7 @@ function check(root) {
   const indexBytes = readFileSync(join(root, "index.json"));
   const index = JSON.parse(indexBytes);
   if (canonical(index) !== indexBytes.toString()) throw new Error("non-canonical index");
-  if (!exactKeys(index, ["applicability", "corpus_digest", "files", "format", "total_cases"])) throw new Error("index shape");
+  if (!exactKeys(index, ["applicability", "corpus_digest", "files", "format", "registry_digest", "total_cases"])) throw new Error("index shape");
   if (index.format !== indexFormat || index.corpus_digest !== corpusDigest(index)) throw new Error("index identity");
   if (!Number.isInteger(index.total_cases) || index.total_cases < 1 || !Array.isArray(index.files)) throw new Error("empty corpus");
 
