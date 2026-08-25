@@ -14,6 +14,7 @@ const surfaces = [
   "schema.validate",
   "party_descriptor.verify",
   "descriptor_chain.verify",
+  "charter_revision.decode",
 ];
 
 const classes = [
@@ -43,6 +44,7 @@ const required = {
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "party_descriptor.verify": ["valid", "signature_invalid"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
+  "charter_revision.decode": ["valid", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required"],
 };
 
 function canonical(value) {
