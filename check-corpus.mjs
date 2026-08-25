@@ -29,6 +29,8 @@ const classes = [
   "missing_required",
   "non_canonical_bytes",
   "digest_mismatch",
+  "signature_invalid",
+  "chain_invalid",
   "descriptor_superseded",
   "descriptor_fork",
 ];
@@ -39,8 +41,8 @@ const required = {
   "canonicalization.encode": ["valid", "invalid_encoding", "non_canonical_bytes", "invalid_type"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
-  "party_descriptor.verify": ["valid"],
-  "descriptor_chain.verify": ["descriptor_superseded", "descriptor_fork"],
+  "party_descriptor.verify": ["valid", "signature_invalid"],
+  "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
 };
 
 function canonical(value) {
