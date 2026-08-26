@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "NiSzeS8F0SXS6ddeeQhOBdsG4BQn8jcxb8DSX1q-oLM";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "SiGK6zgrI9Rv5BvBPgj3-EexxJ1udz8-XtDDjeOiRv0";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -40,7 +40,7 @@ const CLASSES = [
   "missing_required", "non_canonical_bytes", "digest_mismatch", "signature_invalid",
   "chain_invalid", "descriptor_superseded", "descriptor_fork", "equivocation",
   "chain_fork", "supersession", "precedence_selection", "outcome_indeterminate",
-  "extension_unknown_critical", "extension_optional_roundtrip",
+  "extension_unknown_critical", "extension_optional_roundtrip", "extension_invalid",
 ];
 
 const REQUIRED = {
@@ -49,15 +49,15 @@ const REQUIRED = {
   "canonicalization.encode": ["valid", "invalid_encoding", "invalid_type", "non_canonical_bytes"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
-  "party_descriptor.verify": ["valid", "signature_invalid"],
+  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
-  "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical"],
+  "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical", "extension_invalid"],
   "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
-  "acceptance.equivocation": ["equivocation"],
+  "acceptance.equivocation": ["equivocation", "invalid_constraint"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
-  "chain.verify": ["valid", "chain_fork", "supersession"],
+  "chain.verify": ["valid", "chain_fork", "supersession", "chain_invalid"],
   "governing_revision": ["precedence_selection"],
-  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip"],
+  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
 
 export function canonical(value) {
@@ -108,10 +108,106 @@ function valid(output) { return { status: "valid", output }; }
 function invalid(code) { return { status: "invalid", error_code: code }; }
 function project(result, projector) { return result.ok ? valid(projector(result.value)) : invalid(result.code); }
 
-function parseJsonBytes(bytes) {
+// The I-JSON decoder mirror: duplicate member names, trailing
+// non-whitespace, integer literals beyond the ECMAScript safe range, and
+// numbers that cannot round-trip a double are rejected with the decoder's
+// closed codes, in the decoder's own order.
+const MAXIMUM_SAFE_INTEGER = 9007199254740991n;
+const NUMBER_TOKEN = /(?:-?(?:0|[1-9][0-9]*))(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+
+function readJsonValue(text, index) {
+  index = skipWhitespace(text, index);
+  const char = text[index];
+  if (char === undefined) return { status: "need-character" };
+  if (char === "{") {
+    const members = new Map();
+    let cursor = skipWhitespace(text, index + 1);
+    if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
+    for (;;) {
+      if (text[cursor] !== '"') return { status: "syntax" };
+      const key = readJsonString(text, cursor);
+      if (key.status !== "ok") return key;
+      cursor = skipWhitespace(text, key.index);
+      if (text[cursor] !== ":") return { status: "syntax" };
+      const item = readJsonValue(text, skipWhitespace(text, cursor + 1));
+      if (item.status !== "ok") return item;
+      if (members.has(key.value)) return { status: "error", code: "duplicate_member" };
+      members.set(key.value, item.value);
+      cursor = skipWhitespace(text, item.index);
+      if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }
+      if (text[cursor] === "}") return { status: "ok", value: Object.fromEntries(members), index: cursor + 1 };
+      return { status: "syntax" };
+    }
+  }
+  if (char === "[") {
+    const items = [];
+    let cursor = skipWhitespace(text, index + 1);
+    if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
+    for (;;) {
+      const item = readJsonValue(text, cursor);
+      if (item.status !== "ok") return item;
+      items.push(item.value);
+      cursor = skipWhitespace(text, item.index);
+      if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }
+      if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
+      return { status: "syntax" };
+    }
+  }
+  if (char === '"') {
+    const string = readJsonString(text, index);
+    return string.status === "ok" ? { status: "ok", value: string.value, index: string.index } : string;
+  }
+  for (const [literal, value] of [["true", true], ["false", false], ["null", null]]) {
+    if (text.startsWith(literal, index)) return { status: "ok", value, index: index + literal.length };
+  }
+  NUMBER_TOKEN.lastIndex = index;
+  const token = NUMBER_TOKEN.exec(text);
+  if (token) {
+    const literal = token[0];
+    if (/^-?[0-9]+$/.test(literal)) {
+      if (BigInt(literal) > MAXIMUM_SAFE_INTEGER || BigInt(literal) < -MAXIMUM_SAFE_INTEGER) {
+        return { status: "error", code: "number_not_double_expressible" };
+      }
+    } else if (!Number.isFinite(Number(literal))) {
+      return { status: "error", code: "invalid_number" };
+    }
+    return { status: "ok", value: Number(literal), index: NUMBER_TOKEN.lastIndex };
+  }
+  return { status: "syntax" };
+}
+
+function readJsonString(text, index) {
+  if (text[index] !== '"') return { status: "syntax" };
+  let end = index + 1;
+  while (end < text.length) {
+    if (text[end] === "\\") { end += 2; continue; }
+    if (text[end] === '"') break;
+    end += 1;
+  }
+  if (text[end] !== '"') return { status: "syntax" };
   try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return ok(JSON.parse(text));
+    return { status: "ok", value: JSON.parse(text.slice(index, end + 1)), index: end + 1 };
+  } catch (_error) {
+    return { status: "syntax" };
+  }
+}
+
+function skipWhitespace(text, index) {
+  while (/\s/.test(text[index])) index += 1;
+  return index;
+}
+
+function decodeJsonText(text) {
+  const value = readJsonValue(text, 0);
+  if (value.status === "need-character" || value.status === "syntax") return fail("invalid_syntax");
+  if (value.status === "error") return fail(value.code);
+  if (skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
+  return ok(value.value);
+}
+
+function decodeJsonBytes(bytes) {
+  try {
+    return decodeJsonText(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (_error) {
     return fail("invalid_encoding");
   }
@@ -124,6 +220,22 @@ const JSON_DEFAULT_LIMITS = {
   max_array_items: 4_096,
   max_string_bytes: 65_536,
 };
+
+const LIMIT_MAXIMUMS = {
+  max_bytes: 1_048_576,
+  max_depth: 64,
+  max_object_members: 1_024,
+  max_array_items: 4_096,
+  max_string_bytes: 65_536,
+  max_artifact_set_items: 1_024,
+};
+
+function validLimits(selected) {
+  if (typeof selected !== "object" || selected === null) return false;
+  return Object.entries(selected).every(([name, value]) =>
+    name in LIMIT_MAXIMUMS && Number.isInteger(value) && value >= 0 && value <= LIMIT_MAXIMUMS[name]
+  );
+}
 
 function jsonWithinLimits(value, bytes, selected = {}) {
   const limits = { ...JSON_DEFAULT_LIMITS, ...selected };
@@ -201,12 +313,26 @@ function verifyDecodedJws(decoded, typ, keys) {
   return Boolean(key && ed25519(key.public_key, decoded.signingInput, decoded.signature));
 }
 
+const TIMESTAMP_GRAMMAR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const PROTECTED_MEMBERS = ["alg", "kid", "typ"];
+
 function descriptorFromCompact(compact, predecessor = null) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
+  const headerKeys = Object.keys(decoded.value.header);
+  if (headerKeys.length !== 3 || PROTECTED_MEMBERS.some((member) => !headerKeys.includes(member))) {
+    return fail("protected_header_invalid");
+  }
   const payload = decoded.value.payload;
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
-  if (!Array.isArray(keys) || !verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
+  const resolved = Array.isArray(keys) && keys.find((one) =>
+    one.key_id === decoded.value.header.kid && one.algorithm === "Ed25519" && one.status === "active"
+  );
+  if (!resolved) return fail("descriptor_key_invalid");
+  if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
+  if (!TIMESTAMP_GRAMMAR.test(payload.effective_from) || Number.isNaN(Date.parse(payload.effective_from))) {
+    return fail("timestamp_invalid");
+  }
   const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
   if (payload.descriptor_number === 1) {
     if (payload.prev_descriptor_digest !== undefined) return fail("descriptor_invalid");
@@ -293,10 +419,26 @@ function revisionFromText(text) {
   if (value.revision_number === 1 && (value.supersedes !== undefined || value.prev_revision_digest !== undefined || value.charter_id !== undefined)) return fail("revision_invalid");
   if (value.supersedes !== undefined && (!Array.isArray(value.supersedes) || value.supersedes.some((one) => typeof one !== "string"))) return fail("revision_invalid");
   const critical = value.extensions?.critical || {};
+  const optional = value.extensions?.optional || {};
+  const names = [...Object.keys(critical), ...Object.keys(optional)];
+  if (names.some((namespace) => Buffer.byteLength(namespace) > 512 || !/^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9.-]*$/.test(namespace))) {
+    return fail("extension_namespace_invalid");
+  }
+  if (new Set(names).size !== names.length) return fail("extension_duplicate");
   for (const namespace of Object.keys(critical)) {
-    const profile = criticalRevisionProfile(namespace);
-    if (profile === null) return fail("extension_unknown_critical");
-    if (profile.namespace === "com.example/pricing-indexed" && critical[namespace]?.formula !== "index_plus_spread") return fail("constraint_violation");
+    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
+    if (!profile || profile.state === "reserved") return fail("extension_unknown_critical");
+    if (profile.state === "retired") return fail("extension_retired");
+    if (profile.criticality !== "critical") return fail("extension_criticality_conflict");
+    if (profile.surface !== "charter_revision") return fail("extension_scope_invalid");
+    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
+    if (namespace === "com.example/pricing-indexed" && critical[namespace]?.formula !== "index_plus_spread") return fail("constraint_violation");
+  }
+  for (const namespace of Object.keys(optional)) {
+    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
+    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
+    if (profile.surface !== "charter_revision") return fail("extension_scope_invalid");
+    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
   }
   const bytes = Buffer.from(text);
   return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
@@ -306,6 +448,8 @@ function acceptanceFromCompact(compact, revision, chain) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
+  if (claims.revision_number !== 1 && claims.prev_revision_digest === undefined) return fail("acceptance_invalid");
+  if (!TIMESTAMP_GRAMMAR.test(claims.accepted_at) || Number.isNaN(Date.parse(claims.accepted_at))) return fail("timestamp_invalid");
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
@@ -329,6 +473,7 @@ function terminationFromCompact(compact, revision, chain) {
 }
 
 function chainFromInput(input) {
+  if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
   if (!descriptors.ok) return fail("chain_invalid");
   const revisions = [];
@@ -423,6 +568,14 @@ function receiptFromCompact(compact, chain) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
+  if (claims.grant?.scheme === "bap" && claims.grant?.grant_digest === undefined) return fail("receipt_invalid");
+  const optional = claims.extensions?.optional || {};
+  for (const namespace of Object.keys(optional)) {
+    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
+    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
+    if (profile.surface !== "receipt") return fail("extension_scope_invalid");
+    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
+  }
   const claimedRevision = chain.accepted.find((one) => one.digest === claims.revision_digest);
   const verifiedPublicKeys = new Set(
     receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
@@ -444,19 +597,36 @@ function execute(one) {
       return project(strictBase64url(input.text), (bytes) => ({ bytes_base64url: bytes.toString("base64url") }));
     case "json.decode": {
       if (!("text" in input) && !("bytes_base64url" in input)) return invalid("invalid_type");
+      if (input.limits !== undefined && !validLimits(input.limits)) return invalid("invalid_limits");
       const bytes = "text" in input ? Buffer.from(input.text) : Buffer.from(input.bytes_base64url, "base64url");
-      const decoded = parseJsonBytes(bytes);
+      const decoded = decodeJsonBytes(bytes);
       if (!decoded.ok) return invalid(decoded.code);
       return project(jsonWithinLimits(decoded.value, bytes, input.limits), jsonProjection);
     }
     case "canonicalization.encode":
-      if (input.tag === "object") return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]) => [key, value.value]))) });
+      if (input.tag === "integer") {
+        const literal = input.text_value !== undefined ? input.text_value : String(input.value);
+        if (/^-?[0-9]+$/.test(literal) && (BigInt(literal) > MAXIMUM_SAFE_INTEGER || BigInt(literal) < -MAXIMUM_SAFE_INTEGER)) return invalid("integer_magnitude");
+        return valid({ text: literal });
+      }
+      if (input.tag === "object") {
+        const names = input.members.map(([key]) => key);
+        if (new Set(names).size !== names.length) return invalid("duplicate_member");
+        return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]) => [key, value.value]))) });
+      }
       if (input.tag === "string_codepoint") return invalid("invalid_encoding");
       if (input.kind === "improper_object") return invalid("invalid_type");
       return canonical(JSON.parse(input.text)) === input.text ? valid({ text: input.text }) : invalid("non_canonical_bytes");
     case "digest.hash":
       if (!("bytes_base64url" in input)) return invalid("invalid_type");
-      if (input.tagged && input.tagged !== taggedHash(input.domain || "charter_revision_content", Buffer.from(input.bytes_base64url, "base64url"))) return invalid("digest_mismatch");
+      if (input.tagged !== undefined) {
+        if (typeof input.tagged !== "string") return invalid("invalid_type");
+        const separator = input.tagged.indexOf(":");
+        if (separator < 1) return invalid("digest_encoding_invalid");
+        if (input.tagged.slice(0, separator) !== "sha-256") return invalid("digest_algorithm_unsupported");
+        if (!/^[A-Za-z0-9_-]{43}$/.test(input.tagged.slice(separator + 1))) return invalid("digest_encoding_invalid");
+        if (input.tagged !== taggedHash(input.domain || "charter_revision_content", Buffer.from(input.bytes_base64url, "base64url"))) return invalid("digest_mismatch");
+      }
       return valid({ algorithm: "sha-256" });
     case "schema.validate": {
       const members = input.members;
@@ -493,6 +663,10 @@ function execute(one) {
         return revision.ok ? acceptanceFromCompact(signed.compact, revision.value, chain.value) : revision;
       });
       if (facts.some((oneFact) => !oneFact.ok)) return invalid("acceptance_equivocation_invalid");
+      const [left, right] = facts.map((oneFact) => oneFact.value.claims);
+      const pairable = left.charter_id === right.charter_id && left.revision_number === right.revision_number &&
+        left.party_descriptor_digest === right.party_descriptor_digest && left.party_role === right.party_role;
+      if (!pairable) return invalid("acceptance_equivocation_invalid");
       return valid({ kind: "acceptance_equivocation", revision_number: facts[0].value.claims.revision_number, revision_digests: facts.map((oneFact) => oneFact.value.claims.revision_digest).sort(), winner: null });
     }
     case "termination.verify": {
