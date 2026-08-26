@@ -9,6 +9,9 @@ const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 export const CERTIFIED_INDEX_SHA256_BASE64URL = "NiSzeS8F0SXS6ddeeQhOBdsG4BQn8jcxb8DSX1q-oLM";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
+// The fourth certified identity — the specification digest over the spec
+// set — is pinned in priv/release-metadata.json and enforced by the
+// release-candidate gate; corpus verification does not consume it.
 
 const SEPARATORS = {
   party_descriptor_content: "charter-agreement-protocol/party-descriptor-content",
