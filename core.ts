@@ -7,11 +7,30 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "YLaLsoOJQjHAY2qo1o5wqH-PHc4lpSGRPn0pwjiTRoU";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "Ty7kChMw3GusTSiJIgkwTCwIs7Ao9rWr8J9ok9oN1FM";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
 // release-candidate gate; corpus verification does not consume it.
+
+// The closed algorithm registry (docs/adr/algorithm-name-agility.md) — the
+// TypeScript mirror of CharterAgreementProtocol.Algorithm: one row per
+// accepted alg name, the minimum protocol_revision it is legal at, and the
+// key algorithm it verifies with. RFC 9864's fully-specified Ed25519 names
+// exactly the EdDSA-with-Ed25519-key operation, so both rows verify Ed25519.
+const ALG_ROWS = [
+  { name: "EdDSA", minProtocolRevision: 1, keyAlgorithm: "Ed25519" },
+  { name: "Ed25519", minProtocolRevision: 2, keyAlgorithm: "Ed25519" },
+];
+const ACCEPTED_PROTOCOL_REVISIONS = [1, 2];
+
+// The per-artifact binding rule: EdDSA at any accepted revision, Ed25519
+// from revision 2, unknown revisions fail closed. Views mix revisions
+// freely; the rule binds within one artifact.
+function algBinds(alg, protocolRevision) {
+  const row = ALG_ROWS.find((one) => one.name === alg);
+  return Boolean(row) && ACCEPTED_PROTOCOL_REVISIONS.includes(protocolRevision) && protocolRevision >= row.minProtocolRevision;
+}
 
 const SEPARATORS = {
   party_descriptor_content: "charter-agreement-protocol/party-descriptor-content",
@@ -308,6 +327,7 @@ function decodeJws(compact) {
       return fail("protected_header_invalid");
     }
     if (canonical(header) !== headerBytes.toString() || canonical(payload) !== payloadBytes.toString()) return fail("non_canonical_bytes");
+    if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
     return ok({ header, payload, payloadBytes, signature: decoded[2].value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
   } catch (_error) {
     return fail("compact_invalid");
@@ -325,7 +345,7 @@ function ed25519(rawKey, message, signature) {
 }
 
 function verifyDecodedJws(decoded, typ, keys) {
-  if (decoded.header.alg !== "EdDSA" || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
+  if (!ALG_ROWS.some((row) => row.name === decoded.header.alg) || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
   const key = keys.find((one) => one.key_id === decoded.header.kid && one.algorithm === "Ed25519" && one.status === "active");
   return Boolean(key && ed25519(key.public_key, decoded.signingInput, decoded.signature));
 }
@@ -466,7 +486,7 @@ function acceptanceFromCompact(compact, revision, chain) {
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one) => one.party_descriptor_digest === claims.party_descriptor_digest);
-  const mismatch = claims.protocol_revision !== revision.value.protocol_revision || claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
+  const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
   return ok({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
