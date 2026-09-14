@@ -241,7 +241,7 @@ function skipWhitespace(text, index) {
   return index;
 }
 
-function decodeJsonText(text) {
+export function decodeJsonText(text) {
   const value = readJsonValue(text, 0);
   if (value.status === "need-character" || value.status === "syntax") return fail("invalid_syntax");
   if (value.status === "error") return fail(value.code);
@@ -318,7 +318,7 @@ function jsonWithinLimits(value, bytes, selected = {}) {
   }
 }
 
-function jsonProjection(value) {
+export function jsonProjection(value) {
   if (value === null) return { tag: "null" };
   if (value instanceof Number) return { tag: "float", value: value.valueOf() };
   if (Number.isInteger(value)) return { tag: "integer", value };
