@@ -1,6 +1,6 @@
 {
   "name": "@charter-agreement-protocol/verifier",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) — byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
   "license": "Apache-2.0",
   "type": "module",
