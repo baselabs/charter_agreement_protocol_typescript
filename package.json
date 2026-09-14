@@ -11,7 +11,8 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./cli": "./dist/cli.js"
+    "./cli": "./dist/cli.js",
+    "./package.json": "./package.json"
   },
   "bin": {
     "cap-verifier": "./dist/cli.js"
