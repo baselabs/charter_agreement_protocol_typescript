@@ -80,6 +80,7 @@ const REQUIRED = {
 };
 
 export function canonical(value) {
+  if (value instanceof Number) return JSON.stringify(value.valueOf());
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -195,7 +196,11 @@ function readJsonValue(text, index) {
     } else if (!Number.isFinite(Number(literal))) {
       return { status: "error", code: "invalid_number" };
     }
-    return { status: "ok", value: Number(literal), index: NUMBER_TOKEN.lastIndex };
+    // Float-ness follows the lexeme (fraction or exponent), never the value:
+    // "0.0" and "2e0" are floats even though their double is integral, so the
+    // tagged projection matches the reference decoder instead of collapsing.
+    const boxed = /[.eE]/.test(literal) ? new Number(Number(literal)) : Number(literal);
+    return { status: "ok", value: boxed, index: NUMBER_TOKEN.lastIndex };
   }
   return { status: "syntax" };
 }
@@ -213,6 +218,12 @@ function readJsonString(text, index) {
     const value = JSON.parse(text.slice(index, end + 1));
     if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)) {
       return { status: "syntax" };
+    }
+    for (const codepoint of value) {
+      const unit = codepoint.codePointAt(0);
+      if ((unit >= 0xfdd0 && unit <= 0xfdef) || (unit & 0xfffe) === 0xfffe) {
+        return { status: "error", code: "invalid_encoding" };
+      }
     }
     return { status: "ok", value, index: end + 1 };
   } catch (_error) {
@@ -249,15 +260,20 @@ const JSON_DEFAULT_LIMITS = {
   max_object_members: 1_024,
   max_array_items: 4_096,
   max_string_bytes: 65_536,
+  max_artifact_set_items: 1_024,
+  max_artifact_set_bytes: 67_108_864,
 };
 
+// The compiled maximums mirror lib/charter_agreement_protocol/limits.ex: the
+// greatest caller-selectable value per field, not the defaults.
 const LIMIT_MAXIMUMS = {
-  max_bytes: 1_048_576,
-  max_depth: 64,
-  max_object_members: 1_024,
-  max_array_items: 4_096,
-  max_string_bytes: 65_536,
-  max_artifact_set_items: 1_024,
+  max_bytes: 16_777_216,
+  max_depth: 128,
+  max_object_members: 65_536,
+  max_array_items: 65_536,
+  max_string_bytes: 1_048_576,
+  max_artifact_set_items: 4_096,
+  max_artifact_set_bytes: 1_073_741_824,
 };
 
 function validLimits(selected) {
@@ -301,6 +317,7 @@ function jsonWithinLimits(value, bytes, selected = {}) {
 
 function jsonProjection(value) {
   if (value === null) return { tag: "null" };
+  if (value instanceof Number) return { tag: "float", value: value.valueOf() };
   if (Number.isInteger(value)) return { tag: "integer", value };
   if (Array.isArray(value)) return { tag: "array", items: value.map(jsonProjection) };
   if (value && typeof value === "object") return { tag: "object", members: Object.entries(value).map(([key, item]) => [key, jsonProjection(item)]) };
@@ -313,32 +330,75 @@ const PROTECTED_MEMBERS = ["alg", "kid", "typ"];
 
 function decodeJws(compact) {
   if (typeof compact !== "string") return fail("compact_invalid");
+  if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return fail("limit_exceeded");
   const segments = compact.split(".");
   if (segments.length !== 3) return fail("compact_invalid");
   const decoded = segments.map(strictBase64url);
   if (decoded.some((one) => !one.ok)) return fail("compact_invalid");
-  try {
-    const headerBytes = decoded[0].value;
-    const payloadBytes = decoded[1].value;
-    const header = JSON.parse(headerBytes.toString("utf8"));
-    const payload = JSON.parse(payloadBytes.toString("utf8"));
-    const headerKeys = Object.keys(header);
-    if (headerKeys.length !== 3 || PROTECTED_MEMBERS.some((member) => !headerKeys.includes(member))) {
-      return fail("protected_header_invalid");
-    }
-    if (canonical(header) !== headerBytes.toString() || canonical(payload) !== payloadBytes.toString()) return fail("non_canonical_bytes");
-    if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
-    return ok({ header, payload, payloadBytes, signature: decoded[2].value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
-  } catch (_error) {
-    return fail("compact_invalid");
+  const headerBytes = decoded[0].value;
+  const payloadBytes = decoded[1].value;
+  // Strict I-JSON decode under the default ceilings — the reference verifier
+  // never hands raw JSON.parse bytes; every header/payload failure maps to the
+  // framing-layer code the reference decoder emits for that segment.
+  const headerValue = decodeJsonBytes(headerBytes);
+  if (!headerValue.ok) return fail("protected_header_invalid");
+  const payloadValue = decodeJsonBytes(payloadBytes);
+  if (!payloadValue.ok) return fail("non_canonical_bytes");
+  const header = headerValue.value;
+  const payload = payloadValue.value;
+  const headerKeys = Object.keys(header);
+  if (headerKeys.length !== 3 || PROTECTED_MEMBERS.some((member) => !headerKeys.includes(member))) {
+    return fail("protected_header_invalid");
   }
+  if (canonical(header) !== headerBytes.toString() || canonical(payload) !== payloadBytes.toString()) return fail("non_canonical_bytes");
+  if (typeof payload.protocol_revision !== "number" || payload.protocol_revision instanceof Number || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
+  return ok({ header, payload, payloadBytes, signature: decoded[2].value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
+}
+
+const ED25519_FIELD_PRIME = 2n ** 255n - 19n;
+const ED25519_SUBGROUP_ORDER = 2n ** 252n + 27742317777372353535851937790883648493n;
+const ED25519_SMALL_ORDER_POINTS = [
+  "0100000000000000000000000000000000000000000000000000000000000000",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+  "0000000000000000000000000000000000000000000000000000000000000080",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+  "0000000000000000000000000000000000000000000000000000000000000000",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+].map((hex) => Buffer.from(hex, "hex"));
+
+function decodeLittleEndian(buffer) {
+  let value = 0n;
+  for (let index = buffer.length - 1; index >= 0; index -= 1) value = (value << 8n) | BigInt(buffer[index]);
+  return value;
+}
+
+// Strict point check mirroring Signature.strict_point?/1: the y coordinate is
+// canonical, the negative-zero spelling is rejected, and the complete
+// eight-point torsion set is refused before OpenSSL sees the key or R.
+function strictEd25519Point(point) {
+  if (point.length !== 32) return false;
+  if (ED25519_SMALL_ORDER_POINTS.some((one) => one.equals(point))) return false;
+  const prefix = point.subarray(0, 31);
+  const last = point[31];
+  const y = decodeLittleEndian(Buffer.concat([prefix, Buffer.from([last & 0x7f])]));
+  const negativeZero = (last & 0x80) !== 0 && (y === 1n || y === ED25519_FIELD_PRIME - 1n);
+  return y < ED25519_FIELD_PRIME && !negativeZero;
 }
 
 function ed25519(rawKey, message, signature) {
   try {
+    const key = Buffer.from(rawKey, "base64url");
+    if (signature.length !== 64 || key.length !== 32) return false;
+    if (!strictEd25519Point(key)) return false;
+    const r = signature.subarray(0, 32);
+    const s = signature.subarray(32);
+    if (!strictEd25519Point(r)) return false;
+    if (decodeLittleEndian(s) >= ED25519_SUBGROUP_ORDER) return false;
     const prefix = Buffer.from("302a300506032b6570032100", "hex");
-    const key = createPublicKey({ key: Buffer.concat([prefix, Buffer.from(rawKey, "base64url")]), format: "der", type: "spki" });
-    return verifySignature(null, message, key, signature);
+    const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
+    return verifySignature(null, message, spki, signature);
   } catch (_error) {
     return false;
   }
@@ -350,7 +410,37 @@ function verifyDecodedJws(decoded, typ, keys) {
   return Boolean(key && ed25519(key.public_key, decoded.signingInput, decoded.signature));
 }
 
-const TIMESTAMP_GRAMMAR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
+
+// Exact RFC 3339 UTC parse mirroring Timestamp.ex: real calendar date, hour
+// 0..23, minute 0..59, second 0..59 with :60 reserved for 23:59 on June 30 and
+// December 31, fractions kept as trimmed decimal strings. The tick coordinate
+// preserves the leap-second slot; fraction comparison pads to equal width, so
+// sub-millisecond precision never truncates the way Date.parse does.
+function parseTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const match = TIMESTAMP_GRAMMAR.exec(value);
+  if (!match) return null;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  if (year < 1) return null;
+  const utc = Date.UTC(year, month - 1, day);
+  const date = new Date(utc);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  if (hour > 23 || minute > 59 || second > 60) return null;
+  if (second === 60 && !(hour === 23 && minute === 59 && ((month === 6 && day === 30) || (month === 12 && day === 31)))) return null;
+  const days = Math.floor(utc / 86400000);
+  const base = days * 86400 + hour * 3600 + minute * 60 + Math.min(second, 59);
+  return { ticks: base * 2 + (second === 60 ? 1 : 0), fraction: (match[7] || "").replace(/0+$/, "") };
+}
+
+function compareTimestamps(left, right) {
+  if (left.ticks !== right.ticks) return left.ticks < right.ticks ? -1 : 1;
+  const width = Math.max(left.fraction.length, right.fraction.length);
+  const paddedLeft = left.fraction.padEnd(width, "0");
+  const paddedRight = right.fraction.padEnd(width, "0");
+  if (paddedLeft === paddedRight) return 0;
+  return paddedLeft < paddedRight ? -1 : 1;
+}
 
 function descriptorFromCompact(compact, predecessor = null) {
   const decoded = decodeJws(compact);
@@ -362,7 +452,7 @@ function descriptorFromCompact(compact, predecessor = null) {
   );
   if (!resolved) return fail("descriptor_key_invalid");
   if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
-  if (!TIMESTAMP_GRAMMAR.test(payload.effective_from) || Number.isNaN(Date.parse(payload.effective_from))) {
+  if (!parseTimestamp(payload.effective_from)) {
     return fail("timestamp_invalid");
   }
   const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
@@ -481,7 +571,7 @@ function acceptanceFromCompact(compact, revision, chain) {
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
   if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return fail("acceptance_invalid");
-  if (!TIMESTAMP_GRAMMAR.test(claims.accepted_at) || Number.isNaN(Date.parse(claims.accepted_at))) return fail("timestamp_invalid");
+  if (!parseTimestamp(claims.accepted_at)) return fail("timestamp_invalid");
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
@@ -500,10 +590,18 @@ function terminationFromCompact(compact, revision, chain) {
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
-  if (Date.parse(claims.issued_at) > Date.parse(claims.effective_at)) return fail("termination_invalid");
+  const issuedAt = parseTimestamp(claims.issued_at);
+  const effectiveAt = parseTimestamp(claims.effective_at);
+  if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return fail("termination_invalid");
   return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
+// Chain-level structural checks mirroring Chain.verify: unique revision
+// digests, exactly one genesis defining one charter identity, exact
+// predecessor linkage, well-formed supersession targets, unique acceptance
+// coordinates, dual acceptance against the revision's actual party pairs (any
+// two roles — never hardcoded names), verified termination notices, and the
+// reference topology/governing semantics with ancestry coverage.
 function chainFromInput(input) {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
@@ -515,7 +613,28 @@ function chainFromInput(input) {
     revisions.push(revision.value);
   }
   const byDigest = new Map(revisions.map((one) => [one.digest, one]));
+  if (byDigest.size !== revisions.length) return fail("chain_invalid");
+  const genesisList = revisions.filter((one) => one.value.revision_number === 1);
+  if (genesisList.length !== 1) return fail("chain_invalid");
+  const charterId = genesisList[0].value.charter_id || genesisList[0].digest;
+  for (const { digest, value } of revisions) {
+    if ((value.charter_id || digest) !== charterId) return fail("chain_invalid");
+    if (value.revision_number === 1) continue;
+    const predecessor = byDigest.get(value.prev_revision_digest);
+    if (!predecessor || predecessor.value.revision_number !== value.revision_number - 1 ||
+        (predecessor.value.charter_id || value.prev_revision_digest) !== charterId) {
+      return fail("chain_invalid");
+    }
+    for (const target of value.supersedes || []) {
+      const supersededTarget = byDigest.get(target);
+      if (!supersededTarget || supersededTarget.value.revision_number >= value.revision_number ||
+          (supersededTarget.value.charter_id || target) !== charterId) {
+        return fail("chain_invalid");
+      }
+    }
+  }
   const acceptances = [];
+  const coordinates = new Set();
   for (const compact of input.acceptances) {
     const decoded = decodeJws(compact);
     if (!decoded.ok) return fail("chain_invalid");
@@ -523,30 +642,83 @@ function chainFromInput(input) {
     if (!revision) return fail("chain_invalid");
     const verified = acceptanceFromCompact(compact, revision, descriptors.value);
     if (!verified.ok) return fail("chain_invalid");
+    const coordinate = `${verified.value.claims.revision_digest}\0${verified.value.claims.party_descriptor_digest}\0${verified.value.claims.party_role}`;
+    if (coordinates.has(coordinate)) return fail("chain_invalid");
+    coordinates.add(coordinate);
     acceptances.push(verified.value);
   }
+  for (const compact of input.terminations || []) {
+    const decoded = decodeJws(compact);
+    if (!decoded.ok) return fail("chain_invalid");
+    const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
+    if (!revision) return fail("chain_invalid");
+    const verified = terminationFromCompact(compact, revision, descriptors.value);
+    if (!verified.ok) return fail("chain_invalid");
+  }
   const accepted = revisions.filter((revision) => {
-    const roles = acceptances.filter((one) => one.claims.revision_digest === revision.digest).map((one) => one.claims.party_role);
-    return roles.includes("issuer") && roles.includes("acceptor");
+    const expected = new Set(revision.value.parties.map((party) => `${party.party_descriptor_digest}\0${party.role}`));
+    const actual = new Set(acceptances
+      .filter((one) => one.claims.revision_digest === revision.digest)
+      .map((one) => `${one.claims.party_descriptor_digest}\0${one.claims.party_role}`));
+    if (actual.size !== expected.size) return false;
+    for (const entry of expected) if (!actual.has(entry)) return false;
+    return true;
   });
   const superseded = new Set(accepted.flatMap((one) => one.value.supersedes || []));
-  const children = new Map();
-  for (const revision of accepted) {
-    const prev = revision.value.prev_revision_digest;
-    if (prev) children.set(prev, [...(children.get(prev) || []), revision.digest]);
-  }
-  const activeLeaves = accepted.filter((one) => !children.has(one.digest) && !superseded.has(one.digest));
-  const topology = activeLeaves.length > 1 ? "forked" : "linear";
-  const genesis = accepted.find((one) => one.value.revision_number === 1);
-  return ok({ descriptors: descriptors.value, revisions, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), activeLeaves, topology, charterId: genesis?.digest });
+  const active = accepted.filter((one) => !superseded.has(one.digest));
+  const maximum = Math.max(...active.map((one) => one.value.revision_number));
+  const heads = active.filter((one) => one.value.revision_number === maximum);
+  const acceptedByDigest = new Map(accepted.map((one) => [one.digest, one]));
+  // Walk DOWN from the head along unbroken accepted prev links: the head and
+  // everything on that chain is covered. A candidate outside the chain makes
+  // the active view forked.
+  const headAncestry = (head) => {
+    const chain = new Set([head]);
+    let current = acceptedByDigest.get(head);
+    while (current && current.value.prev_revision_digest && acceptedByDigest.has(current.value.prev_revision_digest)) {
+      chain.add(current.value.prev_revision_digest);
+      current = acceptedByDigest.get(current.value.prev_revision_digest);
+    }
+    return chain;
+  };
+  const ancestryCovers = (head) => {
+    const chain = headAncestry(head);
+    return active.every((one) => chain.has(one.digest));
+  };
+  const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
+  const topology = active.length > 0 && !linear ? "forked" : "linear";
+  return ok({ descriptors: descriptors.value, revisions, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
+}
+
+// Governing mirrors the reference semantics exactly: candidates are accepted,
+// non-superseded, and effective at the instant (start-inclusive, end-exclusive
+// via exact fraction comparison); a unique highest-numbered head governs only
+// when every candidate is the head or an ancestor along an unbroken accepted
+// chain — otherwise the view is contested, never silently resolved.
+function effectiveAt(revision, at) {
+  const from = parseTimestamp(revision.value.effective_from);
+  if (!from || compareTimestamps(from, at) > 0) return false;
+  if (revision.value.effective_until === undefined || revision.value.effective_until === null) return true;
+  const until = parseTimestamp(revision.value.effective_until);
+  return Boolean(until) && compareTimestamps(at, until) < 0;
 }
 
 function governing(chain, at) {
-  const applicable = chain.accepted.filter((one) => Date.parse(one.value.effective_from) <= at && !chain.supersededDigests.includes(one.digest));
+  const applicable = chain.accepted.filter((one) => !chain.supersededDigests.includes(one.digest) && effectiveAt(one, at));
   if (applicable.length === 0) return "none";
   const maximum = Math.max(...applicable.map((one) => one.value.revision_number));
   const finalists = applicable.filter((one) => one.value.revision_number === maximum);
-  return finalists.length === 1 ? finalists[0].digest : "contested";
+  if (finalists.length !== 1) return "contested";
+  const acceptedByDigest = new Map(chain.accepted.map((one) => [one.digest, one]));
+  const head = finalists[0].digest;
+  const chainFromHead = new Set([head]);
+  let walk = acceptedByDigest.get(head);
+  while (walk && walk.value.prev_revision_digest && acceptedByDigest.has(walk.value.prev_revision_digest)) {
+    chainFromHead.add(walk.value.prev_revision_digest);
+    walk = acceptedByDigest.get(walk.value.prev_revision_digest);
+  }
+  const covers = applicable.every((one) => chainFromHead.has(one.digest));
+  return covers ? head : "contested";
 }
 
 function projectReceipt(claims, chain, governingDigest) {
@@ -615,8 +787,15 @@ function receiptFromCompact(compact, chain) {
       .map((key) => key.public_key)
   );
   if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
-  if (claims.decision === "rejected" && claims.outcome === "effect_committed") return fail("cross_field_invalid");
-  const governingDigest = governing(chain, Date.parse(claims.occurred_at));
+  const occurredAt = parseTimestamp(claims.occurred_at);
+  const recordedAt = parseTimestamp(claims.recorded_at);
+  if (!occurredAt || !recordedAt || compareTimestamps(recordedAt, occurredAt) < 0) return fail("receipt_invalid");
+  // The closed matrix mirrors the reference decoder: rejected requires
+  // no_effect; accepted admits effect_committed, no_effect, or indeterminate.
+  const outcomeAllowed = claims.decision === "rejected" ? claims.outcome === "no_effect" :
+    (claims.outcome === "effect_committed" || claims.outcome === "no_effect" || claims.outcome === "indeterminate");
+  if (!outcomeAllowed) return fail("cross_field_invalid");
+  const governingDigest = governing(chain, occurredAt);
   const projection = projectReceipt(claims, chain, governingDigest);
   if (!projection.ok) return projection;
   return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
@@ -717,7 +896,12 @@ function execute(one) {
     case "governing_revision": {
       const chain = chainFromInput(input);
       if (!chain.ok) return invalid("governing_invalid");
-      return valid({ governing_revisions: input.queries.map((query) => governing(chain.value, Date.parse(query.at))) });
+      return valid({
+        governing_revisions: input.queries.map((query) => {
+          const at = parseTimestamp(query.at);
+          return at ? governing(chain.value, at) : "none";
+        }),
+      });
     }
     case "receipt.verify": {
       const chain = chainFromInput(input.chain);
@@ -892,5 +1076,33 @@ export function selfChecks() {
   }
   if (extensionRegistryDigest() !== CERTIFIED_REGISTRY_DIGEST) {
     throw new Error("compiled extension registry identity drifted");
+  }
+
+  // Parity invariants against the reference implementation.
+  const floatDecoded = decodeJsonText('{"a":0.0,"b":2e0,"c":5}');
+  const projected = jsonProjection(floatDecoded.value);
+  const member = (name) => projected.members.find(([key]) => key === name)[1].tag;
+  if (!floatDecoded.ok || member("a") !== "float" || member("b") !== "float" || member("c") !== "integer") {
+    throw new Error("number tagging drifted");
+  }
+  if (decodeJsonBytes(Buffer.from('"\\ufdd0"')).ok || decodeJsonBytes(Buffer.from('"\\uffff"')).ok) {
+    throw new Error("I-JSON noncharacter rejection drifted");
+  }
+  if (parseTimestamp("2026-06-30T23:59:60Z") === null || parseTimestamp("2024-03-31T23:59:60Z") !== null) {
+    throw new Error("leap-second window drifted");
+  }
+  if (parseTimestamp("2026-02-30T00:00:00Z") !== null || parseTimestamp("0000-01-01T00:00:00Z") !== null) {
+    throw new Error("calendar validation drifted");
+  }
+  const halfMs = parseTimestamp("2026-01-01T00:00:00.0005Z");
+  const whole = parseTimestamp("2026-01-01T00:00:00Z");
+  if (!halfMs || !whole || compareTimestamps(halfMs, whole) <= 0) {
+    throw new Error("sub-millisecond fraction comparison drifted");
+  }
+  if (compareTimestamps(parseTimestamp("2026-01-01T00:00:00.5Z"), parseTimestamp("2026-01-01T00:00:00.500Z")) !== 0) {
+    throw new Error("fraction padding drifted");
+  }
+  if (LIMIT_MAXIMUMS.max_bytes !== 16_777_216 || LIMIT_MAXIMUMS.max_artifact_set_items !== 4_096) {
+    throw new Error("compiled limit maximums drifted");
   }
 }
