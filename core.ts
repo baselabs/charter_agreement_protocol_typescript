@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
+import { createHash, createPublicKey, verify as nodeVerifySignature } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -487,7 +487,7 @@ function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
     if (decodeLittleEndian(s) >= ED25519_SUBGROUP_ORDER) return false;
     const prefix = Buffer.from("302a300506032b6570032100", "hex");
     const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
-    return verifySignature(null, message, spki, signature);
+    return nodeVerifySignature(null, message, spki, signature);
   } catch (_error) {
     return false;
   }
@@ -503,10 +503,10 @@ function mldsa(keyAlgorithm: string, rawKey: string, message: Buffer, signature:
   try {
     const key = Buffer.from(rawKey, "base64url");
     const prefixes: Record<string, Buffer> = ML_DSA_SPKI_PREFIXES;
-  const prefix = prefixes[keyAlgorithm];
+    const prefix = prefixes[keyAlgorithm];
     if (!prefix || !signature || signature.length === 0) return false;
     const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
-    return verifySignature(null, message, spki, signature);
+    return nodeVerifySignature(null, message, spki, signature);
   } catch (_error) {
     return false;
   }
@@ -1259,4 +1259,124 @@ export function selfChecks(): void {
   if (LIMIT_MAXIMUMS.max_bytes !== 16_777_216 || LIMIT_MAXIMUMS.max_artifact_set_items !== 4_096) {
     throw new Error("compiled limit maximums drifted");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Artifact-level verification API (added 0.2.0)
+//
+// The corpus surface above proves this implementation against certified
+// expectations; the functions below expose the same verification over ONE
+// caller-supplied artifact (or a small caller-supplied view), so layered
+// tools — holder-side signers above all — reuse exactly one verification
+// implementation instead of forking one. CAP never authorizes: every result
+// is structural evidence, never permission.
+// ---------------------------------------------------------------------------
+
+export type AlgRow = { name: string; minProtocolRevision: number; keyAlgorithm: string; publicKeyBytes: number; signatureBytes: number };
+export type VerifyResult = { ok: true; facts: AnyRecord } | { ok: false; code: string };
+
+export function algorithmRegistry(): AlgRow[] {
+  return ALG_ROWS.map((row) => ({ ...row }));
+}
+
+export function emissions(): Record<string, number> {
+  return { Ed25519: 2, "ML-DSA-65": 3 };
+}
+
+export function encodeBase64url(bytes: Buffer): string {
+  return bytes.toString("base64url");
+}
+
+export function taggedDigest(domain: string, bytes: Buffer): string {
+  return taggedHash(domain as Domain, bytes);
+}
+
+export function defaultEmissionName(): string {
+  return "Ed25519";
+}
+
+// Framing-level decode: canonical protected header and payload, registry
+// binding, per-row signature length — everything about an artifact except
+// its cryptographic verification. Holder-side producers use this as the
+// provisional check on a zero-signature framing before any key is touched.
+export function decodeArtifact(compact: string): VerifyResult {
+  const decoded = decodeJws(compact);
+  if (!decoded.ok) return { ok: false, code: decoded.code };
+  const { header, payload } = decoded.value;
+  return { ok: true, facts: { alg: header.alg, kid: header.kid, typ: header.typ, payload } };
+}
+
+// Strict signature verification over exact bytes with a base64url public
+// key under the registry row for `alg` — the wrong-key guard primitive.
+export function verifySignature(message: Buffer, signature: Buffer, publicKeyBase64url: string, alg: string): boolean {
+  const row = ALG_ROWS.find((one) => one.name === alg);
+  if (!row) return false;
+  const key = Buffer.from(publicKeyBase64url, "base64url");
+  if (key.length !== row.publicKeyBytes) return false;
+  if (row.keyAlgorithm === "Ed25519") return ed25519(publicKeyBase64url, message, signature);
+  return mldsa(row.keyAlgorithm, publicKeyBase64url, message, signature);
+}
+
+export function verifyDescriptor(
+  compact: string,
+  predecessor: { digest: string; claims: AnyRecord } | null = null,
+): VerifyResult {
+  const verified = descriptorFromCompact(compact, predecessor ? { digest: predecessor.digest, payload: predecessor.claims } : null);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  const one = verified.value;
+  return {
+    ok: true,
+    facts: {
+      descriptor_digest: one.digest,
+      party_id: one.digest,
+      descriptor_number: one.payload.descriptor_number,
+      protocol_revision: one.payload.protocol_revision,
+    },
+  };
+}
+
+export function verifyDescriptorChain(compacts: string[]): VerifyResult {
+  const verified = descriptorChain(compacts);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  return { ok: true, facts: verified.value };
+}
+
+export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[]): VerifyResult {
+  const revision = revisionFromText(revisionText);
+  const chain = descriptorChain(descriptorCompacts);
+  if (!revision.ok || !chain.ok) return { ok: false, code: "acceptance_invalid" };
+  const verified = acceptanceFromCompact(compact, revision.value, chain.value);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  return { ok: true, facts: { acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
+}
+
+export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[]): VerifyResult {
+  const revision = revisionFromText(revisionText);
+  const chain = descriptorChain(descriptorCompacts);
+  if (!revision.ok || !chain.ok) return { ok: false, code: "termination_invalid" };
+  const verified = terminationFromCompact(compact, revision.value, chain.value);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  return { ok: true, facts: { termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
+}
+
+export function verifyChain(chainInput: AnyRecord): VerifyResult {
+  const verified = chainFromInput(chainInput);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  return { ok: true, facts: verified.value };
+}
+
+export function verifyReceipt(compact: string, chainInput: AnyRecord): VerifyResult {
+  const chain = chainFromInput(chainInput);
+  if (!chain.ok) return { ok: false, code: "receipt_invalid" };
+  const verified = receiptFromCompact(compact, chain.value);
+  if (!verified.ok) return { ok: false, code: verified.code };
+  return {
+    ok: true,
+    facts: {
+      receipt_digest: verified.value.digest,
+      claims: verified.value.claims,
+      governing_match: verified.value.governingMatch,
+      chain_conflict: verified.value.chainConflict,
+    },
+  };
 }

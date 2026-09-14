@@ -25,4 +25,22 @@ export {
   type ReportOutput,
 } from "./core.ts";
 
-export { CERTIFIED_INDEX_SHA256_BASE64URL, CERTIFIED_REGISTRY_DIGEST } from "./core.ts";
+export {
+  CERTIFIED_INDEX_SHA256_BASE64URL,
+  CERTIFIED_REGISTRY_DIGEST,
+  algorithmRegistry,
+  emissions,
+  defaultEmissionName,
+  encodeBase64url,
+  taggedDigest,
+  decodeArtifact,
+  verifySignature,
+  verifyDescriptor,
+  verifyDescriptorChain,
+  verifyAcceptance,
+  verifyTermination,
+  verifyChain,
+  verifyReceipt,
+  type AlgRow,
+  type VerifyResult,
+} from "./core.ts";

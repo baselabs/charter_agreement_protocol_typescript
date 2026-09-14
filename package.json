@@ -1,7 +1,7 @@
 {
   "name": "@charter-agreement-protocol/verifier",
-  "version": "0.1.2",
-  "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) — byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
+  "version": "0.2.0",
+  "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) \u2014 byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,7 +31,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
-    "test": "node --test --experimental-strip-types --no-warnings verifier.test.ts",
+    "test": "node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts",
     "conformance": "node --experimental-strip-types --no-warnings cli.ts",
     "prepack": "npm run build"
   },
