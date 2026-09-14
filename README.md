@@ -1,4 +1,4 @@
-# charter-agreement-protocol
+# @charter-agreement-protocol/verifier
 
 Independent TypeScript verifier for the
 [Charter Agreement Protocol](https://hex.pm/packages/charter_agreement_protocol) (CAP).
@@ -15,7 +15,7 @@ satisfaction, and more. Hosts read the evidence and decide.
 ## Install
 
 ```console
-npm install charter-agreement-protocol
+npm install @charter-agreement-protocol/verifier
 ```
 
 Requires Node >= 24.8 (ML-DSA landed in the Node builtins across the
@@ -27,12 +27,12 @@ Verify the certified conformance corpus shipped inside the package (the
 fastest way to see the verifier work end-to-end):
 
 ```js
-import { reportFor } from "charter-agreement-protocol";
+import { reportFor } from "@charter-agreement-protocol/verifier";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const corpusRoot = join(dirname(require.resolve("charter-agreement-protocol/package.json")), "conformance");
+const corpusRoot = join(dirname(require.resolve("@charter-agreement-protocol/verifier/package.json")), "conformance");
 const report = reportFor(corpusRoot);
 console.log(report.bytes);   // canonical JSON report
 process.exit(report.exitStatus); // 0 = all certified cases recomputed and agreed
@@ -41,8 +41,8 @@ process.exit(report.exitStatus); // 0 = all certified cases recomputed and agree
 Or from the shell:
 
 ```console
-npx charter-agreement-protocol            # the vendored certified corpus
-npx charter-agreement-protocol --corpus DIR   # any corpus directory
+npx @charter-agreement-protocol/verifier        # the vendored certified corpus
+npx @charter-agreement-protocol/verifier --corpus DIR  # any corpus directory
 ```
 
 Exit `0` means every case recomputed and agreed with the certified
@@ -74,6 +74,13 @@ cannot verify green.
   a raw index SHA-256 asserted at load.
 - **This package never publishes verdict claims that were not recomputed
   from raw bytes.**
+
+## Organization namespace
+
+The `charter-agreement-protocol` npm organization hosts this protocol family's
+TypeScript packages: `@charter-agreement-protocol/verifier` (this package) and
+`@charter-agreement-protocol/signer` (reserved for the holder-side companion
+signer's TypeScript package).
 
 ## SemVer
 

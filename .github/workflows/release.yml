@@ -1,4 +1,4 @@
-# npm releases of charter-agreement-protocol. Publishing is bound to THIS
+# npm releases of @charter-agreement-protocol/verifier. Publishing is bound to THIS
 # repository's workflow identity (GitHub Actions OIDC, no long-lived token)
 # and runs in TWO STAGES per the npm trusted-publisher configuration: the
 # workflow STAGES the artifact (npm stage publish, provenance attached), and
@@ -52,7 +52,7 @@ jobs:
       - name: Check registry for existing version
         id: existing
         run: |
-          if npm view "charter-agreement-protocol@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+          if npm view "@charter-agreement-protocol/verifier@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
           else
             echo "published=false" >> "$GITHUB_OUTPUT"

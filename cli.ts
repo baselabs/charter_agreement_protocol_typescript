@@ -20,7 +20,7 @@ const corpus =
       : null;
 
 if (corpus === null) {
-  console.error("usage: charter-agreement-protocol [--corpus DIRECTORY]");
+  console.error("usage: cap-verifier [--corpus DIRECTORY]");
   process.exitCode = 2;
 } else {
   try {

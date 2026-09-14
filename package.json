@@ -1,5 +1,5 @@
 {
-  "name": "charter-agreement-protocol",
+  "name": "@charter-agreement-protocol/verifier",
   "version": "0.1.0",
   "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) — byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
   "license": "Apache-2.0",
@@ -14,7 +14,7 @@
     "./cli": "./dist/cli.js"
   },
   "bin": {
-    "charter-agreement-protocol": "./dist/cli.js"
+    "cap-verifier": "./dist/cli.js"
   },
   "files": [
     "dist",
