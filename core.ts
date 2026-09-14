@@ -30,9 +30,9 @@ const ACCEPTED_PROTOCOL_REVISIONS = [1, 2, 3];
 // The per-artifact binding rule: EdDSA at any accepted revision, Ed25519
 // from revision 2, unknown revisions fail closed. Views mix revisions
 // freely; the rule binds within one artifact.
-function algBinds(alg, protocolRevision) {
+function algBinds(alg: string, protocolRevision: number): boolean {
   const row = ALG_ROWS.find((one) => one.name === alg);
-  return Boolean(row) && ACCEPTED_PROTOCOL_REVISIONS.includes(protocolRevision) && protocolRevision >= row.minProtocolRevision;
+  return row !== undefined && ACCEPTED_PROTOCOL_REVISIONS.includes(protocolRevision) && protocolRevision >= row.minProtocolRevision;
 }
 
 const SEPARATORS = {
@@ -82,7 +82,92 @@ const REQUIRED = {
   "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
 
-export function canonical(value) {
+// ---------------------------------------------------------------------------
+// Public typed shapes
+// ---------------------------------------------------------------------------
+
+export type CanonicalValue =
+  | null
+  | boolean
+  | number
+  | string
+  | CanonicalValue[]
+  | { [key: string]: CanonicalValue }
+  // Boxed numbers carry float-ness through the reader when the lexeme had a
+  // fraction or exponent; canonical() unwraps them before serialization.
+  | Number;
+
+export type Projection =
+  | { tag: "null" }
+  | { tag: "boolean"; value: boolean }
+  | { tag: "integer"; value: number }
+  | { tag: "float"; value: number }
+  | { tag: "string"; value: string }
+  | { tag: "array"; items: Projection[] }
+  | { tag: "object"; members: [string, Projection][] };
+
+export type DecodeResult = { ok: true; value: CanonicalValue } | { ok: false; code: string };
+export type CaseResult = { status: "valid"; output: unknown } | { status: "invalid"; error_code: string };
+export type CorpusFile = { path: string; sha256_base64url: string; cases: number };
+export type CorpusIndex = {
+  format: string;
+  corpus_digest: string;
+  registry_digest: string;
+  total_cases: number;
+  files: CorpusFile[];
+  applicability: Record<string, Record<string, unknown>>;
+};
+export type ConformanceCase = {
+  id: string;
+  surface: string;
+  class: string;
+  input: Record<string, any>;
+  expect: CaseResult;
+};
+export type LoadedCorpus = { index: CorpusIndex; indexBytes: Buffer; cases: ConformanceCase[] };
+export type CaseOutcome = { id: string; surface: string; agree: boolean; expected: CaseResult; actual: CaseResult };
+export type ConformanceReport = {
+  format: string;
+  agreement: boolean;
+  exit_status: number;
+  total: number;
+  agreed: number;
+  disagreed: number;
+  corpus_digest: string;
+  registry_digest: string;
+  index_sha256_base64url: string;
+  results: CaseOutcome[];
+};
+export type ReportOutput = { bytes: string; exitStatus: number };
+
+type Result<T> = { ok: true; value: T } | { ok: false; code: string };
+const ok = <T,>(value: T): { ok: true; value: T } => ({ ok: true, value });
+const fail = (code: string): { ok: false; code: string } => ({ ok: false, code });
+const valid = (output: unknown): CaseResult => ({ status: "valid", output });
+const invalid = (code: string): CaseResult => ({ status: "invalid", error_code: code });
+const project = <T,>(result: { ok: true; value: T } | { ok: false; code: string }, projector: (value: T) => unknown): CaseResult =>
+  result.ok ? valid(projector(result.value)) : invalid(result.code);
+
+// ---------------------------------------------------------------------------
+// Internal working types — payload views are any-valued records: the JSON
+// surfaces are validated at runtime by the closed grammar checks, and the
+// exported API above stays strictly typed.
+// ---------------------------------------------------------------------------
+
+type AnyRecord = Record<string, any>;
+
+interface JsonReader {
+  status: string;
+  value?: unknown;
+  index?: number;
+  code?: string;
+}
+
+interface CorpusEntry { path: string; size: number; }
+
+type Domain = keyof typeof SEPARATORS;
+
+export function canonical(value: CanonicalValue): string {
   if (value instanceof Number) return JSON.stringify(value.valueOf());
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
@@ -93,21 +178,21 @@ export function canonical(value) {
   throw new Error("unsupported JSON value");
 }
 
-function rawHash(bytes) {
+function rawHash(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("base64url");
 }
 
-function taggedHash(domain, bytes) {
+function taggedHash(domain: Domain, bytes: Buffer): string {
   const preimage = Buffer.concat([Buffer.from(SEPARATORS[domain]), Buffer.from([0]), Buffer.from(bytes)]);
   return `sha-256:${rawHash(preimage)}`;
 }
 
-function exactKeys(object, keys) {
-  return object && typeof object === "object" && !Array.isArray(object) &&
-    canonical(Object.keys(object).sort()) === canonical([...keys].sort());
+function exactKeys(object: unknown, keys: string[]): boolean {
+  if (!object || typeof object !== "object" || Array.isArray(object)) return false;
+  return canonical(Object.keys(object).sort() as string[]) === canonical([...keys].sort());
 }
 
-function walk(root, directory = root) {
+function walk(root: string, directory: string = root): CorpusEntry[] {
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name);
     const stat = lstatSync(path);
@@ -117,19 +202,13 @@ function walk(root, directory = root) {
   });
 }
 
-function strictBase64url(text) {
+function strictBase64url(text: unknown): Result<Buffer> {
   if (typeof text !== "string") return fail("invalid_type");
   if (text.includes("=")) return fail("base64url_padded");
   if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return fail("base64url_invalid");
   const bytes = Buffer.from(text, "base64url");
   return bytes.toString("base64url") === text ? ok(bytes) : fail("base64url_invalid");
 }
-
-function ok(value) { return { ok: true, value }; }
-function fail(code) { return { ok: false, code }; }
-function valid(output) { return { status: "valid", output }; }
-function invalid(code) { return { status: "invalid", error_code: code }; }
-function project(result, projector) { return result.ok ? valid(projector(result.value)) : invalid(result.code); }
 
 // The I-JSON decoder mirror: duplicate member names, trailing
 // non-whitespace, integer literals beyond the ECMAScript safe range, and
@@ -138,12 +217,12 @@ function project(result, projector) { return result.ok ? valid(projector(result.
 const MAXIMUM_SAFE_INTEGER = 9007199254740991n;
 const NUMBER_TOKEN = /(?:-?(?:0|[1-9][0-9]*))(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
-function readJsonValue(text, index) {
+function readJsonValue(text: string, index: number): JsonReader {
   index = skipWhitespace(text, index);
   const char = text[index];
   if (char === undefined) return { status: "need-character" };
   if (char === "{") {
-    const members = new Map();
+    const members = new Map<string, unknown>();
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
     for (;;) {
@@ -166,7 +245,7 @@ function readJsonValue(text, index) {
     }
   }
   if (char === "[") {
-    const items = [];
+    const items: unknown[] = [];
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
     for (;;) {
@@ -183,7 +262,7 @@ function readJsonValue(text, index) {
     const string = readJsonString(text, index);
     return string.status === "ok" ? { status: "ok", value: string.value, index: string.index } : string;
   }
-  for (const [literal, value] of [["true", true], ["false", false], ["null", null]]) {
+  for (const [literal, value] of [["true", true], ["false", false], ["null", null]] as [string, boolean | null][]) {
     if (text.startsWith(literal, index)) return { status: "ok", value, index: index + literal.length };
   }
   NUMBER_TOKEN.lastIndex = index;
@@ -202,13 +281,13 @@ function readJsonValue(text, index) {
     // Float-ness follows the lexeme (fraction or exponent), never the value:
     // "0.0" and "2e0" are floats even though their double is integral, so the
     // tagged projection matches the reference decoder instead of collapsing.
-    const boxed = /[.eE]/.test(literal) ? new Number(Number(literal)) : Number(literal);
+    const boxed: CanonicalValue = /[.eE]/.test(literal) ? new Number(Number(literal)) : Number(literal);
     return { status: "ok", value: boxed, index: NUMBER_TOKEN.lastIndex };
   }
   return { status: "syntax" };
 }
 
-function readJsonString(text, index) {
+function readJsonString(text: any, index: any) {
   if (text[index] !== '"') return { status: "syntax" };
   let end = index + 1;
   while (end < text.length) {
@@ -236,20 +315,20 @@ function readJsonString(text, index) {
 
 const JSON_WHITESPACE = /[ \t\n\r]/;
 
-function skipWhitespace(text, index) {
+function skipWhitespace(text: any, index: any) {
   while (JSON_WHITESPACE.test(text[index])) index += 1;
   return index;
 }
 
-export function decodeJsonText(text) {
+export function decodeJsonText(text: string): Result<CanonicalValue> {
   const value = readJsonValue(text, 0);
   if (value.status === "need-character" || value.status === "syntax") return fail("invalid_syntax");
-  if (value.status === "error") return fail(value.code);
-  if (skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
-  return ok(value.value);
+  if (value.status === "error") return fail(value.code as string);
+  if (value.index === undefined || skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
+  return ok(value.value as CanonicalValue);
 }
 
-function decodeJsonBytes(bytes) {
+function decodeJsonBytes(bytes: Buffer): Result<CanonicalValue> {
   try {
     return decodeJsonText(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (_error) {
@@ -279,18 +358,19 @@ const LIMIT_MAXIMUMS = {
   max_artifact_set_bytes: 1_073_741_824,
 };
 
-function validLimits(selected) {
+function validLimits(selected: AnyRecord): boolean {
   if (typeof selected !== "object" || selected === null) return false;
+  const maximums: Record<string, number> = LIMIT_MAXIMUMS;
   return Object.entries(selected).every(([name, value]) =>
-    name in LIMIT_MAXIMUMS && Number.isInteger(value) && value >= 0 && value <= LIMIT_MAXIMUMS[name]
+    name in maximums && Number.isInteger(value) && value >= 0 && value <= maximums[name]
   );
 }
 
-function jsonWithinLimits(value, bytes, selected = {}) {
-  const limits = { ...JSON_DEFAULT_LIMITS, ...selected };
+function jsonWithinLimits(value: any, bytes: Buffer, selected: AnyRecord = {}): Result<unknown> {
+  const limits: Record<string, number> = { ...JSON_DEFAULT_LIMITS, ...selected };
   if (bytes.length > limits.max_bytes) return fail("limit_exceeded");
 
-  function visit(item, depth) {
+  function visit(item: any, depth: any) {
     if (typeof item === "string") {
       if (Buffer.byteLength(item) > limits.max_string_bytes) throw new Error("limit");
       return;
@@ -318,7 +398,7 @@ function jsonWithinLimits(value, bytes, selected = {}) {
   }
 }
 
-export function jsonProjection(value) {
+export function jsonProjection(value: any): Projection {
   if (value === null) return { tag: "null" };
   if (value instanceof Number) return { tag: "float", value: value.valueOf() };
   if (Number.isInteger(value)) return { tag: "integer", value };
@@ -331,15 +411,15 @@ export function jsonProjection(value) {
 
 const PROTECTED_MEMBERS = ["alg", "kid", "typ"];
 
-function decodeJws(compact) {
+function decodeJws(compact: unknown): Result<{ header: Record<string, string>; payload: AnyRecord; payloadBytes: Buffer; signature: Buffer; signingInput: Buffer }> {
   if (typeof compact !== "string") return fail("compact_invalid");
   if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return fail("limit_exceeded");
   const segments = compact.split(".");
   if (segments.length !== 3) return fail("compact_invalid");
   const decoded = segments.map(strictBase64url);
   if (decoded.some((one) => !one.ok)) return fail("compact_invalid");
-  const headerBytes = decoded[0].value;
-  const payloadBytes = decoded[1].value;
+  const headerBytes = (decoded[0] as { ok: true; value: Buffer }).value;
+  const payloadBytes = (decoded[1] as { ok: true; value: Buffer }).value;
   // Strict I-JSON decode under the default ceilings — the reference verifier
   // never hands raw JSON.parse bytes; every header/payload failure maps to the
   // framing-layer code the reference decoder emits for that segment.
@@ -347,19 +427,21 @@ function decodeJws(compact) {
   if (!headerValue.ok) return fail("protected_header_invalid");
   const payloadValue = decodeJsonBytes(payloadBytes);
   if (!payloadValue.ok) return fail("non_canonical_bytes");
-  const header = headerValue.value;
-  const payload = payloadValue.value;
+  const header = headerValue.value as Record<string, string>;
+  const payload = payloadValue.value as Record<string, unknown>;
   const headerKeys = Object.keys(header);
   if (headerKeys.length !== 3 || PROTECTED_MEMBERS.some((member) => !headerKeys.includes(member))) {
     return fail("protected_header_invalid");
   }
-  if (canonical(header) !== headerBytes.toString() || canonical(payload) !== payloadBytes.toString()) return fail("non_canonical_bytes");
-  if (typeof payload.protocol_revision !== "number" || payload.protocol_revision instanceof Number || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
+  if (canonical(header as unknown as CanonicalValue) !== headerBytes.toString() || canonical(payload as unknown as CanonicalValue) !== payloadBytes.toString()) return fail("non_canonical_bytes");
+  const revision: unknown = payload.protocol_revision;
+  if (typeof revision !== "number" || !Number.isInteger(revision) || !algBinds(header.alg, revision)) return fail("protected_header_invalid");
   // Per-row signature length: checked only after the header names the
   // algorithm (64 for the classical rows, 2420/3309/4627 for ML-DSA).
   const row = ALG_ROWS.find((one) => one.name === header.alg);
-  if (!row || decoded[2].value.length !== row.signatureBytes) return fail("signature_invalid");
-  return ok({ header, payload, payloadBytes, signature: decoded[2].value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
+  const signature = (decoded[2] as { ok: true; value: Buffer }).value;
+  if (!row || signature.length !== row.signatureBytes) return fail("signature_invalid");
+  return ok({ header, payload, payloadBytes, signature, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
 }
 
 const ED25519_FIELD_PRIME = 2n ** 255n - 19n;
@@ -375,7 +457,7 @@ const ED25519_SMALL_ORDER_POINTS = [
   "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
 ].map((hex) => Buffer.from(hex, "hex"));
 
-function decodeLittleEndian(buffer) {
+function decodeLittleEndian(buffer: Buffer): bigint {
   let value = 0n;
   for (let index = buffer.length - 1; index >= 0; index -= 1) value = (value << 8n) | BigInt(buffer[index]);
   return value;
@@ -384,7 +466,7 @@ function decodeLittleEndian(buffer) {
 // Strict point check mirroring Signature.strict_point?/1: the y coordinate is
 // canonical, the negative-zero spelling is rejected, and the complete
 // eight-point torsion set is refused before OpenSSL sees the key or R.
-function strictEd25519Point(point) {
+function strictEd25519Point(point: Buffer): boolean {
   if (point.length !== 32) return false;
   if (ED25519_SMALL_ORDER_POINTS.some((one) => one.equals(point))) return false;
   const prefix = point.subarray(0, 31);
@@ -394,7 +476,7 @@ function strictEd25519Point(point) {
   return y < ED25519_FIELD_PRIME && !negativeZero;
 }
 
-function ed25519(rawKey, message, signature) {
+function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
   try {
     const key = Buffer.from(rawKey, "base64url");
     if (signature.length !== 64 || key.length !== 32) return false;
@@ -417,10 +499,11 @@ const ML_DSA_SPKI_PREFIXES = {
   "ML-DSA-87": Buffer.from("30820a32300b060960864801650304031303820a2100", "hex"),
 };
 
-function mldsa(keyAlgorithm, rawKey, message, signature) {
+function mldsa(keyAlgorithm: string, rawKey: string, message: Buffer, signature: Buffer): boolean {
   try {
     const key = Buffer.from(rawKey, "base64url");
-    const prefix = ML_DSA_SPKI_PREFIXES[keyAlgorithm];
+    const prefixes: Record<string, Buffer> = ML_DSA_SPKI_PREFIXES;
+  const prefix = prefixes[keyAlgorithm];
     if (!prefix || !signature || signature.length === 0) return false;
     const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
     return verifySignature(null, message, spki, signature);
@@ -432,13 +515,13 @@ function mldsa(keyAlgorithm, rawKey, message, signature) {
 // Key resolution follows the registry: the kid-resolved active key's
 // algorithm must equal the envelope row's keyAlgorithm, and its decoded
 // byte length must equal the row's exact value.
-function keyMatchesRow(key, row) {
+function keyMatchesRow(key: AnyRecord | undefined, row: any): boolean {
   if (!key || key.algorithm !== row.keyAlgorithm || key.status !== "active") return false;
   const bytes = Buffer.from(key.public_key, "base64url");
   return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
 }
 
-function verifyDecodedJws(decoded, typ, keys) {
+function verifyDecodedJws(decoded: { header: Record<string, string>; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[]): boolean {
   const row = ALG_ROWS.find((one) => one.name === decoded.header.alg);
   if (!row || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
   const key = keys.find((one) => one.key_id === decoded.header.kid && keyMatchesRow(one, row));
@@ -455,7 +538,7 @@ const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.
 // December 31, fractions kept as trimmed decimal strings. The tick coordinate
 // preserves the leap-second slot; fraction comparison pads to equal width, so
 // sub-millisecond precision never truncates the way Date.parse does.
-function parseTimestamp(value) {
+function parseTimestamp(value: unknown): { ticks: number; fraction: string } | null {
   if (typeof value !== "string") return null;
   const match = TIMESTAMP_GRAMMAR.exec(value);
   if (!match) return null;
@@ -471,7 +554,7 @@ function parseTimestamp(value) {
   return { ticks: base * 2 + (second === 60 ? 1 : 0), fraction: (match[7] || "").replace(/0+$/, "") };
 }
 
-function compareTimestamps(left, right) {
+function compareTimestamps(left: { ticks: number; fraction: string }, right: { ticks: number; fraction: string }): number {
   if (left.ticks !== right.ticks) return left.ticks < right.ticks ? -1 : 1;
   const width = Math.max(left.fraction.length, right.fraction.length);
   const paddedLeft = left.fraction.padEnd(width, "0");
@@ -480,7 +563,7 @@ function compareTimestamps(left, right) {
   return paddedLeft < paddedRight ? -1 : 1;
 }
 
-function descriptorFromCompact(compact, predecessor = null) {
+function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord } | null = null) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
@@ -510,7 +593,7 @@ function descriptorFromCompact(compact, predecessor = null) {
 // (nested_invalid), while an ML-DSA key inside a revision-1 or revision-2
 // descriptor passes the schema and rejects at the codec's revision gate
 // (descriptor_invalid) — no honest producer could have minted it.
-function keyGrammarError(payload) {
+function keyGrammarError(payload: AnyRecord): string | null {
   if (!Array.isArray(payload.verification_keys) || payload.verification_keys.length === 0) {
     return "nested_invalid";
   }
@@ -529,7 +612,7 @@ function keyGrammarError(payload) {
   return null;
 }
 
-function descriptorChain(compacts) {
+function descriptorChain(compacts: string[]) {
   if (!Array.isArray(compacts) || compacts.length === 0) return fail("descriptor_chain_invalid");
   const pending = [...compacts];
   const descriptors = [];
@@ -570,14 +653,14 @@ const EXTENSION_PROFILES = [
   { namespace: "com.example/retired-profile", owner: "Example Charter Profiles", criticality: "critical", state: "retired", schema_digest: null, a2a_uri: "https://example.com/charter-profiles/retired-profile", promoted_at_revision: 1, surface: "charter_revision" },
 ];
 
-function criticalRevisionProfile(namespace) {
+function criticalRevisionProfile(namespace: string) {
   return EXTENSION_PROFILES.find((profile) =>
     profile.namespace === namespace && profile.criticality === "critical" &&
     profile.state === "active" && profile.surface === "charter_revision"
   ) || null;
 }
 
-function extensionRegistryDigest() {
+function extensionRegistryDigest(): string {
   const document = Object.fromEntries(EXTENSION_PROFILES.map((profile) => [
     profile.namespace,
     {
@@ -593,7 +676,7 @@ function extensionRegistryDigest() {
   return taggedHash("extension_registry", Buffer.from(canonical(document)));
 }
 
-function revisionFromText(text) {
+function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
   if (typeof text !== "string") return fail("revision_invalid");
   let value;
   try { value = JSON.parse(text); } catch (_error) { return fail("invalid_syntax"); }
@@ -601,10 +684,10 @@ function revisionFromText(text) {
   if (unknown) return fail("unknown_member");
   const missing = REVISION_REQUIRED.find((key) => !(key in value));
   if (missing) return fail("missing_required");
-  if (!Array.isArray(value.parties) || new Set(value.parties.map((one) => one.role)).size !== value.parties.length) return fail("revision_invalid");
+  if (!Array.isArray(value.parties) || new Set(value.parties.map((one: any) => one.role)).size !== value.parties.length) return fail("revision_invalid");
   if (!Array.isArray(value.termination_rules.reason_codes) || value.termination_rules.reason_codes.length === 0) return fail("nested_invalid");
   if (value.revision_number === 1 && (value.supersedes !== undefined || value.prev_revision_digest !== undefined || value.charter_id !== undefined)) return fail("revision_invalid");
-  if (value.supersedes !== undefined && (!Array.isArray(value.supersedes) || value.supersedes.some((one) => typeof one !== "string"))) return fail("revision_invalid");
+  if (value.supersedes !== undefined && (!Array.isArray(value.supersedes) || value.supersedes.some((one: any) => typeof one !== "string"))) return fail("revision_invalid");
   const critical = value.extensions?.critical || {};
   const optional = value.extensions?.optional || {};
   const names = [...Object.keys(critical), ...Object.keys(optional)];
@@ -631,7 +714,7 @@ function revisionFromText(text) {
   return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
 }
 
-function acceptanceFromCompact(compact, revision, chain) {
+function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -640,20 +723,20 @@ function acceptanceFromCompact(compact, revision, chain) {
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
-  const party = revision.value.parties.find((one) => one.party_descriptor_digest === claims.party_descriptor_digest);
+  const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
   return ok({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
-function terminationFromCompact(compact, revision, chain) {
+function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
-  const party = revision.value.parties.find((one) => one.party_descriptor_digest === claims.party_descriptor_digest);
+  const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
   const issuedAt = parseTimestamp(claims.issued_at);
   const effectiveAt = parseTimestamp(claims.effective_at);
@@ -667,7 +750,7 @@ function terminationFromCompact(compact, revision, chain) {
 // coordinates, dual acceptance against the revision's actual party pairs (any
 // two roles — never hardcoded names), verified termination notices, and the
 // reference topology/governing semantics with ancestry coverage.
-function chainFromInput(input) {
+function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
   if (!descriptors.ok) return fail("chain_invalid");
@@ -698,9 +781,9 @@ function chainFromInput(input) {
       }
     }
   }
-  const acceptances = [];
+  const acceptances: any[] = [];
   const coordinates = new Set();
-  for (const compact of input.acceptances) {
+  for (const compact of (input.acceptances as string[])) {
     const decoded = decodeJws(compact);
     if (!decoded.ok) return fail("chain_invalid");
     const revision = byDigest.get(decoded.value.payload.revision_digest);
@@ -712,7 +795,7 @@ function chainFromInput(input) {
     coordinates.add(coordinate);
     acceptances.push(verified.value);
   }
-  for (const compact of input.terminations || []) {
+  for (const compact of ((input.terminations as string[]) || [])) {
     const decoded = decodeJws(compact);
     if (!decoded.ok) return fail("chain_invalid");
     const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
@@ -721,12 +804,12 @@ function chainFromInput(input) {
     if (!verified.ok) return fail("chain_invalid");
   }
   const accepted = revisions.filter((revision) => {
-    const expected = new Set(revision.value.parties.map((party) => `${party.party_descriptor_digest}\0${party.role}`));
+    const expected = new Set(revision.value.parties.map((party: any) => `${party.party_descriptor_digest}\0${party.role}`));
     const actual = new Set(acceptances
       .filter((one) => one.claims.revision_digest === revision.digest)
       .map((one) => `${one.claims.party_descriptor_digest}\0${one.claims.party_role}`));
     if (actual.size !== expected.size) return false;
-    for (const entry of expected) if (!actual.has(entry)) return false;
+    for (const entry of [...expected] as string[]) if (!actual.has(entry)) return false;
     return true;
   });
   const superseded = new Set(accepted.flatMap((one) => one.value.supersedes || []));
@@ -737,7 +820,7 @@ function chainFromInput(input) {
   // Walk DOWN from the head along unbroken accepted prev links: the head and
   // everything on that chain is covered. A candidate outside the chain makes
   // the active view forked.
-  const headAncestry = (head) => {
+  const headAncestry = (head: any) => {
     const chain = new Set([head]);
     let current = acceptedByDigest.get(head);
     while (current && current.value.prev_revision_digest && acceptedByDigest.has(current.value.prev_revision_digest)) {
@@ -746,7 +829,7 @@ function chainFromInput(input) {
     }
     return chain;
   };
-  const ancestryCovers = (head) => {
+  const ancestryCovers = (head: any) => {
     const chain = headAncestry(head);
     return active.every((one) => chain.has(one.digest));
   };
@@ -760,42 +843,42 @@ function chainFromInput(input) {
 // via exact fraction comparison); a unique highest-numbered head governs only
 // when every candidate is the head or an ancestor along an unbroken accepted
 // chain — otherwise the view is contested, never silently resolved.
-function effectiveAt(revision, at) {
+function effectiveAt(revision: { value: AnyRecord }, at: { ticks: number; fraction: string }): boolean {
   const from = parseTimestamp(revision.value.effective_from);
   if (!from || compareTimestamps(from, at) > 0) return false;
   if (revision.value.effective_until === undefined || revision.value.effective_until === null) return true;
   const until = parseTimestamp(revision.value.effective_until);
-  return Boolean(until) && compareTimestamps(at, until) < 0;
+  return until !== null && compareTimestamps(at, until) < 0;
 }
 
-function governing(chain, at) {
-  const applicable = chain.accepted.filter((one) => !chain.supersededDigests.includes(one.digest) && effectiveAt(one, at));
+function governing(chain: any, at: { ticks: number; fraction: string }): string {
+  const applicable = chain.accepted.filter((one: any) => !chain.supersededDigests.includes(one.digest) && effectiveAt(one, at));
   if (applicable.length === 0) return "none";
-  const maximum = Math.max(...applicable.map((one) => one.value.revision_number));
-  const finalists = applicable.filter((one) => one.value.revision_number === maximum);
+  const maximum = Math.max(...applicable.map((one: any) => one.value.revision_number));
+  const finalists = applicable.filter((one: any) => one.value.revision_number === maximum);
   if (finalists.length !== 1) return "contested";
-  const acceptedByDigest = new Map(chain.accepted.map((one) => [one.digest, one]));
+  const acceptedByDigest = new Map<string, any>(chain.accepted.map((one: any) => [one.digest, one]));
   const head = finalists[0].digest;
   const chainFromHead = new Set([head]);
-  let walk = acceptedByDigest.get(head);
+  let walk: any = acceptedByDigest.get(head);
   while (walk && walk.value.prev_revision_digest && acceptedByDigest.has(walk.value.prev_revision_digest)) {
     chainFromHead.add(walk.value.prev_revision_digest);
     walk = acceptedByDigest.get(walk.value.prev_revision_digest);
   }
-  const covers = applicable.every((one) => chainFromHead.has(one.digest));
+  const covers = applicable.every((one: any) => chainFromHead.has(one.digest));
   return covers ? head : "contested";
 }
 
-function projectReceipt(claims, chain, governingDigest) {
-  const claimedRevision = chain.accepted.find((one) => one.digest === claims.revision_digest);
+function projectReceipt(claims: AnyRecord, chain: any, governingDigest: string) {
+  const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
   const governingMatch = governingDigest === "contested" ? "undetermined" :
     (governingDigest === claims.revision_digest ? "match" : "mismatch");
 
   if (claimedRevision) {
     const revision = claimedRevision.value;
     const charterId = revision.charter_id || claimedRevision.digest;
-    const roles = new Set(revision.parties.map((one) => one.role));
-    const deploymentMatched = revision.abp_bindings.some((binding) =>
+    const roles = new Set(revision.parties.map((one: any) => one.role));
+    const deploymentMatched = revision.abp_bindings.some((binding: any) =>
       binding.party_role === claims.agent_party_role &&
       binding.deployment_digest === claims.deployment_digest
     );
@@ -808,32 +891,32 @@ function projectReceipt(claims, chain, governingDigest) {
       fail("receipt_claims_mismatch");
   }
 
-  const roles = new Set(chain.accepted.flatMap((one) => one.value.parties.map((party) => party.role)));
+  const roles = new Set(chain.accepted.flatMap((one: any) => one.value.parties.map((party: any) => party.role)));
   const recognized = claims.charter_id === chain.charterId &&
     roles.has(claims.issuing_party_role) && roles.has(claims.agent_party_role);
   if (!recognized) return fail("receipt_claims_mismatch");
 
-  const acceptedHead = Math.max(0, ...chain.accepted.map((one) => one.value.revision_number));
+  const acceptedHead = Math.max(0, ...chain.accepted.map((one: any) => one.value.revision_number));
   const chainConflict = claims.revision_number <= acceptedHead ? "fork_evidenced" : "none";
   return ok({ governingMatch, chainConflict, deploymentMatched: false });
 }
 
-function receiptSigningKeys(chain, claimedRevision, role) {
+function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
   const revisions = claimedRevision ? [claimedRevision] : chain.accepted;
-  const keys = revisions.flatMap((revision) =>
+  const keys = revisions.flatMap((revision: any) =>
     revision.value.parties
-      .filter((party) => party.role === role)
-      .flatMap((party) => {
-        const descriptor = chain.descriptors.descriptors.find((one) =>
+      .filter((party: any) => party.role === role)
+      .flatMap((party: any) => {
+        const descriptor = chain.descriptors.descriptors.find((one: any) =>
           one.digest === party.party_descriptor_digest
         );
         return descriptor?.payload.verification_keys || [];
       })
   );
-  return [...new Map(keys.map((key) => [canonical(key), key])).values()];
+  return [...new Map(keys.map((key: any) => [canonical(key), key])).values()];
 }
 
-function receiptFromCompact(compact, chain) {
+function receiptFromCompact(compact: string, chain: any) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -845,11 +928,11 @@ function receiptFromCompact(compact, chain) {
     if (profile.surface !== "receipt") return fail("extension_scope_invalid");
     if (profile.schema_digest === null) return fail("extension_schema_unavailable");
   }
-  const claimedRevision = chain.accepted.find((one) => one.digest === claims.revision_digest);
+  const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
   const verifiedPublicKeys = new Set(
     receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
-      .filter((key) => verifyDecodedJws(decoded.value, "cap+receipt", [key]))
-      .map((key) => key.public_key)
+      .filter((key: any) => verifyDecodedJws(decoded.value, "cap+receipt", [key]))
+      .map((key: any) => key.public_key)
   );
   if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
   const occurredAt = parseTimestamp(claims.occurred_at);
@@ -866,7 +949,7 @@ function receiptFromCompact(compact, chain) {
   return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
 }
 
-function execute(one) {
+function execute(one: ConformanceCase): CaseResult {
   const input = one.input;
   switch (one.surface) {
     case "base64url.decode":
@@ -874,21 +957,21 @@ function execute(one) {
     case "json.decode": {
       if (!("text" in input) && !("bytes_base64url" in input)) return invalid("invalid_type");
       if (input.limits !== undefined && !validLimits(input.limits)) return invalid("invalid_limits");
-      const bytes = "text" in input ? Buffer.from(input.text) : Buffer.from(input.bytes_base64url, "base64url");
+      const bytes = "text" in input ? Buffer.from(input.text as string) : Buffer.from(input.bytes_base64url as string, "base64url");
       const decoded = decodeJsonBytes(bytes);
       if (!decoded.ok) return invalid(decoded.code);
       return project(jsonWithinLimits(decoded.value, bytes, input.limits), jsonProjection);
     }
     case "canonicalization.encode":
       if (input.tag === "integer") {
-        const literal = input.text_value !== undefined ? input.text_value : String(input.value);
+        const literal = input.text_value !== undefined ? (input.text_value as string) : String(input.value);
         if (/^-?[0-9]+$/.test(literal) && (BigInt(literal) > MAXIMUM_SAFE_INTEGER || BigInt(literal) < -MAXIMUM_SAFE_INTEGER)) return invalid("integer_magnitude");
         return valid({ text: literal });
       }
       if (input.tag === "object") {
-        const names = input.members.map(([key]) => key);
+        const names = input.members.map(([key]: any) => key);
         if (new Set(names).size !== names.length) return invalid("duplicate_member");
-        return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]) => [key, value.value]))) });
+        return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]: any) => [key, value.value])) as unknown as CanonicalValue) });
       }
       if (input.tag === "string_codepoint") return invalid("invalid_encoding");
       if (input.kind === "improper_object") return invalid("invalid_type");
@@ -901,11 +984,11 @@ function execute(one) {
         if (separator < 1) return invalid("digest_encoding_invalid");
         if (input.tagged.slice(0, separator) !== "sha-256") return invalid("digest_algorithm_unsupported");
         if (!/^[A-Za-z0-9_-]{43}$/.test(input.tagged.slice(separator + 1))) return invalid("digest_encoding_invalid");
-        if (input.tagged !== taggedHash(input.domain || "charter_revision_content", Buffer.from(input.bytes_base64url, "base64url"))) return invalid("digest_mismatch");
+        if (input.tagged !== taggedHash((input.domain as Domain) || "charter_revision_content", Buffer.from(input.bytes_base64url as string, "base64url"))) return invalid("digest_mismatch");
       }
       return valid({ algorithm: "sha-256" });
     case "schema.validate": {
-      const members = input.members;
+      const members = input.members as Record<string, any>;
       if (Object.keys(members).some((key) => key !== "name")) return invalid("unknown_member");
       if (!("name" in members)) return invalid("missing_required");
       if (typeof members.name !== "string") return invalid("invalid_type");
@@ -941,12 +1024,12 @@ function execute(one) {
         return revision.ok ? acceptanceFromCompact(signed.compact, revision.value, chain.value) : revision;
       });
       if (facts.length !== 2 || facts.some((oneFact) => !oneFact.ok)) return invalid("acceptance_equivocation_invalid");
-      const [left, right] = facts.map((oneFact) => oneFact.value.claims);
+      const [left, right] = facts.map((oneFact: any) => oneFact.value.claims);
       const pairable = left.charter_id === right.charter_id && left.revision_number === right.revision_number &&
         left.party_descriptor_digest === right.party_descriptor_digest && left.party_role === right.party_role &&
         left.revision_digest !== right.revision_digest;
       if (!pairable) return invalid("acceptance_equivocation_invalid");
-      return valid({ kind: "acceptance_equivocation", revision_number: facts[0].value.claims.revision_number, revision_digests: facts.map((oneFact) => oneFact.value.claims.revision_digest).sort(), winner: null });
+      return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).value.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.value.claims.revision_digest).sort(), winner: null });
     }
     case "termination.verify": {
       const revision = revisionFromText(input.revision_text);
@@ -962,7 +1045,7 @@ function execute(one) {
       const chain = chainFromInput(input);
       if (!chain.ok) return invalid("governing_invalid");
       return valid({
-        governing_revisions: input.queries.map((query) => {
+        governing_revisions: input.queries.map((query: any) => {
           const at = parseTimestamp(query.at);
           return at ? governing(chain.value, at) : "none";
         }),
@@ -978,13 +1061,13 @@ function execute(one) {
   }
 }
 
-function corpusDigest(index) {
+function corpusDigest(index: Record<string, unknown>): string {
   const without = { ...index };
   delete without.corpus_digest;
-  return taggedHash("corpus_index", Buffer.from(canonical(without)));
+  return taggedHash("corpus_index", Buffer.from(canonical(without as unknown as CanonicalValue)));
 }
 
-export function loadCorpus(root) {
+export function loadCorpus(root: string): LoadedCorpus {
   const observedEntries = walk(root);
   if (observedEntries.length === 0 || observedEntries.length > MAXIMUM_CORPUS_FILES ||
       observedEntries.reduce((total, entry) => total + entry.size, 0) > MAXIMUM_CORPUS_BYTES) {
@@ -993,21 +1076,21 @@ export function loadCorpus(root) {
   const observedSizes = new Map(observedEntries.map((entry) => [entry.path, entry.size]));
   const indexBytes = readFileSync(join(root, "index.json"));
   if (indexBytes.length !== observedSizes.get("index.json")) throw new Error("index changed during read");
-  const index = JSON.parse(indexBytes);
-  if (canonical(index) !== indexBytes.toString()) throw new Error("non-canonical index");
+  const index = JSON.parse(indexBytes.toString("utf8"));
+  if (canonical(index as CanonicalValue) !== indexBytes.toString("utf8")) throw new Error("non-canonical index");
   if (!exactKeys(index, ["applicability", "corpus_digest", "files", "format", "registry_digest", "total_cases"])) throw new Error("index shape");
   if (index.format !== INDEX_FORMAT || index.corpus_digest !== corpusDigest(index)) throw new Error("index identity");
   if (index.registry_digest !== CERTIFIED_REGISTRY_DIGEST) throw new Error("registry identity");
   if (rawHash(indexBytes) !== CERTIFIED_INDEX_SHA256_BASE64URL) throw new Error("uncertified index");
-  const expectedFiles = ["index.json", ...index.files.map((entry) => entry.path)].sort();
-  if (canonical(observedEntries.map((entry) => entry.path).sort()) !== canonical(expectedFiles)) throw new Error("file set");
+  const expectedFiles = ["index.json", ...index.files.map((entry: any) => entry.path)].sort();
+  if (canonical(observedEntries.map((entry: CorpusEntry) => entry.path).sort() as unknown as CanonicalValue) !== canonical(expectedFiles as unknown as CanonicalValue)) throw new Error("file set");
   const cases = [];
   for (const entry of index.files) {
     const bytes = readFileSync(join(root, entry.path));
     if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
-    if (rawHash(bytes) !== entry.sha256_base64url) throw new Error("file hash");
-    const file = JSON.parse(bytes);
-    if (canonical(file) !== bytes.toString() || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
+    if (rawHash(bytes) !== String(entry.sha256_base64url)) throw new Error("file hash");
+    const file = JSON.parse(bytes.toString("utf8"));
+    if (canonical(file as CanonicalValue) !== bytes.toString("utf8") || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
     cases.push(...file.cases);
   }
   if (cases.length !== index.total_cases || cases.length === 0) throw new Error("case count");
@@ -1022,8 +1105,9 @@ export function loadCorpus(root) {
   for (const surface of SURFACES) {
     for (const oneClass of CLASSES) {
       const count = observed.get(`${surface}\0${oneClass}`) || 0;
-      const cell = index.applicability[surface][oneClass];
-      if (REQUIRED[surface].includes(oneClass)) {
+      const applicability: Record<string, any> = index.applicability;
+      const cell = applicability[surface][oneClass];
+      if ((REQUIRED as Record<string, string[]>)[surface].includes(oneClass)) {
         if (cell !== count || count < 1) throw new Error("required cell");
       } else if (!exactKeys(cell, ["n_a"]) || cell.n_a === "" || count !== 0) throw new Error("not-applicable cell");
     }
@@ -1031,11 +1115,11 @@ export function loadCorpus(root) {
   return { index, indexBytes, cases };
 }
 
-export function reportFor(root) {
+export function reportFor(root: string): ReportOutput {
   const corpus = loadCorpus(root);
   const results = corpus.cases.map((one) => {
     const actual = execute(one);
-    return { id: one.id, surface: one.surface, agree: canonical(actual) === canonical(one.expect), expected: one.expect, actual };
+    return { id: one.id, surface: one.surface, agree: canonical(actual as unknown as CanonicalValue) === canonical(one.expect as unknown as CanonicalValue), expected: one.expect, actual };
   });
   const agreed = results.filter((one) => one.agree).length;
   const total = results.length;
@@ -1052,10 +1136,10 @@ export function reportFor(root) {
     index_sha256_base64url: rawHash(corpus.indexBytes),
     results,
   };
-  return { bytes: `${canonical(report)}\n`, exitStatus: report.exit_status };
+  return { bytes: `${canonical(report as unknown as CanonicalValue)}\n`, exitStatus: report.exit_status };
 }
 
-export function selfChecks() {
+export function selfChecks(): void {
   const vectors = [
     [Buffer.from(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
     [Buffer.from("d3", "hex"), "28969cdfa74a12c82f3bad960b0b000aca2ac329deea5c2328ebc6f2ba9802c1"],
@@ -1065,7 +1149,8 @@ export function selfChecks() {
     if (createHash("sha256").update(message).digest("hex") !== expected) throw new Error("SHA-256 KAT failed");
   }
   if (canonical({ b: 1, a: 2 }) !== "{\"a\":2,\"b\":1}") throw new Error("canonical ordering failed");
-  if (strictBase64url("AQ==").code !== "base64url_padded") throw new Error("base64url strictness failed");
+  const strictPadded = strictBase64url("AQ==");
+  if (strictPadded.ok || strictPadded.code !== "base64url_padded") throw new Error("base64url strictness failed");
 
   const acceptedRevision = {
     digest: "known-revision",
@@ -1124,7 +1209,8 @@ export function selfChecks() {
     throw new Error("recognized receipt claim validation drifted");
   }
   const issuerKeys = receiptSigningKeys(projectionChain, acceptedRevision, "issuer");
-  if (issuerKeys.length !== 1 || issuerKeys[0].public_key !== "issuer-key") {
+  const issuerKey = issuerKeys[0] as AnyRecord;
+  if (issuerKeys.length !== 1 || issuerKey.public_key !== "issuer-key") {
     throw new Error("receipt issuer-key selection drifted");
   }
   if (jsonWithinLimits({ nested: [["xx"]] }, Buffer.from('{"nested":[["xx"]]}'), { max_depth: 2 }).ok) {
@@ -1145,8 +1231,9 @@ export function selfChecks() {
 
   // Parity invariants against the reference implementation.
   const floatDecoded = decodeJsonText('{"a":0.0,"b":2e0,"c":5}');
-  const projected = jsonProjection(floatDecoded.value);
-  const member = (name) => projected.members.find(([key]) => key === name)[1].tag;
+  if (!floatDecoded.ok) throw new Error("float decode drifted");
+  const projected = jsonProjection(floatDecoded.value) as Extract<Projection, { tag: "object" }>;
+  const member = (name: any) => projected.members.find(([key]: any) => key === name)?.[1].tag;
   if (!floatDecoded.ok || member("a") !== "float" || member("b") !== "float" || member("c") !== "integer") {
     throw new Error("number tagging drifted");
   }
@@ -1164,7 +1251,9 @@ export function selfChecks() {
   if (!halfMs || !whole || compareTimestamps(halfMs, whole) <= 0) {
     throw new Error("sub-millisecond fraction comparison drifted");
   }
-  if (compareTimestamps(parseTimestamp("2026-01-01T00:00:00.5Z"), parseTimestamp("2026-01-01T00:00:00.500Z")) !== 0) {
+  const halfSecond = parseTimestamp("2026-01-01T00:00:00.5Z");
+  const halfSecondPadded = parseTimestamp("2026-01-01T00:00:00.500Z");
+  if (halfSecond === null || halfSecondPadded === null || compareTimestamps(halfSecond, halfSecondPadded) !== 0) {
     throw new Error("fraction padding drifted");
   }
   if (LIMIT_MAXIMUMS.max_bytes !== 16_777_216 || LIMIT_MAXIMUMS.max_artifact_set_items !== 4_096) {

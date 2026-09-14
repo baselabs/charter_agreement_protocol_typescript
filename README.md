@@ -1,0 +1,88 @@
+# charter-agreement-protocol
+
+Independent TypeScript verifier for the
+[Charter Agreement Protocol](https://hex.pm/packages/charter_agreement_protocol) (CAP).
+
+**CAP verifies. It never authorizes.** This package re-verifies signed,
+byte-exact evidence of what two parties agreed — party descriptor key
+histories (Ed25519 and, from `protocol_revision` 3, ML-DSA per RFC 9964),
+charter revisions, bilateral acceptances, termination notices, and action
+receipts — completely offline, with no network, no clock, and no central
+authority. Every verification result carries a closed floor of what was
+*not* verified: authority, execution, billing, legal validity, term
+satisfaction, and more. Hosts read the evidence and decide.
+
+## Install
+
+```console
+npm install charter-agreement-protocol
+```
+
+Requires Node >= 24.8 (ML-DSA landed in the Node builtins across the
+24.6–24.8 minors). Zero runtime dependencies — Node builtins only.
+
+## Quickstart
+
+Verify the certified conformance corpus shipped inside the package (the
+fastest way to see the verifier work end-to-end):
+
+```js
+import { reportFor } from "charter-agreement-protocol";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+
+const require = createRequire(import.meta.url);
+const corpusRoot = join(dirname(require.resolve("charter-agreement-protocol/package.json")), "conformance");
+const report = reportFor(corpusRoot);
+console.log(report.bytes);   // canonical JSON report
+process.exit(report.exitStatus); // 0 = all certified cases recomputed and agreed
+```
+
+Or from the shell:
+
+```console
+npx charter-agreement-protocol            # the vendored certified corpus
+npx charter-agreement-protocol --corpus DIR   # any corpus directory
+```
+
+Exit `0` means every case recomputed and agreed with the certified
+expectations. The loader refuses a newly self-consistent corpus whose index
+SHA-256 does not equal the certified release pin, so a tampered corpus
+cannot verify green.
+
+## API
+
+| Export | What it does |
+|---|---|
+| `reportFor(root)` | Load + integrity-check + recompute a corpus directory; returns the canonical report bytes and exit status |
+| `loadCorpus(root)` | Integrity-checked corpus load (canonical index, digests, file set, applicability floor, certified index pin) |
+| `selfChecks()` | The self-check battery: SHA-256 known answers, canonical ordering, strict base64url, timestamp and limit invariants |
+| `canonical(value)` | RFC 8785 canonical JSON serialization |
+| `decodeJsonText(text)` | Strict I-JSON decode (duplicates, noncharacters, lone surrogates, number round-tripping rejected) |
+| `jsonProjection(value)` | The tagged projection used by reports |
+| `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
+
+## Evidence
+
+- **Dual-implementation agreement.** This verifier and the Elixir reference
+  implementation are independent codebases with zero shared code. Their
+  canonical reports must be byte-identical over the certified corpus — in
+  this repository and over the unpacked published package — enforced by the
+  reference repository's gates, together with a randomized differential
+  harness and a 25-mutation red-required battery.
+- **The certified corpus** ships in this package (`conformance/`), pinned by
+  a raw index SHA-256 asserted at load.
+- **This package never publishes verdict claims that were not recomputed
+  from raw bytes.**
+
+## SemVer
+
+Package SemVer is decoupled from the protocol's `protocol_revision`: new
+wire revisions land additively (minor releases; old revisions keep
+verifying side by side); a package major is owed only when a shipped public
+API is removed or verdicts change.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). © The Charter
+Agreement Protocol authors.

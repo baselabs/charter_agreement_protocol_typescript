@@ -1,0 +1,48 @@
+{
+  "name": "charter-agreement-protocol",
+  "version": "0.1.0",
+  "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) — byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": "./dist/cli.js"
+  },
+  "bin": {
+    "charter-agreement-protocol": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "conformance",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.8.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
+    "test": "node --test --experimental-strip-types --no-warnings verifier.test.ts",
+    "conformance": "node --experimental-strip-types --no-warnings cli.ts",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baselabs/charter_agreement_protocol_typescript.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
