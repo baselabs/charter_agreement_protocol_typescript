@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "Ty7kChMw3GusTSiJIgkwTCwIs7Ao9rWr8J9ok9oN1FM";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "SQYrs8WyUX4Bj_QlupjB_KYaMyjVjrnwvQ79sNkyIao";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -19,10 +19,13 @@ export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDf
 // key algorithm it verifies with. RFC 9864's fully-specified Ed25519 names
 // exactly the EdDSA-with-Ed25519-key operation, so both rows verify Ed25519.
 const ALG_ROWS = [
-  { name: "EdDSA", minProtocolRevision: 1, keyAlgorithm: "Ed25519" },
-  { name: "Ed25519", minProtocolRevision: 2, keyAlgorithm: "Ed25519" },
+  { name: "EdDSA", minProtocolRevision: 1, keyAlgorithm: "Ed25519", publicKeyBytes: 32, signatureBytes: 64 },
+  { name: "Ed25519", minProtocolRevision: 2, keyAlgorithm: "Ed25519", publicKeyBytes: 32, signatureBytes: 64 },
+  { name: "ML-DSA-44", minProtocolRevision: 3, keyAlgorithm: "ML-DSA-44", publicKeyBytes: 1312, signatureBytes: 2420 },
+  { name: "ML-DSA-65", minProtocolRevision: 3, keyAlgorithm: "ML-DSA-65", publicKeyBytes: 1952, signatureBytes: 3309 },
+  { name: "ML-DSA-87", minProtocolRevision: 3, keyAlgorithm: "ML-DSA-87", publicKeyBytes: 2592, signatureBytes: 4627 },
 ];
-const ACCEPTED_PROTOCOL_REVISIONS = [1, 2];
+const ACCEPTED_PROTOCOL_REVISIONS = [1, 2, 3];
 
 // The per-artifact binding rule: EdDSA at any accepted revision, Ed25519
 // from revision 2, unknown revisions fail closed. Views mix revisions
@@ -352,6 +355,10 @@ function decodeJws(compact) {
   }
   if (canonical(header) !== headerBytes.toString() || canonical(payload) !== payloadBytes.toString()) return fail("non_canonical_bytes");
   if (typeof payload.protocol_revision !== "number" || payload.protocol_revision instanceof Number || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
+  // Per-row signature length: checked only after the header names the
+  // algorithm (64 for the classical rows, 2420/3309/4627 for ML-DSA).
+  const row = ALG_ROWS.find((one) => one.name === header.alg);
+  if (!row || decoded[2].value.length !== row.signatureBytes) return fail("signature_invalid");
   return ok({ header, payload, payloadBytes, signature: decoded[2].value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
 }
 
@@ -404,10 +411,41 @@ function ed25519(rawKey, message, signature) {
   }
 }
 
+const ML_DSA_SPKI_PREFIXES = {
+  "ML-DSA-44": Buffer.from("30820532300b06096086480165030403110382052100", "hex"),
+  "ML-DSA-65": Buffer.from("308207b2300b0609608648016503040312038207a100", "hex"),
+  "ML-DSA-87": Buffer.from("30820a32300b060960864801650304031303820a2100", "hex"),
+};
+
+function mldsa(keyAlgorithm, rawKey, message, signature) {
+  try {
+    const key = Buffer.from(rawKey, "base64url");
+    const prefix = ML_DSA_SPKI_PREFIXES[keyAlgorithm];
+    if (!prefix || !signature || signature.length === 0) return false;
+    const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
+    return verifySignature(null, message, spki, signature);
+  } catch (_error) {
+    return false;
+  }
+}
+
+// Key resolution follows the registry: the kid-resolved active key's
+// algorithm must equal the envelope row's keyAlgorithm, and its decoded
+// byte length must equal the row's exact value.
+function keyMatchesRow(key, row) {
+  if (!key || key.algorithm !== row.keyAlgorithm || key.status !== "active") return false;
+  const bytes = Buffer.from(key.public_key, "base64url");
+  return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
+}
+
 function verifyDecodedJws(decoded, typ, keys) {
-  if (!ALG_ROWS.some((row) => row.name === decoded.header.alg) || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
-  const key = keys.find((one) => one.key_id === decoded.header.kid && one.algorithm === "Ed25519" && one.status === "active");
-  return Boolean(key && ed25519(key.public_key, decoded.signingInput, decoded.signature));
+  const row = ALG_ROWS.find((one) => one.name === decoded.header.alg);
+  if (!row || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
+  const key = keys.find((one) => one.key_id === decoded.header.kid && keyMatchesRow(one, row));
+  if (!key) return false;
+  return row.keyAlgorithm === "Ed25519" ?
+    ed25519(key.public_key, decoded.signingInput, decoded.signature) :
+    mldsa(row.keyAlgorithm, key.public_key, decoded.signingInput, decoded.signature);
 }
 
 const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
@@ -447,8 +485,11 @@ function descriptorFromCompact(compact, predecessor = null) {
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
+  const descriptorRow = ALG_ROWS.find((one) => one.name === decoded.value.header.alg);
+  const grammar = keyGrammarError(payload);
+  if (grammar) return fail(grammar);
   const resolved = Array.isArray(keys) && keys.find((one) =>
-    one.key_id === decoded.value.header.kid && one.algorithm === "Ed25519" && one.status === "active"
+    one.key_id === decoded.value.header.kid && keyMatchesRow(one, descriptorRow)
   );
   if (!resolved) return fail("descriptor_key_invalid");
   if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
@@ -462,6 +503,30 @@ function descriptorFromCompact(compact, predecessor = null) {
     return fail("descriptor_chain_invalid");
   }
   return ok({ ...decoded.value, digest, compact });
+}
+
+// The key-grammar gate mirrors the reference codec's two stages: an unknown
+// key algorithm or a wrong-length encoding fails the nested schema constraint
+// (nested_invalid), while an ML-DSA key inside a revision-1 or revision-2
+// descriptor passes the schema and rejects at the codec's revision gate
+// (descriptor_invalid) — no honest producer could have minted it.
+function keyGrammarError(payload) {
+  if (!Array.isArray(payload.verification_keys) || payload.verification_keys.length === 0) {
+    return "nested_invalid";
+  }
+  for (const one of payload.verification_keys) {
+    const row = ALG_ROWS.find((candidate) => candidate.keyAlgorithm === one.algorithm);
+    if (!row) return "nested_invalid";
+    const bytes = Buffer.from(one.public_key, "base64url");
+    if (bytes.length !== row.publicKeyBytes || bytes.toString("base64url") !== one.public_key) {
+      return "nested_invalid";
+    }
+    if (one.algorithm !== "Ed25519" &&
+        !(Number.isInteger(payload.protocol_revision) && payload.protocol_revision >= 3)) {
+      return "descriptor_invalid";
+    }
+  }
+  return null;
 }
 
 function descriptorChain(compacts) {
