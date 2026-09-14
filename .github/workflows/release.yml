@@ -1,0 +1,65 @@
+# npm releases of charter-agreement-protocol. Publishing is bound to THIS
+# repository's workflow identity (GitHub Actions OIDC, no long-lived token)
+# and runs in TWO STAGES per the npm trusted-publisher configuration: the
+# workflow STAGES the artifact (npm stage publish, provenance attached), and
+# a human approves the staged release on npmjs.com under 2FA — CI can never
+# make a version live alone. The trusted publisher names exactly this
+# repository and this workflow file; a publish attempted anywhere else fails.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Verify then publish to npm (provenance-bound)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node (24 bundles npm >= 11.5 — required for OIDC trusted publishing)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install (frozen lockfile)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit + tamper tests
+        run: npm test
+
+      - name: Self-check battery
+        run: npm run self-checks
+
+      - name: Build
+        run: npm run build
+
+      - name: Vendored certified corpus through the built CLI
+        run: node dist/cli.js --corpus conformance
+
+      # Idempotent releases: a version already on the registry (e.g. seeded
+      # from the repository checkout under the owner's session) verifies
+      # only — the full matrix above still gates the tag.
+      - name: Check registry for existing version
+        id: existing
+        run: |
+          if npm view "charter-agreement-protocol@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Trusted publishing: npm exchanges this workflow's OIDC token for a
+      # one-time publish grant. No NPM_TOKEN secret exists anywhere.
+      - name: Stage publish to npm with provenance (human approval required)
+        if: steps.existing.outputs.published == 'false'
+        run: npm stage publish --provenance
