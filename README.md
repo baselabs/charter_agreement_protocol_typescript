@@ -87,12 +87,23 @@ cannot verify green.
 - **This package never publishes verdict claims that were not recomputed
   from raw bytes.**
 
-## Organization namespace
+## The sibling signer
 
-The `charter-agreement-protocol` npm organization hosts this protocol family's
-TypeScript packages: `@charter-agreement-protocol/verifier` (this package) and
-`@charter-agreement-protocol/signer` (reserved for the holder-side companion
-signer's TypeScript package).
+The `charter-agreement-protocol` npm organization hosts this protocol
+family's two independent TypeScript packages — no Elixir code or dependency
+at runtime; the Elixir reference is the certification oracle (this
+package's vendored corpus is certified against it, and its CI
+cross-verifies TypeScript-signed artifacts from raw bytes):
+
+- **This package** — `@charter-agreement-protocol/verifier`: verification
+  and the pure producer surface (signing inputs, refusal guards, assembly).
+- [`@charter-agreement-protocol/signer`](https://www.npmjs.com/package/@charter-agreement-protocol/signer)
+  — the holder-side companion: key custody, the wrong-key guard, and
+  post-sign verification, delegating all protocol logic here.
+
+The pair releases together: the signer depends on this package, so a
+verifier release stages first and the signer locks and releases against
+the published version immediately after.
 
 ## SemVer
 
