@@ -718,8 +718,8 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
-  if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return fail("acceptance_invalid");
-  if (!parseTimestamp(claims.accepted_at)) return fail("timestamp_invalid");
+  const acceptanceShape = acceptanceClaimsError(claims);
+  if (acceptanceShape) return fail(acceptanceShape);
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
@@ -738,9 +738,8 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
-  const issuedAt = parseTimestamp(claims.issued_at);
-  const effectiveAt = parseTimestamp(claims.effective_at);
-  if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return fail("termination_invalid");
+  const terminationShape = terminationClaimsError(claims);
+  if (terminationShape) return fail(terminationShape);
   return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
@@ -920,14 +919,8 @@ function receiptFromCompact(compact: string, chain: any) {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
-  if (claims.grant?.scheme === "bap" && claims.grant?.grant_digest === undefined) return fail("receipt_invalid");
-  const optional = claims.extensions?.optional || {};
-  for (const namespace of Object.keys(optional)) {
-    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
-    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
-    if (profile.surface !== "receipt") return fail("extension_scope_invalid");
-    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
-  }
+  const receiptShape = receiptGrantError(claims);
+  if (receiptShape) return fail(receiptShape);
   const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
   const verifiedPublicKeys = new Set(
     receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
@@ -935,15 +928,9 @@ function receiptFromCompact(compact: string, chain: any) {
       .map((key: any) => key.public_key)
   );
   if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
-  const occurredAt = parseTimestamp(claims.occurred_at);
-  const recordedAt = parseTimestamp(claims.recorded_at);
-  if (!occurredAt || !recordedAt || compareTimestamps(recordedAt, occurredAt) < 0) return fail("receipt_invalid");
-  // The closed matrix mirrors the reference decoder: rejected requires
-  // no_effect; accepted admits effect_committed, no_effect, or indeterminate.
-  const outcomeAllowed = claims.decision === "rejected" ? claims.outcome === "no_effect" :
-    (claims.outcome === "effect_committed" || claims.outcome === "no_effect" || claims.outcome === "indeterminate");
-  if (!outcomeAllowed) return fail("cross_field_invalid");
-  const governingDigest = governing(chain, occurredAt);
+  const receiptTiming = receiptTimingError(claims);
+  if (receiptTiming) return fail(receiptTiming);
+  const governingDigest = governing(chain, parseTimestamp(claims.occurred_at)!);
   const projection = projectReceipt(claims, chain, governingDigest);
   if (!projection.ok) return projection;
   return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
@@ -1379,6 +1366,74 @@ export function verifyReceipt(compact: string, chainInput: AnyRecord): VerifyRes
       chain_conflict: verified.value.chainConflict,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The producer build gate's claims half (the reference decode_for_signing):
+// the schema checks that depend only on the claims, shared with the verify
+// paths below so the pre-sign gate and the post-sign discipline are ONE
+// implementation. Holder-side signers run checkSigningClaims before any key
+// is used; malformed claims are a typed producer rejection, never a burned
+// key operation.
+// ---------------------------------------------------------------------------
+
+export function checkSigningClaims(
+  kind: "descriptor" | "acceptance" | "termination" | "receipt",
+  claims: AnyRecord,
+): { ok: true } | { ok: false; code: string } {
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) return { ok: false, code: "invalid_type" };
+  const error =
+    kind === "descriptor" ? descriptorClaimsError(claims) :
+    kind === "acceptance" ? acceptanceClaimsError(claims) :
+    kind === "termination" ? terminationClaimsError(claims) :
+    kind === "receipt" ? (receiptGrantError(claims) ?? receiptTimingError(claims)) :
+    "invalid_type";
+  return error ? { ok: false, code: error } : { ok: true };
+}
+
+function acceptanceClaimsError(claims: AnyRecord): string | null {
+  if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return "acceptance_invalid";
+  if (!parseTimestamp(claims.accepted_at)) return "timestamp_invalid";
+  return null;
+}
+
+function terminationClaimsError(claims: AnyRecord): string | null {
+  const issuedAt = parseTimestamp(claims.issued_at);
+  const effectiveAt = parseTimestamp(claims.effective_at);
+  if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return "termination_invalid";
+  return null;
+}
+
+function receiptGrantError(claims: AnyRecord): string | null {
+  if (claims.grant?.scheme === "bap" && claims.grant?.grant_digest === undefined) return "receipt_invalid";
+  const optional = claims.extensions?.optional || {};
+  for (const namespace of Object.keys(optional)) {
+    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
+    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
+    if (profile.surface !== "receipt") return "extension_scope_invalid";
+    if (profile.schema_digest === null) return "extension_schema_unavailable";
+  }
+  return null;
+}
+
+function receiptTimingError(claims: AnyRecord): string | null {
+  const occurredAt = parseTimestamp(claims.occurred_at);
+  const recordedAt = parseTimestamp(claims.recorded_at);
+  if (!occurredAt || !recordedAt || compareTimestamps(recordedAt, occurredAt) < 0) return "receipt_invalid";
+  // The closed matrix mirrors the reference decoder: rejected requires
+  // no_effect; accepted admits effect_committed, no_effect, or indeterminate.
+  const outcomeAllowed = claims.decision === "rejected" ? claims.outcome === "no_effect" :
+    (claims.outcome === "effect_committed" || claims.outcome === "no_effect" || claims.outcome === "indeterminate");
+  if (!outcomeAllowed) return "cross_field_invalid";
+  return null;
+}
+
+function descriptorClaimsError(payload: AnyRecord): string | null {
+  const grammar = keyGrammarError(payload);
+  if (grammar) return grammar;
+  if (!parseTimestamp(payload.effective_from)) return "timestamp_invalid";
+  if (payload.descriptor_number === 1 && payload.prev_descriptor_digest !== undefined) return "descriptor_invalid";
+  return null;
 }
 
 // ---------------------------------------------------------------------------

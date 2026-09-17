@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acceptanceRefusal,
+  checkSigningClaims,
   decodeArtifact,
   terminationRefusal,
   verifyAcceptance,
@@ -232,4 +233,84 @@ test("the refusal surface fails closed on a non-object view", () => {
     assert.ok(termination.ok === false);
     assert.equal(termination.code, "signing_input_invalid");
   }
+});
+
+// ---------------------------------------------------------------------------
+// The producer build gate's claims half (the reference decode_for_signing):
+// the schema checks that depend only on the claims, shared with the verify
+// paths. Holder-side signers run this before any key is used so malformed
+// claims never burn a key operation.
+// ---------------------------------------------------------------------------
+
+const receiptFixture = {
+  protocol_revision: 2,
+  charter_id: "sha-256:" + "A".repeat(43),
+  revision_number: 2,
+  revision_digest: "sha-256:" + "B".repeat(43),
+  issuing_party_role: "issuer",
+  agent_party_role: "agent",
+  deployment_digest: "sha-256:" + "C".repeat(43),
+  grant: { scheme: "bap", id: "g-1", grant_digest: "sha-256:" + "D".repeat(43) },
+  invocation_id: "inv-1",
+  decision: "accepted",
+  outcome: "effect_committed",
+  occurred_at: "2026-08-25T12:00:01Z",
+  recorded_at: "2026-08-25T12:00:02Z",
+  extensions: { critical: {}, optional: {} },
+};
+
+const gateCode = (result: { ok: true } | { ok: false; code: string }): string => {
+  if (result.ok) throw new Error("expected a rejected claims gate");
+  return result.code;
+};
+
+test("checkSigningClaims: each kind green on well-formed claims", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const acceptance = acceptanceClaims(view, 0);
+  assert.ok(checkSigningClaims("acceptance", acceptance).ok);
+  assert.ok(checkSigningClaims("receipt", receiptFixture).ok);
+  assert.ok(checkSigningClaims("termination", {
+    protocol_revision: 2,
+    charter_id: acceptance.charter_id,
+    governing_revision_digest: acceptance.revision_digest,
+    party_descriptor_digest: acceptance.party_descriptor_digest,
+    party_role: acceptance.party_role,
+    reason_code: "mutual",
+    issued_at: "2026-08-25T14:00:00Z",
+    effective_at: "2026-08-25T15:00:00Z",
+    extensions: { critical: {}, optional: {} },
+  }).ok);
+});
+
+test("checkSigningClaims: descriptor schema reds keep the codec codes", () => {
+  const genesis = JSON.parse(Buffer.from(
+    corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input.compact.split(".")[1], "base64url",
+  ).toString("utf8"));
+  assert.ok(checkSigningClaims("descriptor", genesis).ok);
+  assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, prev_descriptor_digest: "sha-256:x" })), "descriptor_invalid");
+  assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, effective_from: "not-a-timestamp" })), "timestamp_invalid");
+  assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, verification_keys: [] })), "nested_invalid");
+});
+
+test("checkSigningClaims: acceptance and termination schema reds keep the codec codes", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const acceptance = acceptanceClaims(view, 0);
+  // n>1 without a predecessor digest
+  assert.equal(gateCode(checkSigningClaims("acceptance", { ...acceptance, revision_number: 2 })), "acceptance_invalid");
+  assert.equal(gateCode(checkSigningClaims("acceptance", { ...acceptance, accepted_at: "yesterday" })), "timestamp_invalid");
+  assert.equal(gateCode(checkSigningClaims("termination", {
+    protocol_revision: 2, charter_id: acceptance.charter_id,
+    governing_revision_digest: acceptance.revision_digest,
+    party_descriptor_digest: acceptance.party_descriptor_digest, party_role: "issuer",
+    reason_code: "mutual", issued_at: "2026-08-25T16:00:00Z",
+    effective_at: "2026-08-25T15:00:00Z", extensions: { critical: {}, optional: {} },
+  })), "termination_invalid");
+});
+
+test("checkSigningClaims: receipt schema reds keep the codec codes", () => {
+  assert.equal(gateCode(checkSigningClaims("receipt", { ...receiptFixture, grant: { scheme: "bap", id: "g-1" } })), "receipt_invalid");
+  assert.equal(gateCode(checkSigningClaims("receipt", { ...receiptFixture, recorded_at: "2026-08-25T12:00:00Z", occurred_at: "2026-08-25T12:00:01Z" })), "receipt_invalid");
+  assert.equal(gateCode(checkSigningClaims("receipt", { ...receiptFixture, decision: "rejected", outcome: "effect_committed" })), "cross_field_invalid");
+  assert.equal(gateCode(checkSigningClaims("receipt", "not-an-object" as never)), "invalid_type");
+  assert.equal(gateCode(checkSigningClaims("unknown-kind" as never, receiptFixture)), "invalid_type");
 });

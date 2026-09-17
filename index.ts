@@ -42,6 +42,7 @@ export {
   verifyChain,
   verifyReceipt,
   acceptanceRefusal,
+  checkSigningClaims,
   terminationRefusal,
   type AlgRow,
   type VerifyResult,
