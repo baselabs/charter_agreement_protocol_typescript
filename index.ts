@@ -1,9 +1,13 @@
 // CAP never authorizes.
 //
-// The public surface of the independent TypeScript verifier: report over a
-// certified conformance corpus, canonical JSON, the strict I-JSON decoder,
-// and the self-check battery. Every verdict traces to corpus agreement with
-// the Elixir reference implementation, recomputed from raw bytes.
+// The public surface of the independent TypeScript verifier: the corpus
+// report machinery (canonical JSON, the strict I-JSON decoder, the
+// self-check battery), artifact-level verification (descriptor, chain,
+// acceptance, termination, receipt, full chain views), the governing/
+// decode/ digest queries, the honest-signer refusal checks, and the pure
+// producer surface (signing inputs per kind, assembly). Every verdict
+// traces to corpus agreement with the Elixir reference implementation,
+// recomputed from raw bytes.
 
 export {
   canonical,

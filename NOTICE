@@ -1,4 +1,10 @@
-charter_agreement_protocol
+Charter Agreement Protocol Verifier (TypeScript)
 Copyright 2026 BaseLabs
 
-This product includes software developed by BaseLabs.
+This product includes software developed by BaseLabs
+(https://github.com/baselabs).
+
+The certified conformance corpus vendored in this package is certified
+against the Elixir reference implementation, charter_agreement_protocol
+(https://github.com/baselabs/charter_agreement_protocol); no Elixir code
+is included or required at runtime.
