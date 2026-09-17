@@ -598,6 +598,11 @@ function keyGrammarError(payload: AnyRecord): string | null {
     return "nested_invalid";
   }
   for (const one of payload.verification_keys) {
+    // Malformed entries carry the typed code, never a dereference throw -
+    // the pre-sign claims gate and the verify path share this walk.
+    if (!one || typeof one !== "object" || typeof one.algorithm !== "string" || typeof one.public_key !== "string") {
+      return "nested_invalid";
+    }
     const row = ALG_ROWS.find((candidate) => candidate.keyAlgorithm === one.algorithm);
     if (!row) return "nested_invalid";
     const bytes = Buffer.from(one.public_key, "base64url");

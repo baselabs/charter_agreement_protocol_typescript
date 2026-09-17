@@ -344,3 +344,11 @@ test("the refusal boundary never throws on partial object views", () => {
   assert.ok(termination.ok === false);
   assert.equal(termination.code, "chain_invalid");
 });
+
+test("checkSigningClaims never throws on malformed verification key entries", () => {
+  const genesis = JSON.parse(Buffer.from(
+    corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input.compact.split(".")[1], "base64url",
+  ).toString("utf8"));
+  assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, verification_keys: [null] })), "nested_invalid");
+  assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, verification_keys: [{ algorithm: "Ed25519", public_key: 123 }] })), "nested_invalid");
+});
