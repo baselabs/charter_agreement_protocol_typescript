@@ -750,7 +750,7 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
 // coordinates, dual acceptance against the revision's actual party pairs (any
 // two roles — never hardcoded names), verified termination notices, and the
 // reference topology/governing semantics with ancestry coverage.
-function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
+function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
   if (!descriptors.ok) return fail("chain_invalid");
@@ -835,7 +835,7 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
   };
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
-  return ok({ descriptors: descriptors.value, revisions, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
+  return ok({ descriptors: descriptors.value, revisions, acceptances, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
 }
 
 // Governing mirrors the reference semantics exactly: candidates are accepted,
@@ -1379,4 +1379,119 @@ export function verifyReceipt(compact: string, chainInput: AnyRecord): VerifyRes
       chain_conflict: verified.value.chainConflict,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The honest-signer refusal boundary (R1-R3 from the reference producers).
+// Pure set-aware gates over the caller's OWN verified view: the view must
+// first pass the full chain discipline (a view that fails is invalid input,
+// never a refusal), then the claims are bound against that verified chain.
+// Holder-side signers run these BEFORE any key is used; a refusal means the
+// claims contradict the caller's own evidence. The rule that fired is
+// deliberately not surfaced — one opaque signing_refused code, mirroring the
+// reference. These functions never verify signatures themselves and never
+// authorize anything.
+// ---------------------------------------------------------------------------
+
+export type RefusalResult = { ok: true } | { ok: false; code: string };
+
+function refused(): RefusalResult {
+  return { ok: false, code: "signing_refused" };
+}
+
+// The producer build gate these checks assume already ran upstream in the
+// reference: fields the refusal rules consume must be well-typed, or the
+// caller gets the typed producer code instead of a refusal.
+function refusalClaimsShape(claims: AnyRecord, stringFields: string[], integerFields: string[]): boolean {
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) return false;
+  return stringFields.every((field) => typeof claims[field] === "string") &&
+    integerFields.every((field) => typeof claims[field] === "number" && Number.isInteger(claims[field]));
+}
+
+function refusalChain(chainInput: AnyRecord) {
+  const chain = chainFromInput(chainInput);
+  return chain.ok ? chain.value : null;
+}
+
+function refusalPartyMatches(revision: { value: AnyRecord }, claims: AnyRecord): boolean {
+  return (revision.value.parties as AnyRecord[]).some(
+    (party) => party.role === claims.party_role && party.party_descriptor_digest === claims.party_descriptor_digest,
+  );
+}
+
+// Walk up the candidate's prev links through the whole verified revision
+// index; the verified chain guarantees strictly decreasing numbers, so the
+// walk terminates. Identity is ancestry (re-accepting a head covers itself).
+function refusalAncestorOf(candidate: string, target: string, byDigest: Map<string, any>): boolean {
+  if (candidate === target) return true;
+  const previous = byDigest.get(candidate)?.value.prev_revision_digest;
+  return typeof previous === "string" ? refusalAncestorOf(previous, target, byDigest) : false;
+}
+
+export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
+  if (!refusalClaimsShape(claims, ["revision_digest", "charter_id", "party_role", "party_descriptor_digest"], ["revision_number"])) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
+  const chain = refusalChain(chainInput);
+  if (!chain) return { ok: false, code: "chain_invalid" };
+
+  // R1 claims-truth: the named revision exists and every coordinate binds.
+  const revision = chain.revisions.find((one: any) => one.digest === claims.revision_digest);
+  if (!revision) return refused();
+  const charterId = revision.value.charter_id || revision.digest;
+  if (claims.charter_id !== charterId ||
+      claims.revision_number !== revision.value.revision_number ||
+      (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined) ||
+      !refusalPartyMatches(revision, claims)) {
+    return refused();
+  }
+
+  // R2 no-equivocation: no existing acceptance holds this charter/number
+  // coordinate for a different revision.
+  const equivocation = chain.acceptances.some((one: any) =>
+    one.claims.charter_id === claims.charter_id &&
+    one.claims.revision_number === claims.revision_number &&
+    one.claims.revision_digest !== claims.revision_digest,
+  );
+  if (equivocation) return refused();
+
+  // R3 ancestry coverage: every maximum accepted head is superseded by the
+  // candidate or an ancestor of it (an empty accepted set covers trivially).
+  const maximum = Math.max(...chain.accepted.map((one: any) => one.value.revision_number));
+  const heads = chain.accepted.filter((one: any) => one.value.revision_number === maximum).map((one: any) => one.digest);
+  const byDigest = new Map(chain.revisions.map((one: any) => [one.digest, one]));
+  const covered = heads.every((head: string) =>
+    ((revision.value.supersedes as string[]) || []).includes(head) || refusalAncestorOf(revision.digest, head, byDigest),
+  );
+  if (!covered) return refused();
+
+  return { ok: true };
+}
+
+export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
+  if (!refusalClaimsShape(claims, ["governing_revision_digest", "charter_id", "party_role", "party_descriptor_digest", "reason_code"], [])) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
+  const effectiveAt = parseTimestamp(claims.effective_at);
+  if (!effectiveAt) return { ok: false, code: "signing_input_invalid" };
+  const chain = refusalChain(chainInput);
+  if (!chain) return { ok: false, code: "chain_invalid" };
+
+  // R1 claims-truth: the named revision exists, the reason is listed in its
+  // termination rules, and the signing party is one of its parties.
+  const revision = chain.revisions.find((one: any) => one.digest === claims.governing_revision_digest);
+  if (!revision) return refused();
+  const charterId = revision.value.charter_id || revision.digest;
+  if (claims.charter_id !== charterId ||
+      !(revision.value.termination_rules.reason_codes as string[]).includes(claims.reason_code) ||
+      !refusalPartyMatches(revision, claims)) {
+    return refused();
+  }
+
+  // R3 governing coverage: the named revision must be THE unique governing
+  // revision at the notice's own effective instant — a stale or contested
+  // view refuses.
+  if (governing(chain, effectiveAt) !== revision.digest) return refused();
+
+  return { ok: true };
 }

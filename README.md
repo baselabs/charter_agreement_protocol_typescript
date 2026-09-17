@@ -61,6 +61,11 @@ cannot verify green.
 | `decodeJsonText(text)` | Strict I-JSON decode (duplicates, noncharacters, lone surrogates, number round-tripping rejected) |
 | `jsonProjection(value)` | The tagged projection used by reports |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
+| `verifyDescriptor(compact, predecessor?)` / `verifyDescriptorChain(compacts)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
+| `verifyAcceptance(compact, revisionText, descriptorCompacts)` / `verifyTermination(compact, revisionText, descriptorCompacts)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
+| `verifyChain(chainInput)` / `verifyReceipt(compact, chainInput)` | Full chain-view verification (facts include the accepted/superseded topology); receipt verification against the verified chain |
+| `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg)` | Framing-level decode (the holder-side provisional check) and the strict wrong-key guard primitive |
+| `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused` / `chain_invalid` / `signing_input_invalid`. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
 
 ## Evidence
 

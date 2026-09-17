@@ -41,6 +41,9 @@ export {
   verifyTermination,
   verifyChain,
   verifyReceipt,
+  acceptanceRefusal,
+  terminationRefusal,
   type AlgRow,
   type VerifyResult,
+  type RefusalResult,
 } from "./core.ts";
