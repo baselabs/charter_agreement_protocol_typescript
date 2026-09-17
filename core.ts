@@ -1408,9 +1408,13 @@ function refusalClaimsShape(claims: AnyRecord, stringFields: string[], integerFi
     integerFields.every((field) => typeof claims[field] === "number" && Number.isInteger(claims[field]));
 }
 
-function refusalChain(chainInput: AnyRecord) {
+// A non-object view mirrors the reference producer's non-ArtifactSet arm
+// (the typed producer code); an object that fails the chain discipline is
+// the caller's invalid set. Neither may throw out of the refusal boundary.
+function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: "signing_input_invalid" } | { invalidSet: "chain_invalid" } {
+  if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) return { invalidSet: "signing_input_invalid" };
   const chain = chainFromInput(chainInput);
-  return chain.ok ? chain.value : null;
+  return chain.ok ? { chain: chain.value } : { invalidSet: "chain_invalid" };
 }
 
 function refusalPartyMatches(revision: { value: AnyRecord }, claims: AnyRecord): boolean {
@@ -1432,8 +1436,9 @@ export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): Ref
   if (!refusalClaimsShape(claims, ["revision_digest", "charter_id", "party_role", "party_descriptor_digest"], ["revision_number"])) {
     return { ok: false, code: "signing_input_invalid" };
   }
-  const chain = refusalChain(chainInput);
-  if (!chain) return { ok: false, code: "chain_invalid" };
+  const resolved = refusalChain(chainInput);
+  if ("invalidSet" in resolved) return { ok: false, code: resolved.invalidSet };
+  const chain = resolved.chain;
 
   // R1 claims-truth: the named revision exists and every coordinate binds.
   const revision = chain.revisions.find((one: any) => one.digest === claims.revision_digest);
@@ -1459,7 +1464,7 @@ export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): Ref
   // candidate or an ancestor of it (an empty accepted set covers trivially).
   const maximum = Math.max(...chain.accepted.map((one: any) => one.value.revision_number));
   const heads = chain.accepted.filter((one: any) => one.value.revision_number === maximum).map((one: any) => one.digest);
-  const byDigest = new Map(chain.revisions.map((one: any) => [one.digest, one]));
+  const byDigest = new Map<string, any>(chain.revisions.map((one: any) => [one.digest, one] as [string, any]));
   const covered = heads.every((head: string) =>
     ((revision.value.supersedes as string[]) || []).includes(head) || refusalAncestorOf(revision.digest, head, byDigest),
   );
@@ -1474,8 +1479,9 @@ export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): Re
   }
   const effectiveAt = parseTimestamp(claims.effective_at);
   if (!effectiveAt) return { ok: false, code: "signing_input_invalid" };
-  const chain = refusalChain(chainInput);
-  if (!chain) return { ok: false, code: "chain_invalid" };
+  const resolved = refusalChain(chainInput);
+  if ("invalidSet" in resolved) return { ok: false, code: resolved.invalidSet };
+  const chain = resolved.chain;
 
   // R1 claims-truth: the named revision exists, the reason is listed in its
   // termination rules, and the signing party is one of its parties.

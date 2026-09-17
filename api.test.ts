@@ -220,3 +220,16 @@ test("acceptanceRefusal: the first acceptance into an empty view is clean", () =
   const refusal = acceptanceRefusal(acceptanceClaims(view, 0), empty);
   assert.ok(refusal.ok);
 });
+
+test("the refusal surface fails closed on a non-object view", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const claims = acceptanceClaims(view, 0);
+  for (const bad of [undefined, null, "not-an-object", 42]) {
+    const acceptance = acceptanceRefusal(claims, bad as any);
+    assert.ok(acceptance.ok === false);
+    assert.equal(acceptance.code, "signing_input_invalid");
+    const termination = terminationRefusal({ ...claims, reason_code: "mutual", effective_at: "2026-08-25T12:00:00Z" }, bad as any);
+    assert.ok(termination.ok === false);
+    assert.equal(termination.code, "signing_input_invalid");
+  }
+});
