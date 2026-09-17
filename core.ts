@@ -680,6 +680,7 @@ function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buff
   if (typeof text !== "string") return fail("revision_invalid");
   let value;
   try { value = JSON.parse(text); } catch (_error) { return fail("invalid_syntax"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("revision_invalid");
   const unknown = Object.keys(value).find((key) => !REVISION_FIELDS.includes(key));
   if (unknown) return fail("unknown_member");
   const missing = REVISION_REQUIRED.find((key) => !(key in value));
@@ -782,7 +783,7 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
   }
   const acceptances: any[] = [];
   const coordinates = new Set();
-  for (const compact of (input.acceptances as string[])) {
+  for (const compact of ((input.acceptances as string[]) || [])) {
     const decoded = decodeJws(compact);
     if (!decoded.ok) return fail("chain_invalid");
     const revision = byDigest.get(decoded.value.payload.revision_digest);

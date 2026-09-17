@@ -229,7 +229,14 @@ test("the refusal surface fails closed on a non-object view", () => {
     const acceptance = acceptanceRefusal(claims, bad as any);
     assert.ok(acceptance.ok === false);
     assert.equal(acceptance.code, "signing_input_invalid");
-    const termination = terminationRefusal({ ...claims, reason_code: "mutual", effective_at: "2026-08-25T12:00:00Z" }, bad as any);
+    const termination = terminationRefusal({
+      charter_id: claims.charter_id,
+      governing_revision_digest: claims.revision_digest,
+      party_descriptor_digest: claims.party_descriptor_digest,
+      party_role: claims.party_role,
+      reason_code: "mutual",
+      effective_at: "2026-08-25T12:00:00Z",
+    }, bad as any);
     assert.ok(termination.ok === false);
     assert.equal(termination.code, "signing_input_invalid");
   }
@@ -313,4 +320,27 @@ test("checkSigningClaims: receipt schema reds keep the codec codes", () => {
   assert.equal(gateCode(checkSigningClaims("receipt", { ...receiptFixture, decision: "rejected", outcome: "effect_committed" })), "cross_field_invalid");
   assert.equal(gateCode(checkSigningClaims("receipt", "not-an-object" as never)), "invalid_type");
   assert.equal(gateCode(checkSigningClaims("unknown-kind" as never, receiptFixture)), "invalid_type");
+});
+
+test("the refusal boundary never throws on partial object views", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const claims = acceptanceClaims(view, 0);
+  // No acceptances member at all: behaves as the empty acceptance view.
+  const partial = { revisions: view.input.revisions, descriptors: view.input.descriptors };
+  assert.ok(acceptanceRefusal(claims, partial).ok);
+  // A revision text that is valid JSON but not an object: typed failure.
+  const notObject = { ...partial, revisions: ["null"] };
+  const acceptance = acceptanceRefusal(claims, notObject);
+  assert.ok(acceptance.ok === false);
+  assert.equal(acceptance.code, "chain_invalid");
+  const termination = terminationRefusal({
+    charter_id: claims.charter_id,
+    governing_revision_digest: claims.revision_digest,
+    party_descriptor_digest: claims.party_descriptor_digest,
+    party_role: claims.party_role,
+    reason_code: "mutual",
+    effective_at: "2026-08-25T12:00:00Z",
+  }, notObject);
+  assert.ok(termination.ok === false);
+  assert.equal(termination.code, "chain_invalid");
 });
