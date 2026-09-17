@@ -1452,10 +1452,14 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
 // The unique governing revision in a verified view at one UTC instant -
 // a digest, or "contested"/"none" (never silently resolved).
 export function governingRevision(chainInput: AnyRecord, at: string): { ok: true; governing: string } | { ok: false; code: string } {
-  if (typeof at !== "string" || !parseTimestamp(at)) return { ok: false, code: "invalid_type" };
+  const instant = typeof at === "string" ? parseTimestamp(at) : null;
+  if (!instant) return { ok: false, code: "invalid_type" };
+  if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
   const chain = chainFromInput(chainInput);
   if (!chain.ok) return { ok: false, code: "chain_invalid" };
-  return { ok: true, governing: governing(chain.value, parseTimestamp(at)!) };
+  return { ok: true, governing: governing(chain.value, instant) };
 }
 
 // Decode one canonical unsigned Charter Revision: the parsed claims plus
@@ -1477,6 +1481,7 @@ export function revisionDigest(text: unknown): { ok: true; digest: string } | { 
 export function decodePartyDescriptor(compact: unknown): { ok: true; claims: AnyRecord; digest: string } | { ok: false; code: string } {
   const decoded = decodeJws(compact as string);
   if (!decoded.ok) return { ok: false, code: decoded.code };
+  if (decoded.value.header.typ !== "cap+party") return { ok: false, code: "descriptor_invalid" };
   const claimsError = descriptorClaimsError(decoded.value.payload);
   if (claimsError) return { ok: false, code: claimsError };
   return { ok: true, claims: decoded.value.payload, digest: taggedHash("party_descriptor_content", decoded.value.payloadBytes) };
@@ -1508,11 +1513,26 @@ const PRODUCER_TYPES: Record<"descriptor" | "acceptance" | "termination" | "rece
   receipt: "cap+receipt",
 };
 
-const MAX_SIGNING_INPUT_BYTES = 1_048_576;
 
-// The shared build path: claims shape -> emission binding -> kid -> framing
-// -> size gate -> claims schema -> provisional decode (the reference
-// producer's exact ordering, so error precedence matches too).
+
+// The reference producer's tagged/1: claims must be pure JSON values -
+// undefined, functions, symbols, bigints, and non-finite numbers get the
+// typed producer code, never a canonicalization throw.
+function jsonValueError(value: unknown): boolean {
+  if (value === null) return false;
+  const type = typeof value;
+  if (type === "string" || type === "boolean") return false;
+  if (type === "number") return !Number.isFinite(value);
+  if (type !== "object") return true;
+  if (Array.isArray(value)) return value.some(jsonValueError);
+  if (Buffer.isBuffer(value)) return true;
+  return Object.values(value as AnyRecord).some(jsonValueError);
+}
+
+// The shared build path: algorithm -> claims shape/JSON values -> emission
+// binding -> kid -> framing -> size gate -> claims schema -> provisional
+// decode (the reference producer's exact ordering, so error precedence
+// matches too).
 function buildSigningInput(
   kind: keyof typeof PRODUCER_TYPES,
   kid: unknown,
@@ -1527,6 +1547,7 @@ function buildSigningInput(
     return { ok: false, code: "invalid_type" };
   }
   const record = claims as AnyRecord;
+  if (jsonValueError(record)) return { ok: false, code: "signing_input_invalid" };
   const revision = record.protocol_revision;
   if (typeof revision !== "number" || !Number.isInteger(revision) || revision !== emissions()[algorithm as string]) {
     return { ok: false, code: "signing_input_invalid" };
@@ -1543,7 +1564,7 @@ function buildSigningInput(
   );
   const message = Buffer.from(`${protectedSegment}.${payloadSegment}`, "utf8");
   const signatureSegmentLength = Math.ceil((row.signatureBytes * 4) / 3);
-  if (message.length + 1 + signatureSegmentLength > MAX_SIGNING_INPUT_BYTES) {
+  if (message.length + 1 + signatureSegmentLength > JSON_DEFAULT_LIMITS.max_bytes) {
     return { ok: false, code: "signing_input_invalid" };
   }
 
@@ -1594,11 +1615,18 @@ export function terminationSigningInput(kid: string, claims: AnyRecord, chainInp
 // reference assemble): registry-row length, framing re-decode, size gate.
 export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
   if (!input || typeof input !== "object" || !Buffer.isBuffer(signature)) return { ok: false, code: "invalid_type" };
+  // The input is a struct the producer minted: the message must BE the
+  // protected/payload framing (a caller-modified copy is invalid, never
+  // silently assembled).
+  if (typeof input.protectedSegment !== "string" || typeof input.payloadSegment !== "string" ||
+      !Buffer.isBuffer(input.message) || input.message.toString("utf8") !== `${input.protectedSegment}.${input.payloadSegment}`) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
   const row = ALG_ROWS.find((one) => one.name === input.alg);
   if (!row) return { ok: false, code: "algorithm_unsupported" };
   if (signature.length !== row.signatureBytes) return { ok: false, code: "signature_invalid" };
   const compact = `${input.message.toString("utf8")}.${encodeBase64url(signature)}`;
-  if (Buffer.byteLength(compact) > MAX_SIGNING_INPUT_BYTES) return { ok: false, code: "signing_input_invalid" };
+  if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return { ok: false, code: "signing_input_invalid" };
   const decoded = decodeArtifact(compact);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
   return { ok: true, compact };

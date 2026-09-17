@@ -10,14 +10,26 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acceptanceRefusal,
+  acceptanceSigningInput,
+  assembleCompact,
+  canonical,
   checkSigningClaims,
   decodeArtifact,
+  decodePartyDescriptor,
+  descriptorSigningInput,
+  encodeBase64url,
+  governingRevision,
+  receiptSigningInput,
+  revisionDigest,
   terminationRefusal,
+  terminationSigningInput,
   verifyAcceptance,
   verifyChain,
   verifyDescriptor,
   verifyReceipt,
   verifySignature,
+  verifyTermination,
+  type SigningInput,
 } from "./core.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -360,18 +372,6 @@ test("checkSigningClaims never throws on malformed verification key entries", ()
 // paths.
 // ---------------------------------------------------------------------------
 
-import {
-  assembleCompact,
-  canonical,
-  decodePartyDescriptor,
-  descriptorSigningInput,
-  encodeBase64url,
-  governingRevision,
-  receiptSigningInput,
-  revisionDigest,
-  type SigningInput,
-} from "./core.ts";
-
 const KID = "producer-key-001";
 
 function expectedSegments(typ: string, alg: string, kid: string, claims: Record<string, any>) {
@@ -493,4 +493,94 @@ test("revision and descriptor digests cross-check through independent paths", ()
   assert.deepEqual(decoded.claims.verification_keys, JSON.parse(
     Buffer.from(descriptor.input.compact.split(".")[1], "base64url").toString("utf8"),
   ).verification_keys);
+});
+
+test("the set-aware producers: build first, then R1-R3 at the reference ordering", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const chainFacts = verifyChain(view.input);
+  assert.ok(chainFacts.ok);
+  const revision = (chainFacts.facts.revisions as { digest: string; value: AnyRecordAtLeast }[])[0];
+  const acceptance = acceptanceClaims(view, 0);
+  // A claims set bound to the view's genesis at the emission revision.
+  const bound = {
+    protocol_revision: 2,
+    accepted_at: acceptance.accepted_at,
+    charter_id: revision.digest,
+    party_descriptor_digest: acceptance.party_descriptor_digest,
+    party_role: acceptance.party_role,
+    revision_digest: revision.digest,
+    revision_number: revision.value.revision_number,
+  };
+  const produced = acceptanceSigningInput("producer-key-001", bound, view.input);
+  assert.ok(produced.ok, JSON.stringify(produced));
+  assert.ok(produced.input.message.toString("utf8").startsWith(produced.input.protectedSegment));
+
+  // R1 red: an unbound digest refuses AFTER a successful build.
+  const refused = acceptanceSigningInput("producer-key-001", { ...bound, revision_digest: "sha-256:" + "0".repeat(43) }, view.input);
+  assert.ok(refused.ok === false && refused.code === "signing_refused");
+
+  // Build-before-set ordering: claims schema defect + broken view reports
+  // the PRODUCER code, not the chain code.
+  const both = acceptanceSigningInput("producer-key-001", { ...bound, revision_number: 2 }, { ...view.input, acceptances: ["not-a-jws"] });
+  assert.ok(both.ok === false && both.code === "acceptance_invalid");
+
+  // Malformed view alone: the typed chain code.
+  const badView = acceptanceSigningInput("producer-key-001", bound, { ...view.input, acceptances: ["not-a-jws"] });
+  assert.ok(badView.ok === false && badView.code === "chain_invalid");
+
+  const termination = terminationSigningInput("producer-key-001", {
+    protocol_revision: 2,
+    charter_id: revision.digest,
+    governing_revision_digest: revision.digest,
+    party_descriptor_digest: acceptance.party_descriptor_digest,
+    party_role: acceptance.party_role,
+    reason_code: "mutual",
+    issued_at: "2026-08-25T14:00:00Z",
+    effective_at: "2026-08-25T15:00:00Z",
+  }, view.input);
+  assert.ok(termination.ok, JSON.stringify(termination));
+  const stale = terminationSigningInput("producer-key-001", {
+    protocol_revision: 2,
+    charter_id: revision.digest,
+    governing_revision_digest: "sha-256:" + "0".repeat(43),
+    party_descriptor_digest: acceptance.party_descriptor_digest,
+    party_role: acceptance.party_role,
+    reason_code: "mutual",
+    issued_at: "2026-08-25T14:00:00Z",
+    effective_at: "2026-08-25T15:00:00Z",
+  }, view.input);
+  assert.ok(stale.ok === false && stale.code === "signing_refused");
+});
+
+type AnyRecordAtLeast = Record<string, any>;
+
+test("the new surface never throws: a malformed-input sweep", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const acceptance = acceptanceClaims(view, 0);
+  const battery: [string, () => { ok: true } | { ok: false; code: string }][] = [
+    ["descriptor claims NaN", () => descriptorSigningInput("k", { ...acceptance, revision_number: NaN })],
+    ["descriptor claims undefined member", () => descriptorSigningInput("k", { ...acceptance, extra: undefined })],
+    ["descriptor claims Infinity", () => descriptorSigningInput("k", { ...acceptance, accepted_at: Infinity })],
+    ["governing null view", () => governingRevision(null as never, "2026-08-25T12:00:00Z")],
+    ["governing undefined view", () => governingRevision(undefined as never, "2026-08-25T12:00:00Z")],
+    ["governing bad instant", () => governingRevision(view.input, 42 as never)],
+    ["assemble no message", () => assembleCompact({ alg: "Ed25519", protectedSegment: "a", payloadSegment: "b", message: undefined as never }, Buffer.alloc(64))],
+    ["assemble tampered segments", () => assembleCompact({ alg: "Ed25519", protectedSegment: "tampered", payloadSegment: "b", message: descriptorSigningInput("k", acceptance).ok ? (descriptorSigningInput("k", acceptance) as { input: { message: Buffer } }).input.message : Buffer.alloc(0) }, Buffer.alloc(64))],
+    ["decode descriptor wrong typ", () => decodePartyDescriptor(view.input.acceptances[0])],
+    ["decode descriptor null", () => decodePartyDescriptor(null)],
+    ["revision digest null", () => revisionDigest(null)],
+    ["set-aware null view", () => acceptanceSigningInput("k", acceptance, null as never)],
+  ];
+  for (const [name, probe] of battery) {
+    const result = probe();
+    assert.ok(result.ok === false, name + " should reject");
+    assert.ok(typeof result.code === "string", name + " carries the typed code");
+  }
+});
+
+test("decodePartyDescriptor binds the protected header typ", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const wrongKind = decodePartyDescriptor(view.input.acceptances[0]);
+  assert.ok(wrongKind.ok === false);
+  assert.equal(wrongKind.code, "descriptor_invalid");
 });
