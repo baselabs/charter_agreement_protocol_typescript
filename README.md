@@ -66,6 +66,12 @@ cannot verify green.
 | `verifyChain(chainInput)` / `verifyReceipt(compact, chainInput)` | Full chain-view verification (facts include the accepted/superseded topology and the verified acceptances); receipt verification against the verified chain |
 | `checkSigningClaims(kind, claims)` | The producer build gate's claims half (the reference `decode_for_signing`): the claims-only schema checks per kind — `descriptor \| acceptance \| termination \| receipt` — shared with the verify paths; holder-side signers run it before any key is used |
 | `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg)` | Framing-level decode (the holder-side provisional check) and the strict wrong-key guard primitive |
+| `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
+| `acceptanceSigningInput(kid, claims, chainInput, alg?)` / `terminationSigningInput(kid, claims, chainInput, alg?)` | The set-aware producers: build first, then the R1–R3 refusal checks at the reference ordering |
+| `assembleCompact(signingInput, signature)` | Assemble a validated signing input and its exact raw signature (registry-row length, framing re-decode, size gate) |
+| `governingRevision(chainInput, at)` | The unique governing revision at one UTC instant — a digest, or `contested`/`none`, over the certified chain semantics |
+| `decodeCharterRevision(text)` / `revisionDigest(text)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
+| `decodePartyDescriptor(compact)` / `descriptorDigest(compact)` | Decode one Party Descriptor's claims and digest without verifying its signature |
 | `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused` / `chain_invalid` / `signing_input_invalid`. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
 
 ## Evidence

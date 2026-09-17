@@ -1443,6 +1443,168 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// The query/decode surface: the reference's governing-revision computation
+// and the revision/descriptor decode+digest pairs, over the same certified
+// internals the verify paths use. Every export fails closed with typed
+// codes; none of them verifies signatures.
+// ---------------------------------------------------------------------------
+
+// The unique governing revision in a verified view at one UTC instant -
+// a digest, or "contested"/"none" (never silently resolved).
+export function governingRevision(chainInput: AnyRecord, at: string): { ok: true; governing: string } | { ok: false; code: string } {
+  if (typeof at !== "string" || !parseTimestamp(at)) return { ok: false, code: "invalid_type" };
+  const chain = chainFromInput(chainInput);
+  if (!chain.ok) return { ok: false, code: "chain_invalid" };
+  return { ok: true, governing: governing(chain.value, parseTimestamp(at)!) };
+}
+
+// Decode one canonical unsigned Charter Revision: the parsed claims plus
+// its content digest, computed over the exact text bytes.
+export function decodeCharterRevision(text: unknown): { ok: true; revision: AnyRecord; digest: string } | { ok: false; code: string } {
+  const revision = revisionFromText(text);
+  if (!revision.ok) return { ok: false, code: revision.code };
+  return { ok: true, revision: revision.value.value, digest: revision.value.digest };
+}
+
+export function revisionDigest(text: unknown): { ok: true; digest: string } | { ok: false; code: string } {
+  const revision = decodeCharterRevision(text);
+  if (!revision.ok) return revision;
+  return { ok: true, digest: revision.digest };
+}
+
+// Decode one Party Descriptor's claims without verifying its signature -
+// the framing, the descriptor schema, and the content digest.
+export function decodePartyDescriptor(compact: unknown): { ok: true; claims: AnyRecord; digest: string } | { ok: false; code: string } {
+  const decoded = decodeJws(compact as string);
+  if (!decoded.ok) return { ok: false, code: decoded.code };
+  const claimsError = descriptorClaimsError(decoded.value.payload);
+  if (claimsError) return { ok: false, code: claimsError };
+  return { ok: true, claims: decoded.value.payload, digest: taggedHash("party_descriptor_content", decoded.value.payloadBytes) };
+}
+
+export function descriptorDigest(compact: unknown): { ok: true; digest: string } | { ok: false; code: string } {
+  const decoded = decodePartyDescriptor(compact);
+  if (!decoded.ok) return decoded;
+  return { ok: true, digest: decoded.digest };
+}
+
+// ---------------------------------------------------------------------------
+// The producer surface (the reference SigningInput): build the exact RFC
+// 7515 signing input per kind WITHOUT signing, compose the claims gate and
+// the set-aware refusal checks at the reference ordering, and assemble a
+// validated signature. Holder-side signers consume these instead of
+// hand-rolling framing - exactly one producer implementation. The mint set
+// is the emission map (Ed25519 at revision 2, ML-DSA-65 at revision 3);
+// nothing here ever sees a key.
+// ---------------------------------------------------------------------------
+
+export type SigningInput = { alg: string; protectedSegment: string; payloadSegment: string; message: Buffer };
+export type ProducerResult = { ok: true; input: SigningInput } | { ok: false; code: string };
+
+const PRODUCER_TYPES: Record<"descriptor" | "acceptance" | "termination" | "receipt", string> = {
+  descriptor: "cap+party",
+  acceptance: "cap+acceptance",
+  termination: "cap+termination",
+  receipt: "cap+receipt",
+};
+
+const MAX_SIGNING_INPUT_BYTES = 1_048_576;
+
+// The shared build path: claims shape -> emission binding -> kid -> framing
+// -> size gate -> claims schema -> provisional decode (the reference
+// producer's exact ordering, so error precedence matches too).
+function buildSigningInput(
+  kind: keyof typeof PRODUCER_TYPES,
+  kid: unknown,
+  claims: unknown,
+  algorithm: unknown,
+): ProducerResult {
+  if (typeof algorithm === "undefined" || algorithm === null) algorithm = defaultEmissionName();
+  if (typeof algorithm !== "string" || !(algorithm in emissions())) {
+    return { ok: false, code: "algorithm_unsupported" };
+  }
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) {
+    return { ok: false, code: "invalid_type" };
+  }
+  const record = claims as AnyRecord;
+  const revision = record.protocol_revision;
+  if (typeof revision !== "number" || !Number.isInteger(revision) || revision !== emissions()[algorithm as string]) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
+  if (typeof kid !== "string" || kid.length === 0 || kid.length > 128 || !/^[A-Za-z0-9._~-]+$/.test(kid)) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
+  const row = ALG_ROWS.find((one) => one.name === algorithm);
+  if (!row) return { ok: false, code: "algorithm_unsupported" };
+
+  const payloadSegment = encodeBase64url(Buffer.from(canonical(record as never), "utf8"));
+  const protectedSegment = encodeBase64url(
+    Buffer.from(canonical({ alg: algorithm, kid, typ: PRODUCER_TYPES[kind] } as never), "utf8"),
+  );
+  const message = Buffer.from(`${protectedSegment}.${payloadSegment}`, "utf8");
+  const signatureSegmentLength = Math.ceil((row.signatureBytes * 4) / 3);
+  if (message.length + 1 + signatureSegmentLength > MAX_SIGNING_INPUT_BYTES) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
+
+  // The reference build's decode step: the claims schema gate runs inside
+  // the producer, after framing and size - the same precedence as
+  // decode_for_signing inside the Elixir build pipeline.
+  const claimsGate = checkSigningClaims(kind, record);
+  if (!claimsGate.ok) return { ok: false, code: claimsGate.code };
+
+  // The provisional check: a zero signature at the row's exact length must
+  // frame and bind.
+  const zeroSignature = Buffer.alloc(row.signatureBytes);
+  const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
+  const decoded = decodeArtifact(provisional);
+  if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
+
+  return { ok: true, input: { alg: algorithm as string, protectedSegment, payloadSegment, message } };
+}
+
+export function descriptorSigningInput(kid: string, claims: AnyRecord, algorithm?: string): ProducerResult {
+  return buildSigningInput("descriptor", kid, claims, algorithm);
+}
+
+export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: string): ProducerResult {
+  return buildSigningInput("receipt", kid, claims, algorithm);
+}
+
+// The reference producer ordering: build (shape, emission binding, framing,
+// claims schema) FIRST, then the set-aware R1-R3 refusal checks - so a
+// claims defect reports the producer code even when the view is also bad.
+export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  const built = buildSigningInput("acceptance", kid, claims, algorithm);
+  if (!built.ok) return built;
+  const refusal = acceptanceRefusal(claims, chainInput);
+  if (!refusal.ok) return { ok: false, code: refusal.code };
+  return built;
+}
+
+export function terminationSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  const built = buildSigningInput("termination", kid, claims, algorithm);
+  if (!built.ok) return built;
+  const refusal = terminationRefusal(claims, chainInput);
+  if (!refusal.ok) return { ok: false, code: refusal.code };
+  return built;
+}
+
+// Assemble a validated signing input and its exact raw signature (the
+// reference assemble): registry-row length, framing re-decode, size gate.
+export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
+  if (!input || typeof input !== "object" || !Buffer.isBuffer(signature)) return { ok: false, code: "invalid_type" };
+  const row = ALG_ROWS.find((one) => one.name === input.alg);
+  if (!row) return { ok: false, code: "algorithm_unsupported" };
+  if (signature.length !== row.signatureBytes) return { ok: false, code: "signature_invalid" };
+  const compact = `${input.message.toString("utf8")}.${encodeBase64url(signature)}`;
+  if (Buffer.byteLength(compact) > MAX_SIGNING_INPUT_BYTES) return { ok: false, code: "signing_input_invalid" };
+  const decoded = decodeArtifact(compact);
+  if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
+  return { ok: true, compact };
+}
+
+// ---------------------------------------------------------------------------
 // The honest-signer refusal boundary (R1-R3 from the reference producers).
 // Pure set-aware gates over the caller's OWN verified view: the view must
 // first pass the full chain discipline (a view that fails is invalid input,

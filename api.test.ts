@@ -352,3 +352,145 @@ test("checkSigningClaims never throws on malformed verification key entries", ()
   assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, verification_keys: [null] })), "nested_invalid");
   assert.equal(gateCode(checkSigningClaims("descriptor", { ...genesis, verification_keys: [{ algorithm: "Ed25519", public_key: 123 }] })), "nested_invalid");
 });
+
+// ---------------------------------------------------------------------------
+// The producer surface: byte-exact signing inputs from the public canonical
+// primitives, the reference build ordering, assemble, and the query/decode
+// exports cross-checked against the certified corpus through independent
+// paths.
+// ---------------------------------------------------------------------------
+
+import {
+  assembleCompact,
+  canonical,
+  decodePartyDescriptor,
+  descriptorSigningInput,
+  encodeBase64url,
+  governingRevision,
+  receiptSigningInput,
+  revisionDigest,
+  type SigningInput,
+} from "./core.ts";
+
+const KID = "producer-key-001";
+
+function expectedSegments(typ: string, alg: string, kid: string, claims: Record<string, any>) {
+  const payloadSegment = encodeBase64url(Buffer.from(canonical(claims as never), "utf8"));
+  const protectedSegment = encodeBase64url(
+    Buffer.from(canonical({ alg, kid, typ } as never), "utf8"),
+  );
+  return { payloadSegment, protectedSegment };
+}
+
+test("producers mint byte-exact segments for both emission pairs", () => {
+  const descriptorClaims = {
+    protocol_revision: 2,
+    descriptor_number: 1,
+    verification_keys: [{ key_id: KID, algorithm: "Ed25519", public_key: Buffer.alloc(32, 3).toString("base64url"), status: "active" }],
+    attestation_hints: [],
+    extensions: { critical: {}, optional: {} },
+    effective_from: "2026-08-25T10:00:00Z",
+  };
+  const receiptClaims = {
+    protocol_revision: 3,
+    charter_id: "sha-256:" + "A".repeat(43),
+    revision_number: 1,
+    revision_digest: "sha-256:" + "B".repeat(43),
+    issuing_party_role: "issuer",
+    agent_party_role: "acceptor",
+    deployment_digest: "sha-256:" + "C".repeat(43),
+    grant: { scheme: "bap", id: "g", grant_digest: "sha-256:" + "D".repeat(43) },
+    invocation_id: "inv",
+    decision: "accepted",
+    outcome: "effect_committed",
+    occurred_at: "2026-08-25T12:00:01Z",
+    recorded_at: "2026-08-25T12:00:02Z",
+    extensions: { critical: {}, optional: {} },
+  };
+
+  const descriptor = descriptorSigningInput(KID, descriptorClaims);
+  assert.ok(descriptor.ok);
+  const expectedDescriptor = expectedSegments("cap+party", "Ed25519", KID, descriptorClaims);
+  assert.equal(descriptor.input.protectedSegment, expectedDescriptor.protectedSegment);
+  assert.equal(descriptor.input.payloadSegment, expectedDescriptor.payloadSegment);
+  assert.equal(descriptor.input.message.toString("utf8"), `${expectedDescriptor.protectedSegment}.${expectedDescriptor.payloadSegment}`);
+
+  const receipt = receiptSigningInput(KID, receiptClaims, "ML-DSA-65");
+  assert.ok(receipt.ok);
+  assert.equal(receipt.input.alg, "ML-DSA-65");
+  const expectedReceipt = expectedSegments("cap+receipt", "ML-DSA-65", KID, receiptClaims);
+  assert.equal(receipt.input.protectedSegment, expectedReceipt.protectedSegment);
+  assert.equal(receipt.input.payloadSegment, expectedReceipt.payloadSegment);
+});
+
+test("producers reject bad input at the reference precedence", () => {
+  const claims = { protocol_revision: 2 };
+  const producerCode = (result: { ok: true; input: SigningInput } | { ok: false; code: string }): string => {
+    if (result.ok) throw new Error("expected a producer rejection");
+    return result.code;
+  };
+  assert.equal(producerCode(descriptorSigningInput(KID, "not-an-object" as never)), "invalid_type");
+  assert.equal(producerCode(descriptorSigningInput(KID, { protocol_revision: 3 })), "signing_input_invalid");
+  assert.equal(producerCode(descriptorSigningInput(KID, claims, "EdDSA")), "algorithm_unsupported");
+  assert.equal(producerCode(descriptorSigningInput("bad kid!", claims)), "signing_input_invalid");
+});
+
+test("assembleCompact enforces the registry row and re-decodes the framing", () => {
+  const claims = {
+    protocol_revision: 2,
+    descriptor_number: 1,
+    verification_keys: [{ key_id: KID, algorithm: "Ed25519", public_key: Buffer.alloc(32, 3).toString("base64url"), status: "active" }],
+    attestation_hints: [],
+    extensions: { critical: {}, optional: {} },
+    effective_from: "2026-08-25T10:00:00Z",
+  };
+  const producer = descriptorSigningInput(KID, claims);
+  assert.ok(producer.ok);
+  const input = (producer as { input: SigningInput }).input;
+  const short = assembleCompact(input, Buffer.alloc(63));
+  assert.ok(short.ok === false && short.code === "signature_invalid");
+  const assembled = assembleCompact(input, Buffer.alloc(64, 7));
+  assert.ok(assembled.ok);
+  const decoded = decodeArtifact(assembled.compact);
+  assert.ok(decoded.ok);
+  assert.equal(decoded.facts.typ, "cap+party");
+});
+
+test("governingRevision matches the certified precedence surface", () => {
+  const view = corpusCase("governing_revision.json", "governing-revision-start-inclusive-precedence");
+  for (const query of view.input.queries) {
+    const result = governingRevision(view.input, query.at);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(result.governing, query.governing_revision);
+  }
+  const badAt = governingRevision(view.input, "not-a-timestamp");
+  assert.ok(badAt.ok === false);
+  const badView = governingRevision({}, "2026-08-25T12:00:00Z");
+  assert.ok(badView.ok === false);
+  if (!badAt.ok && !badView.ok) {
+    assert.equal(badAt.code, "invalid_type");
+    assert.equal(badView.code, "chain_invalid");
+  }
+});
+
+test("revision and descriptor digests cross-check through independent paths", () => {
+  const chain = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
+  const chainFacts = verifyChain(chain.input);
+  assert.ok(chainFacts.ok);
+  const revisions = chainFacts.facts.revisions as { digest: string; bytes: Buffer }[];
+  for (const one of revisions) {
+    const digest = revisionDigest(one.bytes.toString("utf8"));
+    assert.ok(digest.ok);
+    assert.equal(digest.digest, one.digest);
+  }
+
+  const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid");
+  const verified = verifyDescriptor(descriptor.input.compact);
+  assert.ok(verified.ok);
+  const decoded = decodePartyDescriptor(descriptor.input.compact);
+  assert.ok(decoded.ok);
+  assert.equal(decoded.digest, verified.facts.descriptor_digest);
+  assert.deepEqual(decoded.claims.verification_keys, JSON.parse(
+    Buffer.from(descriptor.input.compact.split(".")[1], "base64url").toString("utf8"),
+  ).verification_keys);
+});
