@@ -4,6 +4,7 @@
 // (dev-dependency for demo issuance only — this package itself has zero
 // runtime dependencies).
 import { keygen, sign as nobleSign } from "@noble/ed25519";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { signAcceptance, signDescriptor, signReceipt, type ChainView } from "@charter-agreement-protocol/signer";
 import {
   algorithmRegistry,
@@ -44,7 +45,11 @@ let issuer: Party, acceptor: Party;
 let genesisText = "", genesisDigest = "";
 let acceptanceIssuer = "", acceptanceAcceptor = "", receipt = "";
 let lastTamper: string | null = null;
-const dg = (c: string) => "sha-256:" + c.repeat(43);
+// Deterministic fixture digests: hash the seed so every demo digest READS like
+// a digest (43 base64url chars of real SHA-256 output) instead of a repeated
+// letter — the shape the protocol's digest fields validate either way.
+const dg = (seed: string): string =>
+  "sha-256:" + Buffer.from(sha256(new TextEncoder().encode("demo:" + seed))).toString("base64url");
 
 function revisionText(overrides: Record<string, unknown>): string {
   return JSON.stringify({
@@ -78,6 +83,33 @@ const handle = (p: Party) => ({ keyIdentity: () => ({ kid: p.kid, publicKey: p.k
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const bMint = $<HTMLButtonElement>("btn-mint"), bVerify = $<HTMLButtonElement>("btn-verify");
 const tamperBtns = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tamper]"));
+
+
+// ---------- fact panels (designed key/value view; raw JSON behind a toggle) ----------
+const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function factRows(obj: unknown): string {
+  if (obj === null || typeof obj !== "object" || obj instanceof Uint8Array) {
+    const s = obj instanceof Uint8Array ? Array.from(obj.slice(0, 8)).join(",") + "…" : String(obj);
+    return `<span class="fv">${esc(s)}</span>`;
+  }
+  const entries: [string, unknown][] = Array.isArray(obj)
+    ? obj.map((v, i) => [`#${i + 1}`, v])
+    : Object.entries(obj as Record<string, unknown>);
+  return entries.map(([k, v]) => {
+    if (v !== null && typeof v === "object" && !(v instanceof Uint8Array)) {
+      return `<div class="factrow nest"><span class="fk">${esc(k)}</span><div class="subfacts">${factRows(v)}</div></div>`;
+    }
+    const s = String(v);
+    const shown = s.length > 64 ? s.slice(0, 64) + "…" : s;
+    return `<div class="factrow"><span class="fk">${esc(k)}</span><span class="fv" title="${esc(s)}">${esc(shown)}</span></div>`;
+  }).join("");
+}
+
+function factPanel(label: string, facts: unknown, raw: unknown): string {
+  return `<div class="factlabel">${esc(label)}</div><div class="facts">${factRows(facts)}</div>` +
+    `<details class="raw"><summary>raw JSON</summary><pre>${esc(JSON.stringify(raw, (_k, v) => v instanceof Map ? Object.fromEntries(v) : v instanceof Uint8Array ? Array.from(v) : v, 2))}</pre></details>`;
+}
 
 function setVerdict(state: "idle" | "ok" | "fail", html: string): void {
   const v = $("verdict");
@@ -143,13 +175,13 @@ async function doMint(): Promise<void> {
 }
 
 function renderDecode(): void {
-  const rows: string[] = [];
+  const panels: string[] = [];
   for (const [label, compact] of [["party descriptor (A)", issuer.descriptor], ["acceptance (A)", acceptanceIssuer], ["receipt", receipt]] as const) {
     if (!compact) continue;
     const d = decodeArtifact(compact);
-    rows.push(`// ${label} — decodeArtifact\n` + (d.ok ? JSON.stringify(d, replacer, 2) : JSON.stringify(d)));
+    panels.push(factPanel(`${label} — decodeArtifact`, (d as { ok: boolean; facts?: unknown }).ok ? (d as { facts: unknown }).facts : d, d));
   }
-  $("decode-body").textContent = rows.join("\n\n");
+  $("decode-body").innerHTML = panels.join("\n");
 }
 
 function factsSummary(facts: Record<string, unknown>): string {
@@ -160,12 +192,12 @@ function verifySet(w: ChainView): void {
   const at = verifyChain(w);
   if (at.ok) {
     setVerdict("ok", "CHAIN VERIFIED — structural facts from raw bytes");
-    $("facts-body").textContent = factsSummary(at.facts as Record<string, unknown>) + "\n\n" + JSON.stringify(at.facts, replacer, 2);
+    $("facts-body").innerHTML = factPanel("chain facts", at.facts, at.facts);
     $("tamper-hint").className = "hint";
     $("tamper-hint").textContent = "Now rewrite the past — the buttons below produce real refusals.";
   } else {
     setVerdict("fail", `VERIFICATION FAILED — <b>${(at as { code?: string }).code ?? "invalid"}</b>`);
-    $("facts-body").textContent = JSON.stringify(at, replacer, 2);
+    $("facts-body").innerHTML = factPanel("result", at, at);
     $("tamper-hint").className = "hint fail";
     const why: Record<string, string> = {
       revision: "the legal text changed after acceptance — digest bindings no longer match",
@@ -199,7 +231,7 @@ async function tamper(kind: string): Promise<void> {
 
 function renderRegistry(): void {
   const rows = algorithmRegistry();
-  $("registry-body").textContent = JSON.stringify(rows, null, 2);
+  $("registry-body").innerHTML = factPanel("algorithm registry (live from the package)", rows, rows);
   $("corpus-digest").textContent = `certified index ${CERTIFIED_INDEX_SHA256_BASE64URL.slice(0, 22)}… · registry ${CERTIFIED_REGISTRY_DIGEST}`;
 }
 

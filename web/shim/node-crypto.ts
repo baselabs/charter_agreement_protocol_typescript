@@ -4,6 +4,7 @@
 // synchronous pipeline, so the shim must be too). Nothing here implements
 // cryptography of its own; it only adapts shapes.
 import { verify, hashes } from "@noble/ed25519";
+import { Buffer } from "buffer";
 import { sha256, sha512 } from "@noble/hashes/sha2.js";
 
 // noble/ed25519 3.x ships its SHA-512 as an injectable (tree-shakeable)
@@ -67,10 +68,12 @@ export function createHash(algo: string): { update(d: Uint8Array): unknown; dige
       return this;
     },
     digest(enc?: string) {
-      const out = sha256(acc);
-      if (enc === "hex") {
-        return Array.from(out, (b: number) => b.toString(16).padStart(2, "0")).join("");
-      }
+      // Return a POLYFILL BUFFER, not the bare noble Uint8Array: package code
+      // calls bytes.toString("base64url") on digests, and native
+      // Uint8Array.toString() ignores the encoding and prints a byte list —
+      // the comma-decimal digest bug. Buffer carries the base64url patch.
+      const out = Buffer.from(sha256(acc));
+      if (enc === "hex") return out.toString("hex");
       return out;
     },
   };
