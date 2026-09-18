@@ -115,6 +115,17 @@
   </div>
 </section>
 
+<section id="lifecycle" class="wrap">
+  <div class="why-head"><h2>The family lifecycle</h2><p>Three protocols, one chain of evidence: what the agent is, what was agreed, what this call may do.</p></div>
+  <div class="lifecycle">
+<a class="lstep" href="https://baselabs.github.io/agent_blueprint_protocol/"><span class="lmark"><i>[</i>ABP<i>]</i></span><div><b>Define the agent</b><small>Blueprint Core + Deployment Manifest — identity, bounds that only narrow, evidence commitments, pinned to one release digest</small></div></a>
+    <div class="larrow">→</div>
+<span class="lstep now"><span class="lmark"><i>[</i>CAP<i>]</i></span><div><b>Agree the terms</b><small>Charter revisions bind ABP release digests (abp_bindings); every receipt records the action’s deployment digest — signed by both parties</small></div></span>
+    <div class="larrow">→</div>
+<a class="lstep" href="https://baselabs.github.io/bounded_authority_protocol/"><span class="lmark"><i>[</i>BAP<i>]</i></span><div><b>Authorize each request</b><small>Issuer-signed grants + holder proofs govern every call, per request — the authority layer over OAuth</small></div></a>
+  </div>
+</section>
+
 <section class="props-band">
   <div class="wrap grid4">
     <article><svg class="ic big"><use href="#i-lock"/></svg><h3>Verify-only</h3>

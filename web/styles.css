@@ -293,3 +293,16 @@ pre.codebox { background: var(--hero); color: #a5f3fc; border-radius: 10px; padd
 .decode-row { margin-top: 26px; border: 1.5px solid var(--line-2); border-radius: 14px; padding: 16px 18px; background: var(--bg-soft); }
 .decode-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; margin-top: 6px; }
 @media (max-width: 860px) { .decode-grid { grid-template-columns: 1fr; } }
+
+/* the family lifecycle band: define → agree → authorize */
+.lifecycle { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 10px; align-items: stretch; }
+.lstep { display: flex; gap: 12px; align-items: flex-start; border: 1.5px solid var(--line-2); border-radius: 14px; padding: 16px; background: var(--bg); text-decoration: none; color: var(--ink); }
+.lstep:hover { box-shadow: 0 4px 14px rgba(15, 23, 42, .08); }
+.lmark { font-weight: 800; letter-spacing: .02em; white-space: nowrap; font-size: 1rem; padding-top: 1px; }
+.lmark i { font-style: normal; font-weight: 500; color: var(--muted); }
+.lstep b { display: block; font-size: .95rem; margin-bottom: 3px; }
+.lstep small { color: var(--muted); font-size: .8rem; line-height: 1.45; display: block; }
+.lstep.now { border-color: var(--accent, #2dd4bf); background: var(--bg-soft); position: relative; }
+.lstep.now::after { content: "this protocol"; position: absolute; top: -9px; right: 10px; background: var(--accent, #2dd4bf); color: #0f172a; font-size: .62rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; border-radius: 999px; padding: 1px 8px; }
+.larrow { display: grid; place-items: center; color: var(--muted); font-size: 1.3rem; font-weight: 300; }
+@media (max-width: 900px) { .lifecycle { grid-template-columns: 1fr; } .larrow { transform: rotate(90deg); padding: 2px 0; } }
