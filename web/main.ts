@@ -144,6 +144,11 @@ function accordion(title: string, chip: string | undefined, facts: unknown, open
 // Raw-JSON code box for the FACTS area (owner-directed: no formatted view) —
 // defensively hex any string that still carries control/lossy characters.
 function sanitize(v: unknown): unknown {
+  // Byte arrays render as their base64url wire form — JSON.stringify on a
+  // Uint8Array explodes into {"0":123,"1":34,…} index objects otherwise.
+  if (v instanceof Uint8Array) {
+    return Buffer.from(v).toString("base64url");
+  }
   if (typeof v === "string" && /[\u0000-\u0008\u000e-\u001f\u007f-\u00ff\ufffd]/.test(v)) {
     return "0x" + Array.from(v, (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
   }
