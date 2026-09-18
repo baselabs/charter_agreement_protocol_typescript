@@ -277,3 +277,11 @@ details.raw pre { background: var(--hero); color: #a5f3fc; border-radius: 8px; p
 pre.codebox { background: var(--hero); color: #a5f3fc; border-radius: 10px; padding: 12px 14px; overflow: auto; max-height: 320px; font-size: .74rem; line-height: 1.55; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .set-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* panel headers: badge icon + title + subtitle line (replaces the run-on h3+small) */
+.panel-head { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+.panel-badge { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; background: var(--bg); border: 1.5px solid var(--line-2); border-radius: 9px; color: var(--holder); }
+.panel-badge .ic { width: 17px; height: 17px; stroke-width: 2.1; }
+.panel-titles { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.panel-title { font-size: 1rem; font-weight: 700; color: var(--ink); letter-spacing: -.01em; }
+.panel-sub { font-size: .8rem; color: var(--muted); font-weight: 400; }
