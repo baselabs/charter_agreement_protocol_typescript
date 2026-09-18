@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAP verifier — judge a charter, in your browser</title>
+<meta name="description" content="The verify side of the Charter Agreement Protocol: byte-exact artifact verification, structural chain facts, and a closed twelve-item not_verified floor that no API can shrink. Runs the real verifier package in your browser.">
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%230f172a'/%3E%3Ctext x='24' y='32' font-family='Arial,sans-serif' font-size='19' font-weight='800' text-anchor='middle' fill='%23a78bfa'%3E[CAP]%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-key"><path d="M10.6 13.4L21 3"/><path d="M18 4l2 2"/><path d="M15 7l2 2"/><circle cx="7.2" cy="16.8" r="3.8"/></g>
+    <g id="i-seal"><path d="M6 21h12"/><path d="M8 21v-2c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/><path d="M12 3a3.2 3.2 0 0 1 3.2 3.2c0 2.2-3.2 3.3-3.2 5.8 0-2.5-3.2-3.6-3.2-5.8A3.2 3.2 0 0 1 12 3z"/></g>
+    <g id="i-shield"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M8.8 12l2.2 2.2 4.2-4.2"/></g>
+    <g id="i-doc"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5"/><path d="M10 16h5"/></g>
+    <g id="i-lock"><rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/></g>
+    <g id="i-check"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.3l2.4 2.4 4.6-4.9"/></g>
+    <g id="i-x"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6"/><path d="M15 9l-6 6"/></g>
+    <g id="i-terminal"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7.5 10l2.6 2-2.6 2"/><path d="M12.5 14h4"/></g>
+    <g id="i-wire"><path d="M4 12c2.5-4.5 5.5-4.5 8 0s5.5 4.5 8 0"/></g>
+  </defs>
+</svg>
+
+<header class="familynav">
+  <nav>
+    <span class="brand"><span class="wordmark"><i>[</i>CAP<i>]</i></span></span>
+    <span class="fam">
+      <a href="https://baselabs.github.io/charter_agreement_protocol/" title="The protocol hub">Protocol</a>
+      <a href="#" class="here" title="You are here">Verifier</a>
+      <a href="https://baselabs.github.io/charter_agreement_signer_typescript/" title="The signer package — the charter workshop">Signer</a>
+      <a href="https://github.com/baselabs/charter_agreement_protocol" title="The Elixir reference implementation">Elixir&nbsp;reference</a>
+    </span>
+    <a class="gh" href="https://github.com/baselabs/charter_agreement_protocol_typescript">GitHub&nbsp;↗</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="kicker"><span class="wordmark hero-mark"><i>[</i>CAP<i>]</i></span> Charter Agreement Protocol · the verifier package</p>
+    <h1>Judge the deal from the bytes —<br><em>CAP verifies. It never authorizes.</em></h1>
+    <p class="lede">Two systems claim different versions of the same agreement. This package reads the
+    signed artifacts — descriptors, revisions, acceptances, terminations, receipts — and returns
+    <strong>byte-exact structural facts</strong>: which revision governed, who accepted which bytes,
+    whether a key history forks. And the protocol’s facts records carry a <strong>closed twelve-item
+    not_verified floor</strong> — authority, billing, legal validity — that no API can shrink.
+    You read the evidence. You decide.</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="#bench"><svg class="ic"><use href="#i-terminal"/></svg> Open the bench</a>
+      <a class="btn ghost" href="#install">npm i @charter-agreement-protocol/verifier</a>
+    </div>
+    <p class="custody-note"><svg class="ic"><use href="#i-lock"/></svg> The verifier never sees a private key — only bytes.
+    The charter set below is minted in your browser by the signer package. <span id="custody-mode" class="pill"></span></p>
+    <ul class="badges">
+      <li>npm 0.4.1</li><li>zero runtime dependencies</li><li>builtins-only · corpus-certified</li>
+    </ul>
+  </div>
+</section>
+
+<main>
+<section id="bench" class="wrap">
+  <div class="sec-head">
+    <h2>The bench</h2>
+    <p>Everything is live: this page bundles the real verifier package. Step 1 mints a complete
+    charter set in your browser — descriptors, a canonical revision, dual acceptance, a receipt —
+    then judge it, decode it, and try to rewrite its past.</p>
+    <button id="reset" class="btn subtle"><svg class="ic"><use href="#i-key"/></svg> New keys · reset</button>
+  </div>
+
+  <div class="lanes">
+    <article class="lane issuer" id="lane-mint">
+      <header><svg class="ic"><use href="#i-seal"/></svg> A charter set arrives <span class="role-badge">demo issuance</span></header>
+      <dl class="props">
+        <div><dt>the set</dt><dd>2 descriptors · 1 revision · 2 acceptances · 1 receipt</dd></div>
+        <div><dt>claims</dt><dd>revision 1 governs; both parties accepted its exact bytes</dd></div>
+      </dl>
+      <button id="btn-mint" class="btn actorbtn issuer"><svg class="ic"><use href="#i-seal"/></svg> Mint the charter set</button>
+      <div class="card-slot" id="slot-set" data-empty="the signed set is minted here — then decoded below"></div>
+    </article>
+
+    <article class="lane verifier" id="lane-verify">
+      <header><svg class="ic"><use href="#i-shield"/></svg> You judge it <span class="role-badge">verifyChain</span></header>
+      <dl class="props">
+        <div><dt>input</dt><dd>raw bytes only — no trust, no phone-home</dd></div>
+        <div><dt>output</dt><dd>structural facts + the omission floor</dd></div>
+      </dl>
+      <button id="btn-verify" class="btn actorbtn verifier" disabled><svg class="ic"><use href="#i-shield"/></svg> verifyChain</button>
+      <div class="verdict" id="verdict" data-state="idle">
+        <span class="verdict-mark"><svg class="ic"><use href="#i-terminal"/></svg></span>
+        <span class="verdict-text">verify the set to see the facts</span>
+      </div>
+      <details id="facts" open><summary>facts + the not_verified floor</summary><pre id="facts-body">—</pre></details>
+    </article>
+  </div>
+
+  <div class="decode-row">
+    <h3><svg class="ic"><use href="#i-doc"/></svg> Decode <small>— decodeArtifact reads each compact's own bytes: signature-checked, contents listed. No trust needed.</small></h3>
+    <div class="decode-grid">
+      <details class="decode" open><summary>artifacts (decodeArtifact)</summary><pre id="decode-body">—</pre></details>
+      <details class="decode" open><summary>algorithm registry (live from the package)</summary><pre id="registry-body">—</pre></details>
+    </div>
+    <p class="hint" id="corpus-digest"></p>
+  </div>
+
+  <div class="tamper">
+    <h3><svg class="ic"><use href="#i-wire"/></svg> Tamper deck <small>— rewrite the past, watch it fail closed</small></h3>
+    <div class="tamper-btns">
+      <button class="btn danger" data-tamper="revision" disabled>Rewrite the legal text after acceptance</button>
+      <button class="btn danger" data-tamper="descriptor" disabled>Swap a party's key under the same name</button>
+    </div>
+    <p class="hint" id="tamper-hint">Mint and verify first — then rewrite history.</p>
+  </div>
+</section>
+
+<section class="props-band">
+  <div class="wrap grid4">
+    <article><svg class="ic big"><use href="#i-lock"/></svg><h3>Verify-only</h3>
+      <p>No key parameter, no signer callback, no custody handle — the package refuses to sign by construction. Signing lives in the signer package.</p></article>
+    <article><svg class="ic big"><use href="#i-x"/></svg><h3>The omission floor</h3>
+      <p>Twelve not_verified items — authority, execution, billing, term satisfaction, legal validity — travel with every facts record. No API can shrink them.</p></article>
+    <article><svg class="ic big"><use href="#i-wire"/></svg><h3>Byte-exact by construction</h3>
+      <p>Strict unpadded base64url, deterministic tagged decoding, RFC 8785 canonicalization, domain-separated SHA-256.</p></article>
+    <article><svg class="ic big"><use href="#i-check"/></svg><h3>Two implementations, zero shared code</h3>
+      <p>A certified 100-case corpus runs through the pure Elixir verifier and this builtins-only TypeScript one — reports must be byte-identical.</p></article>
+  </div>
+</section>
+
+<section class="wrap" id="install">
+  <div class="sec-head"><h2>Install</h2></div>
+  <pre class="code slim">npm i @charter-agreement-protocol/verifier    # Node >= 22, zero runtime dependencies</pre>
+</section>
+</main>
+
+<footer class="familynav footer">
+  <nav>
+    <span class="brand"><span class="wordmark"><i>[</i>CAP<i>]</i></span></span>
+    <span class="fam">
+      <a href="https://baselabs.github.io/charter_agreement_protocol/">Protocol</a>
+      <a href="https://www.npmjs.com/package/@charter-agreement-protocol/verifier">Verifier</a>
+      <a href="https://baselabs.github.io/charter_agreement_signer_typescript/">Signer</a>
+      <a href="https://github.com/baselabs/charter_agreement_protocol">Elixir&nbsp;reference</a>
+    </span>
+    <span class="fine">Apache-2.0 · bundled from this repository’s source with the published signer package (demo issuance)</span>
+  </nav>
+</footer>
+
+<script src="./app.js"></script>
+</body>
+</html>

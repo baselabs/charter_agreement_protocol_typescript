@@ -1,0 +1,61 @@
+# GitHub Pages — the verifier bench. Static bundle built from this
+# repository's verifier source plus the published signer package (demo
+# issuance only — this package itself keeps zero runtime dependencies);
+# no backend, no secrets.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "package.json", "package-lock.json", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the bench bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0 # lockstep with this repo's CI lane
+          cache: npm
+
+      - name: Install (frozen lockfile)
+        run: npm ci
+
+      - name: Typecheck the site
+        run: npm run typecheck:web
+
+      - name: Build the bundle
+        run: npm run build:site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@0252fc4ba7626f0298f0cf00902a25c6afc77fa8 # v3.0.0
+        with:
+          path: site-dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@7a9bd943aa5e5175aeb8502edcc6c1c02d398e10 # v4.0.2
