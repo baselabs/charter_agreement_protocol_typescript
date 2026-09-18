@@ -96,10 +96,17 @@ const asBytes = (v: Uint8Array | string): number[] =>
   typeof v === "string" ? Array.from(v, (c) => c.charCodeAt(0) & 0xff) : Array.from(v);
 
 function renderValue(v: unknown): { shown: string; title: string } | null {
-  if (v instanceof Uint8Array || (typeof v === "string" && isBinaryString(v))) {
-    const bytes = asBytes(v as Uint8Array | string);
+  if (v instanceof Uint8Array) {
+    const hex = toHex(asBytes(v));
+    return { shown: `hex:${hex.slice(0, 24)}… (${v.length}B)`, title: hex };
+  }
+  if (typeof v === "string" && isBinaryString(v)) {
+    // Keep a readable domain prefix (e.g. "sha-256:") and hex only the bytes.
+    const m = v.match(/^([a-z0-9]+-?[a-z0-9]*:)/i);
+    const prefix = m ? m[1] : "";
+    const bytes = asBytes(v.slice(prefix.length));
     const hex = toHex(bytes);
-    return { shown: `hex:${hex.slice(0, 24)}… (${bytes.length}B)`, title: hex };
+    return { shown: `${prefix}${hex.slice(0, 24)}… (${bytes.length}B)`, title: prefix + hex };
   }
   return null;
 }
