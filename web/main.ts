@@ -140,6 +140,25 @@ function accordion(title: string, chip: string | undefined, facts: unknown, open
   </div>`;
 }
 
+
+// Raw-JSON code box for the FACTS area (owner-directed: no formatted view) —
+// defensively hex any string that still carries control/lossy characters.
+function sanitize(v: unknown): unknown {
+  if (typeof v === "string" && /[\u0000-\u0008\u000e-\u001f\u007f-\u00ff\ufffd]/.test(v)) {
+    return "0x" + Array.from(v, (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  }
+  if (Array.isArray(v)) return v.map(sanitize);
+  if (v && typeof v === "object") {
+    const o: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) o[k] = sanitize(val);
+    return o;
+  }
+  return v;
+}
+function rawJsonBox(facts: unknown): string {
+  return `<pre class="codebox">${esc(JSON.stringify(sanitize(facts), null, 2))}</pre>`;
+}
+
 // One delegated listener drives every accordion on the page, including ones
 // injected later (artifacts after mint).
 document.addEventListener("click", (e) => {
@@ -208,6 +227,15 @@ async function doMint(): Promise<void> {
   if (!rec.ok) { setVerdict("fail", `mint: signReceipt → ${rec.error}`); return; }
   receipt = rec.result.receipt;
 
+  const slot = $("slot-set");
+  slot.textContent = "";
+  const summary = document.createElement("div");
+  summary.className = "set-summary";
+  summary.innerHTML = [
+    ["descriptors", 2], ["revision", 1], ["acceptances", 2], ["receipt", 1],
+  ].map(([k, n]) => `<span class="chip mono">${n} × ${k}</span>`).join("")
+    + `<div class="dim" style="font-size:.78rem;margin-top:8px">signed, post-verified, and decoded below ↓</div>`;
+  slot.appendChild(summary);
   renderDecode();
   bVerify.disabled = false;
   tamperBtns.forEach((b) => (b.disabled = false));
@@ -232,12 +260,12 @@ function verifySet(w: ChainView): void {
   const at = verifyChain(w);
   if (at.ok) {
     setVerdict("ok", "CHAIN VERIFIED — structural facts from raw bytes");
-    $("facts-body").innerHTML = accordion("Chain facts", undefined, at.facts, true);
+    $("facts-body").innerHTML = rawJsonBox(at.facts);
     $("tamper-hint").className = "hint";
     $("tamper-hint").textContent = "Now rewrite the past — the buttons below produce real refusals.";
   } else {
     setVerdict("fail", `VERIFICATION FAILED — <b>${(at as { code?: string }).code ?? "invalid"}</b>`);
-    $("facts-body").innerHTML = accordion("Result", undefined, at, true);
+    $("facts-body").innerHTML = rawJsonBox(at);
     $("tamper-hint").className = "hint fail";
     const why: Record<string, string> = {
       revision: "the legal text changed after acceptance — digest bindings no longer match",

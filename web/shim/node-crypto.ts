@@ -68,13 +68,13 @@ export function createHash(algo: string): { update(d: Uint8Array): unknown; dige
       return this;
     },
     digest(enc?: string) {
-      // Return a POLYFILL BUFFER, not the bare noble Uint8Array: package code
-      // calls bytes.toString("base64url") on digests, and native
-      // Uint8Array.toString() ignores the encoding and prints a byte list —
-      // the comma-decimal digest bug. Buffer carries the base64url patch.
+      // Return a POLYFILL BUFFER with no encoding asked, or the ENCODED STRING
+      // when one is: package code calls digest("base64url") and interpolates
+      // the result — returning the Buffer there stringifies it lossy-utf8
+      // (the mojibake digest bug), and ignoring enc entirely printed byte
+      // lists (the comma-decimal bug). The polyfill carries base64url.
       const out = Buffer.from(sha256(acc));
-      if (enc === "hex") return out.toString("hex");
-      return out;
+      return enc ? out.toString(enc as unknown as BufferEncoding) : out;
     },
   };
 }
