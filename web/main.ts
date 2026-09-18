@@ -85,57 +85,71 @@ const bMint = $<HTMLButtonElement>("btn-mint"), bVerify = $<HTMLButtonElement>("
 const tamperBtns = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tamper]"));
 
 
-// ---------- fact panels (designed key/value view; raw JSON behind a toggle) ----------
+// ---------- artifact accordions: designed, animated disclosure ----------
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Byte-ish values (Uint8Array, or strings carrying raw binary from the
-// package's decode surface) render as compact hex — never utf-8 mojibake.
-const toHex = (bytes: number[]): string => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
-const isBinaryString = (s: string): boolean => /[\u0000-\u0008\u000e-\u001f\u007f-\u00ff]/.test(s);
-const asBytes = (v: Uint8Array | string): number[] =>
-  typeof v === "string" ? Array.from(v, (c) => c.charCodeAt(0) & 0xff) : Array.from(v);
 
-function renderValue(v: unknown): { shown: string; title: string } | null {
+const humanize = (k: string): string =>
+  k.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+
+const isBinaryString2 = (s: string): boolean => /[\u0000-\u0008\u000e-\u001f\u007f-\u00ff]/.test(s);
+const toHex2 = (bytes: number[]): string => bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+
+function valueChip(v: unknown): string | null {
   if (v instanceof Uint8Array) {
-    const hex = toHex(asBytes(v));
-    return { shown: `hex:${hex.slice(0, 24)}… (${v.length}B)`, title: hex };
+    const hex = toHex2(Array.from(v));
+    return `<span class="chip mono" title="${esc(hex)}">${hex.slice(0, 20)}… · ${v.length}B</span>`;
   }
-  if (typeof v === "string" && isBinaryString(v)) {
-    // Keep a readable domain prefix (e.g. "sha-256:") and hex only the bytes.
+  if (typeof v === "string" && isBinaryString2(v)) {
     const m = v.match(/^([a-z0-9]+-?[a-z0-9]*:)/i);
     const prefix = m ? m[1] : "";
-    const bytes = asBytes(v.slice(prefix.length));
-    const hex = toHex(bytes);
-    return { shown: `${prefix}${hex.slice(0, 24)}… (${bytes.length}B)`, title: prefix + hex };
+    const hex = toHex2(Array.from(v.slice(prefix.length), (c) => c.charCodeAt(0) & 0xff));
+    return `<span class="chip mono" title="${esc(prefix + hex)}">${prefix}${hex.slice(0, 20)}… · ${v.length - prefix.length}B</span>`;
   }
   return null;
 }
 
-function factRows(obj: unknown): string {
+function fieldRows(obj: unknown, depth = 0): string {
   if (obj === null || typeof obj !== "object") {
-    const s = String(obj);
-    return `<span class="fv">${esc(s)}</span>`;
+    const chip = valueChip(obj);
+    return chip ?? `<span class="val">${esc(String(obj))}</span>`;
   }
   const entries: [string, unknown][] = Array.isArray(obj)
-    ? obj.map((v, i) => [`#${i + 1}`, v])
+    ? obj.map((v, i) => [`Item ${i + 1}`, v])
     : Object.entries(obj as Record<string, unknown>);
   return entries.map(([k, v]) => {
     if (v !== null && typeof v === "object" && !(v instanceof Uint8Array)) {
-      return `<div class="factrow nest"><span class="fk">${esc(k)}</span><div class="subfacts">${factRows(v)}</div></div>`;
+      return `<div class="field group"><div class="fl">${esc(humanize(k))}</div><div class="group-inner">${fieldRows(v, depth + 1)}</div></div>`;
     }
-    const bin = renderValue(v);
-    if (bin) {
-      return `<div class="factrow"><span class="fk">${esc(k)}</span><span class="fv" title="${esc(bin.title)}">${esc(bin.shown)}</span></div>`;
-    }
+    const chip = valueChip(v);
     const s = String(v);
-    const shown = s.length > 64 ? s.slice(0, 64) + "…" : s;
-    return `<div class="factrow"><span class="fk">${esc(k)}</span><span class="fv" title="${esc(s)}">${esc(shown)}</span></div>`;
+    const shown = chip ?? `<span class="val${/sha-256:|urn:|https:/.test(s) ? " mono" : ""}" title="${esc(s)}">${esc(s.length > 72 ? s.slice(0, 72) + "…" : s)}</span>`;
+    return `<div class="field"><div class="fl">${esc(humanize(k))}</div><div class="fvs">${shown}</div></div>`;
   }).join("");
 }
 
-function factPanel(label: string, facts: unknown): string {
-  return `<div class="factlabel">${esc(label)}</div><div class="facts">${factRows(facts)}</div>`;
+function accordion(title: string, chip: string | undefined, facts: unknown, open = false): string {
+  return `<div class="acc${open ? " open" : ""}">
+    <button type="button" class="acc-head" aria-expanded="${open}">
+      <svg class="ic"><use href="#i-doc"/></svg>
+      <span class="acc-title">${esc(title)}</span>
+      ${chip ? `<span class="acc-chip mono">${esc(chip)}</span>` : ""}
+      <svg class="ic acc-chev"><use href="#i-chev"/></svg>
+    </button>
+    <div class="acc-body"><div class="acc-inner">${fieldRows(facts)}</div></div>
+  </div>`;
 }
+
+// One delegated listener drives every accordion on the page, including ones
+// injected later (artifacts after mint).
+document.addEventListener("click", (e) => {
+  const head = (e.target as HTMLElement).closest?.(".acc-head");
+  if (!(head instanceof HTMLElement)) return;
+  const acc = head.parentElement;
+  if (!acc) return;
+  const open = acc.classList.toggle("open");
+  head.setAttribute("aria-expanded", String(open));
+});
 
 function setVerdict(state: "idle" | "ok" | "fail", html: string): void {
   const v = $("verdict");
@@ -205,7 +219,7 @@ function renderDecode(): void {
   for (const [label, compact] of [["party descriptor (A)", issuer.descriptor], ["acceptance (A)", acceptanceIssuer], ["receipt", receipt]] as const) {
     if (!compact) continue;
     const d = decodeArtifact(compact);
-    panels.push(factPanel(`${label} — decodeArtifact`, (d as { ok: boolean; facts?: unknown }).ok ? (d as { facts: unknown }).facts : d));
+    panels.push(accordion(label, undefined, (d as { ok: boolean; facts?: unknown }).ok ? (d as { facts: unknown }).facts : d, false));
   }
   $("decode-body").innerHTML = panels.join("\n");
 }
@@ -218,12 +232,12 @@ function verifySet(w: ChainView): void {
   const at = verifyChain(w);
   if (at.ok) {
     setVerdict("ok", "CHAIN VERIFIED — structural facts from raw bytes");
-    $("facts-body").innerHTML = factPanel("chain facts", at.facts);
+    $("facts-body").innerHTML = accordion("Chain facts", undefined, at.facts, true);
     $("tamper-hint").className = "hint";
     $("tamper-hint").textContent = "Now rewrite the past — the buttons below produce real refusals.";
   } else {
     setVerdict("fail", `VERIFICATION FAILED — <b>${(at as { code?: string }).code ?? "invalid"}</b>`);
-    $("facts-body").innerHTML = factPanel("result", at);
+    $("facts-body").innerHTML = accordion("Result", undefined, at, true);
     $("tamper-hint").className = "hint fail";
     const why: Record<string, string> = {
       revision: "the legal text changed after acceptance — digest bindings no longer match",
@@ -257,7 +271,7 @@ async function tamper(kind: string): Promise<void> {
 
 function renderRegistry(): void {
   const rows = algorithmRegistry();
-  $("registry-body").innerHTML = factPanel("algorithm registry (live from the package)", rows);
+  $("registry-body").innerHTML = accordion("Algorithm registry", "live", rows, false);
   $("corpus-digest").textContent = `certified index ${CERTIFIED_INDEX_SHA256_BASE64URL.slice(0, 22)}… · registry ${CERTIFIED_REGISTRY_DIGEST}`;
 }
 
