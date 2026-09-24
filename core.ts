@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "SQYrs8WyUX4Bj_QlupjB_KYaMyjVjrnwvQ79sNkyIao";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "f--8DXp39J4wJkrpkD8ZTQpHkMlduX43Xvnz0HeObeA";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -45,6 +45,7 @@ const SEPARATORS = {
   signature: "charter-agreement-protocol/signature",
   extension_schema: "charter-agreement-protocol/extension-schema",
   extension_registry: "charter-agreement-protocol/extension-registry",
+  signature_registry: "charter-agreement-protocol/signature-registry",
   conformance_report: "charter-agreement-protocol/conformance-report",
   corpus_index: "charter-agreement-protocol/corpus-index",
 };
@@ -53,7 +54,7 @@ const SURFACES = [
   "base64url.decode", "json.decode", "canonicalization.encode", "digest.hash",
   "schema.validate", "party_descriptor.verify", "descriptor_chain.verify",
   "charter_revision.decode", "acceptance.verify", "acceptance.equivocation",
-  "termination.verify", "chain.verify", "governing_revision", "receipt.verify",
+  "termination.verify", "chain.verify", "chain.verify_profile", "governing_revision", "receipt.verify",
 ];
 
 const CLASSES = [
@@ -61,7 +62,8 @@ const CLASSES = [
   "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member",
   "missing_required", "non_canonical_bytes", "digest_mismatch", "signature_invalid",
   "chain_invalid", "descriptor_superseded", "descriptor_fork", "equivocation",
-  "chain_fork", "supersession", "precedence_selection", "outcome_indeterminate",
+  "chain_fork", "profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid",
+  "supersession", "precedence_selection", "outcome_indeterminate",
   "extension_unknown_critical", "extension_optional_roundtrip", "extension_invalid",
 ];
 
@@ -78,6 +80,7 @@ const REQUIRED = {
   "acceptance.equivocation": ["equivocation", "invalid_constraint"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
   "chain.verify": ["valid", "chain_fork", "supersession", "chain_invalid"],
+  "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
   "governing_revision": ["precedence_selection"],
   "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
@@ -571,6 +574,16 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   const descriptorRow = ALG_ROWS.find((one) => one.name === decoded.value.header.alg);
   const grammar = keyGrammarError(payload);
   if (grammar) return fail(grammar);
+  // The descriptor timestamp floor mirrors the reference SCHEMA-stage
+  // constraint (checked before key resolution and signature work there):
+  // a spelling outside 1..64 BYTES is not a legal member value — the same
+  // floor the seven sibling timestamp members carry. Byte length, not
+  // UTF-16 units.
+  if (typeof payload.effective_from !== "string" ||
+      Buffer.byteLength(payload.effective_from, "utf8") < 1 ||
+      Buffer.byteLength(payload.effective_from, "utf8") > 64) {
+    return fail("constraint_violation");
+  }
   const resolved = Array.isArray(keys) && keys.find((one) =>
     one.key_id === decoded.value.header.kid && keyMatchesRow(one, descriptorRow)
   );
@@ -755,6 +768,167 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
 // coordinates, dual acceptance against the revision's actual party pairs (any
 // two roles — never hardcoded names), verified termination notices, and the
 // reference topology/governing semantics with ancestry coverage.
+// The capability probe mirror: one verifiable verdict per registry row,
+// derived from the SAME pinned known-answer vectors as the reference
+// implementation (identical bytes; a capable runtime must verify each
+// triple). Linked-crypto identity is informational only — it never decides
+// a verdict.
+const KNOWN_ANSWER_MESSAGE = Buffer.from("charter-agreement-protocol capability known-answer");
+
+const KNOWN_ANSWERS: Record<string, { publicKey: string; signature: string }> = {
+  "Ed25519": {
+    publicKey: "GzQZjEZ9YYJWL3R3uwR0owiJSd55-Dl33NgTbuWBewc",
+    signature: "-H0dvAgkit6g5XUHSeemuI_1BQK2ZZaip-cskYhB6Jv2YNBAASg3B57dXW30ezxbH9YVPgWc3TA3qx74TN5UDA",
+  },
+  "ML-DSA-44": {
+    publicKey: "eZXohjF26xlaoAtC8VRJ1q3BslIgF8E7VmFo-eakCL6nkVT5WNKGnswbF-MpIn-5dushxTjsPHGpJ--TRc3PIUTXc48LRWsrR5oaTIPNicT-dIFInl9geCmg_-2QFYvT7-gHjQWz2EhUbCxRt3lHIyRRyYRadtkRL6c8LV6eTnhYo9rJjhmwPl9eVvYfgF-LCY-Qe3ZUUYGiwoh5K0KAZmH5ttDV8Y78xyFwWwB24nNNqTGgo5nc-G35yWKwHY9CI_xSkZ5XtdGjLY0R2zmYYMEvubfdxVyFM38_oG7qglm-4W92j4kmXhX4_rR-UKQD4_GjBK57jtHMjE9ClmrPjn4ACjP1XeSVED71VAhbuRKvE_h1t746u_GkdoPTWZfLToJTiTRFOlQ1NDHxSo8MkbRwRuqTYolxl9M-Ndoc_RxFoXVjQTheib6Q3Xpt_JP0mt9i1keuVWOf5ufirUg6pox-M_uZ5gySLbARLeUx-HXAYtxbGAQuWhG8cALf2unHOVwBVHvvO3n9Fss5Zf39Ib4v_XoBtI7rMnVooTLfWqm2__PofD03vlOELeErYRdtxumwZOpHPCbO9fH9TOEJqTW42xL4e84cftGHBEORxi99cHynTnzf1IZbK3jRALPlMrpmXwO-UXUr_MMb2E3udaIa43Egn-A54RJfAu8kg27a2tjSGlpyX4JMu44lGHgZdFDtlqTsejhuK1JjqvCAYMcqKhaZxdiqrvR3doUcSOj0isrSEAoalwF1WJlU0ke3OnYVJC6MslpW_4O6iJHTPDLv_9rzVLp5BsQBuQT-9vbsRm7YaHkO043yACmWXmcC__DKGXAGkBlbMNM9kidMfOXjTjXcHeKWn1kc1BgCm2sBMtqajV8qs-0689RwNXCcIUWVUDc2VUx-P7lVcsxXKwiOBrT472nQo7E28Rl6rSQsy3MBE38U1puQpHAh9BVBddxV1d9Nt7zuRH1ha8yPBN-RckdvZEeMpcG_p89NW-jz31uDXqMfOB_wseNre9vwFW4H4BcUlUrhWmTgqbuOZI_-Bl62GvQPLxP4AvlfDcROaL2h-srGCJRdKPTtExqhwfrKsi2Aa8QY0QZps3F35xK2Cv4Y0eHtCZ6ZzbmM6BUJlEI7cby9Hn5A1-usebldtChzNnRcaoBN2oqYxgYlPAPrzvNx862pox9MayFoEsjQZrM7xZEyvxvisXyz87Ow2UPMdv_D_qPfu3sW9WDaT0Jck_JVV08nrbmdwhfTctROu3Jv5UhzgdyrkXIgTRKXcePaY5ppW6ILOWeug1QU8Ztdmbo-zCKBNr0B_bpNasATaPE1rBbektfIVDsxE_nWStrzSRm9YAgDs0tLKYxJCO6D0UggHRlo7Q8XzBmcGTxpEbws5Qg6FyhDQP-E364XIvcpHNhkLXdH4QTdla5OYBVqA46cE-gJwmhPGVVV0cTkgzXtkqwmt3g6UxNQuepeY9DfBosu4EAUnrb2PCX5ifmwaTFbd89omGZMrlS9BpJwCH0HCB8oQhcCVa4K9Kck1i2IEj0std5m53pNODVN2dBUg0X7OpUdyR5DDD2gjK1CCYT8qPCP6mHrRK0SA2ERZ5f391vg8rCrh9Q_t4UGPWW1RJB6t0ojwXuCdp_2-kvB4vciGiyTQIGVV77-WXUAZC6FOona-tpLbIfEURpwezhOC-ntE4bpxGlBnLoxNDe5xDs8PBlq6a3fspLWTEMcQSsnR-VtVKYHqwJFkB6n4w",
+    signature: "4RmdiYiFwEgDeFnBEH8usSmDVeU8YAPB1q4d1rsOz0uYJPZfnAiHF5ZvUBe_ptbfsEAkamgZ_UwwsMV9ZF9ryITkQicTsTdmeT9a7r4EupC2RatHn7SUz5AGRbNoZSgDnfGkPyVFPIJcR73U-pW_RvVIyMfCPh7snUAZVuX-kGiUSQ0wr1RxNKpz4N0Ov2VeHfnojAo2VUD7e5z2NaP3EHhfkD50m2TnzNCrc8ov8i79uSac-YaqQQrtjcoe5Ka9UTgvB2FWjBCsTy7Zp-y21Jqh8LbUeO-kKmCxcmQ2cR167EJ2rLhz6NRYThxzD_YN6aBgGRhgZI_ndrYEtW2BOMewYxMeJzlHQQtKBzyWoWiFJPUVAId5b2ptO2Qx8RCEhbg2f9DcFSWL03JdKqJngeyCLmSKHMrU9hagRYJufrxQwRugYaIArJz69EIzf6yACI7iPQIIilfzBGeXzh2bErBL0wDsGNywkwgHQgzzbItg6KWUzwO8IbfTJfDqm40Xqcw4QGA4hBoFwRo2cxTZHbg3DKMxMhqNrqwzlajOYXcC2UZ7BmYeG27lJ6mJS2lgc8kTIFdSt-wIDAdNRZAPTXiAhZja99ZOB306nTnu-q4yclzVWqWEipH6L9_JlyGQiliBG1OJ9y-t7cGR-hTlvKtw4WWqwxEJz81Kx0AixAFd8590imXsxu705x4Wj6Uk5NyIEXgo4J4W7Jh20iA2u_wKV3tIFjHNciRC2SR0cAwyC486_pXCVV2tu-4rP16NVCfSM94k_iB3RJ24Kk9MwWaSRU0Uq7oGJpApyyM1t1qo1iedjlGMgboBSNZwxEpGjJ5SePq3n90QOmWVaNiECAz_P_wiNwn8yNrhaGgSuF-47baBX4-5oVSOea1MqdwBin6xnBY8bBeiFSolpwkys28zGJwIgs1XR_MTUcyiLl4TpHfYvtgZd58BboRSqi2oY4aCHycckJY-Z2RWV74Qma6lIBVw-iq2CUth0iX88p1BylzxV-3OFn20ZVBzT0eVgp-5Ivceo_VJeROUvCNmpShqA3XhAEBsQDP-kJm3C9rEyFA_4FtiDoxD2mO3kOp1Uwix5SLYiByN4Q8NwIRwhX3lMhks_scHVYdCQtIqRqDi3F1DWW_1BG0oH_T8VGEHiSveeKImR7rief4Hso1u7j8iWs_Qh06aIG1iyFkVLIg-XqMXBcwOU-aMtdNxaYlphLqeYRuUdWnaLUunZ12f4vPTVIhlOMZjBobs1_GEkCFSKJsw1Eb2dB93D2ivihT1PcLmnW6ZJfebp6a6uGQULYDBluoZCmjqcZhNQYvKxPP62sPfExse6bAI-3bZgCr7O-OW0N5Y0fgxIbNhWJ5S2bbPr-97nwI3PdZpn41F6jOsvfPkXeAUTPmOakiJZB42xnKJCzmeYUMDsuJfd4GkncyWJr1a0zGkFnzaurbYAa2t20BmpFqoXYM0v6DvdyAlreJUnVYcaUZdkt3MomcR3Vn9nck7Bi41umZRCfQ5Bsycf4zjsDB0gTboBS-s21_6lAyXuWHyvS0Mv_yy0x8zjnf6bhXdXyg9cMXqoiTIWoU6cmu1Z6tJNzHfw_zxQNE16xsVcIfm_iAJrHt2Qa_2V-98YojOYHgQ_XZ4Ef_lrqxA6Incd8qwRSzKGkZ8NO9d2tVoYf2vNbbuwMWtlDZYEkKFvfcMPu7dsLuiQ17j4BBjIoHEFRxdycJQscucHsnA0LAUFsXJ0Fa2EYZdRw-CoQ1RKXzSzKb1q7H2cM9mdZx2ULHzwrFXIPaBVACt_3UxA3ZjJnb7E6ZrI0DSYKLm2GpkGvg8EseRXix0a421KgqTFRXtDaFb8Y2N3_B2tp3kU8gobxfIYSX-KbEA9NcyoDkDphLwtHymCCuHbD01Nv5Hb2SoKcuiEUIbKDvDmOq-ODxHtpTyeH7yy4is05Nnru3vphyNd11GAWmF2Wp3aRBmZSdm5FDq6zgiTll3ytS7Bri3OyriUEJuGxaYLIfQn5QWonoY_4wVux2YMU7v8cbLAaPZnRYX2Gx5lvvxXPDnd9olnHLKEufFd5lXUrZJ5KD7zItEu_gTKyghrFDtnWqaryEfaQF5gXJTRQuIBGxcAw8mGWrzTru_lz3mvauXN3vTeIAy3r14zUl2oBR3LSFQm-0QY83EbQtdHY3DfuHojX5JD76sIac0FaNe_6yjL8PBw9VLQCDtEP9vp1MrDTWZt9WpurPOdBbE1ZLpflTuu3WD0Gpx9oIruHbSsUqXJcwTXnPavAmP9EBB1A_rOKplyoVUNuuqPtu-B0UX_DAKSVmphHJelL5dWrdm45w63_IkVttYX-drUeYPp32kIG-ij747SrIf-_fQEsRVnKDH9zhjxGX3lZ5N19ootgBrX2NMOQRwswHXM3_A4ahguBmfrS4ndVzLe5zA-IFlv74cjDJNaYJUwplYcdla1sdWjl38tvOTKfHMhI2yD-JhcE_0w3D7ZA7q1JOUcisippMeYxOBkFg8U65EUXQ4wHr5n_LuB6-oEOdx5Ry3MJgyflmUO1Aa6jEJ9RZ04t7zVqbaRhPQXb0MY3HyErSYDz-tzhO5kuVHhoTmALu1-tuXSHgk4l-XJTpT4DdKoVnGSA8j7jszVQd2W5AmeSjJ2BiC9TWlVo8orS6qMNQdgoOkE-lPIAWFl1Vgghv3PEgmiO0SvFX_Typ2XsKyMtVfD4GLkgrHNKQMO8NvzrtLMsH9TWhfg9qsgD8vqNDOM9wuCSZwlTHakl-3avFifsO4QmiBCfM9tFfHJdxyvPo5Xpo6xhSaT6yAVP6_x-8_8QU4Ymuw6YsK5L4VIwNabAX0xTo4-Fi9cGTUUrZoFNxKkaDM7pAij10EugkhOko0QuQqPPODRcuwoNTWshs3fqLYNMxO8cEKZma3oXAv06e_ktuPsW7PBZEynBVxK4yTVJmBKGG8EoCUXZ9MqPaLnLU58sQ3aDeinTE1JH8O3khJJePdTPENIkZ0a7NJmKmUwuOS1NL-9CJyuqHu8nsk2vWnWDS0joah21qqe_SJ-B_MBhepQkFL-fjp9oNg4kd46hEsTZgV80aaQXPwOUE-JzLvUA13nDW3aeziJWUEk9kbLoArlaw4PkJQcHmLo7bCxgQNESMlNUxOVmNzdYKQlqy4xOfzAg0PFzxFVoGRutPjLTE3QUJph4-0uLzb3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAsfKzg",
+  },
+  "ML-DSA-65": {
+    publicKey: "C4pFSZOaGQCePNdFL0X4fkl0J3TMtrkIxlz7cllPnPP85C94zKV91cQ-Us7OJO5acJHSCRO6_jcRqRfPqyyHXMDD2MOoS1vLPOGcLk1M-ECTVJtTa5K6eMrP_K2McyL_GbXS7qE6HK0VflbB6c9b2_HZGmCRseG784CkmhhuQ7hNs_RGlp1slfR431NtQ__ESCFc5GCemF_owXHOFHhGezOYJDqjLWCRcfSQ4zhMX4jaZbVRDEhxJesWQtL5NIRLX_sob5wPfiEtnowrfsSL2B6zBpuGkppLr6_Vs_ZFSwvr5ELMidcmStMOpA1uC91pXNj-qHE4uFO_DBIRZQmJa41q72elXg1phQ5yKgO_ORwuJBo2JvXBofyIeNc6pMqnbcXdsPMFfYPBBxNY7O7Ax6JuvHGmLCqMd5K6MhTtwy4xudZNwjMr5VEuIj6jMiCyuQ7XBePtgmJwqQU7FvWG1gxK0L3Zr2gf31QOL-ACWzIrC41oZZIJzteRsQaK5QFCos37leUnUSTFZx0UWRxihMINmpZyR2xDRRFtLbYTG2CyBRSORxr129gqackxexXeEwrRoKkzEJjnQIRQOSd0F1AHzbaATCte97scQ2ISlZsLg8P9Y-uGej_0QYibk0SJWRGldllZcTZm6gBDnipLjQFdHrnX0VNqD2o5sEWQWFILri-ropDD4ry_DSHqbFtVE20DL5KZuhA7Pkir9JQrNISbYtjjHLeyK0Q4wfiBbEuC-LXE_dwhzvkAabavhpRS9kbblKTj7Iew5h26MVNbSAIOFaLsSl-ivubTkreQmc2rP15J3dLAW7JMy6zpVRj4OaMGks8wMOnWnDQ4FU7tOfpDDIzRz8PVsbP1OMT3t1fUhPply90v4hd_d7W4kziSBah9M9YZZEouCt_yzJNSBZWOAgvoL059qbO8UHa6B4PqhtprIjgVrCWDXqpBFxe-0-9pdkDHsMBDaieF8cDe77w_ZbjvaQQNsqTdDNEaues8Q-zI0cJrsMwpfNjBZkNPvK3Jj1cFWUnJ7jzGDCpV7-0Ed3RPiXQt2lcjgMzw9O0TWNPnAlwIGih9OaC0LDXncxiPekbiunhzMUIjdDdnHnFzeVmlnXgud_6veQiux224SIBLGVGS6ve_UjxUgdctbMLnasip9ZXZjmkV5VkNeJYv2Z-5MNgwQYLSV_FWJFv4zwMLAR5CRFZnQVE2UK_tntVHl3p25bwAXf4JFQl3BLnAXpjRc5FWVV5BBJvhqHFfqbQEwxMDThoy2XgVwOuPZjzoFEqS0qbvWTSKJNNzoWC5TvqOHdC_psFPLHLSmfmn2dkhG1MmnfVw-EFdd8N-jvrhiQljwzBFiqtp4gOlKaCR6HN2exg65Bc3Zofeu-K_xviRRV3azBrhdQlWM5vj9SOTqEFYWHA5v0euWFrUgjQaL-w6Egt1A9Lk4FVVNvzb0idh7A21kDVIxk3Ufszq-CG0gr8qYQ4F-pHwNaKEgWaN3zLzhuECseRc0B5s7cias_TPi3rmpRJtTwu5t0oK2ujidnVJe5-fk5rkOhkhPxNoR8XXwejm8KvMZVe-vSkORZS7x-jsES_GYN-ywdToWfIE28D_PAv2WTnJgY2ZEv4GkPO3k6FFd7o7wEPS5yrtOsaAvIWj0mJw8_1Fsd1W9bj8fT0XHbJzGAPIpjrZTJYO-qkJbkimH3keuABkSS5zEyqgXYnuCtWy0UTXsVV8Pd9iOm4zjG2m0R-oPnCRJj0sDu9beko9dIjuWp8TqRQiJCwEVCaR_XV7ASvw82o992lPPfPoZ7k0nH0csnqeUUq3_olzu-zY94Z_ewKEatTNGdg-1kU6hIOdZ2nTjmwj36DDAo5ZhX9V8LKReF5GZKazg1yBuqabFg-5MErFtxHHdnoVPUFEgDI2FcvMd-m1MTJnayyxI6lsH7q27Xxh58s7JioiL4sEqLxKiErzPa3Fle-U7aXyg1KyN_z2Pik6ilETszadzT5UqQHueqFn1IKfNpib-7hXzIVqEU_y5yRvPp03ZrOfn8IyDSDb46xtxq5PPB1obcMuRSSkkEkmL2c-5guPkHuFzn2e1seYHWx2dKf6P2VJuM6OCb7qH3ALzYp9WoIPf5Usa3axhLSRcQWwXJu7VXDk5jQnDb1Tc7bcHtFcXQxxA1qiYUucn6vDtWbGp4sZPRMSZZE74Wd2U_BqJLNu9qE4AtGcw-GTha4Qs7lcxmDtzOl-B8EOtuAgDeqkyxRKXWWZr0zzH7zEUXnVo8cAvuSIDBKRt77CM9kd-_DiVTVXt4M3PmimijFNqlJj1HLRxa8Roih_umi7lsOSK9mpAiQOZNlIJfALHt50JLPeEnDpMp4URZtELex4hxTAOt70FwuSNg2-XXx3rIHjH40DWDrNhrMhscy4X534Gg4BszYcJx3JTGwA435UYfY7TUsNEso9xHwW8kKsnLgQS20IJk2TprItUwLj-7K4YjvKj3UajdZx9NjzOYZVYCZJdTn39q1PCRPG_2B-hAIIAx8s0bMTDcGd0h518FIGYoc4ysJY20qI0cX3AQNr5Bh2T65XPsmxD_Vmig_4m02Xp38d6J5SUEER6SAWOuY",
+    signature: "KW6lNy_f9pipkduhncCIkDtDcAymQ7FXWAq53FfqGD-vHVlJGLB87lvUE7xPng7l2YZSrXcHfTHcnCIvxSRwTm40Prt9ul078UCcpceT1L2m5wR2Xfh3HoAEpwTHm4Poj16XtfecYjumxr6jL2MiTSxtQvodfZMsfRWHvrDLQUOSEhDnv3evJ2K_HPRpq5wR0wEA-drPtYcYHptBP0Jdp0VYxSuXNVoTTImIbIB6jLYzy0rI57XyS4m1Vg4aFyPBaBh3zLr5YLnERqqGERFP83AE8a_lx5VvBbbQJTCeVCdjP3Ajc3l3DJq8TcboQU5D5FqLdcMjiHb8cqAMw1UGINxIDr21DOZ5z27NN6cSHGN7AaIiaxV49GvINkIcLgI031BM4UY4BS_E7qvbLDTevBavCLypOakFbl7hoTAVNhOiPOKzDYUYLWhFdFU2cboYC8UOVCE0Ni1UZNPVAPHLLLcqAIGmLDw9K8XspCLprsSDriR3pLNdppCEzkDuUuEMX399Q3SEs7NgV8rA_1jZSR7oGA3JgEYs3-3Dt6cPmanbfkddqD2zpW8fyOaoUYKdhyCeVA8T7bqQEuKRpsqjpMZpri3jhcmLAywajeYiFPYJhb9PAWfVr82Uuk3aFo5XzDqAjbqt22TmZZiGCIZjtHLuRaQ4kAXNd7o4IfU58Vsg5euQP9Un7H3LBI-aVlkpi7YTzWsMkEXScRSkZFmmubnTQjtJFffp579cxji0XC57n4M04blxzOD_0W63ZqhIqflereoFmGgO3fFWlQ838RYwmiBNthKhR5psTYtPvIHThigfrxdPY3Z5ehUSHne1zNjevf-bgDXCD7qzk6gf7sNZ99nbp0ATtBD4QIswDTgSjsicw5IBDlaml-56uGm4tEX-5PN0GuPJ9cWd69BkMKbHpMEfpp8a4YSw1Aeotfc3XLZk1K0FqgxJqwFHf6uqqduMfUunrNhylKG05nsMQgnKma2DNrAR-eeKhMnB5R0bzbX1ZmHADCOstLtRfVY3CP2GTKJrDdOASWAkKjB9DCmnK-urxYb_v9NLa5hWhDilyktzd0NnbB1-V-V6BOwzze9MHS2TcgkMsnK7TLRV4LR3E_yV532mKzlIiWXR0oE7AAbYaWODuP8X2YxfGwciPn0txAN7ah8lbxeyhOey38OxklF8V0Kk6BDXpA-XtJKRAVCEx4x8-ytwF3Qrg7kQ467X5OoANegrxZ1IlZzmZhWzH9240q1J60fGCLAOZKOXpuL5T62jfUnYulRKBPCYu5PkujuN8q97udEcDUgSmOKFPa1q0PUmEdANhItYLcRqqdDtpXxPqKgVWPQFZycAHhpezJ9colM8hI3kyW7uMuZveVEmFk2gwGcaNBMympQpAWzwzdRF5cTSCKBhJzSimskj4R9D3L-TSepfyTdZd-q1TQq8ANhB70YP-pcMUKrfsTycegXUJ8FmVm4-mKlDYrQR3QIQK-7e_YV3tv5QRVCFrRICZzXBbpFY9cfh_FYTIB7ChxzJOPuOiSV1Ewi_v4vQi3L6cPit-pLJTVoJdntQZBCPZU71QvxcZ2-ZKjxMfu5W4c-TYCPLDdYncDbw_VJgMc8W-8_UA5mzfo7VCnyqH_HUOsY7P_vfmGzrrHNyq0m69_LdjvcL2dlvTRJd8cGjm5wsSwABGY8R9O0Ram7Dq_cuTrAR4d4LDKQ0D46cWKyoi5XqWMmF_seQdCeO1acHiecmOZAa8we7gnVrzCLqOH4MlB0rG99ksz_ky6paJhrkeLNjnjMRk8WUgqUD3UrBJk8kYy8Hu-pfYUolQMOMLtq8tyi0m-6-jllsdum4ecRe8Bj1iRb8Go5Neu6jtocCNggSukSpEJJBhrGUB2Ear-0DWJuOHypbFI8esWtdVqWnJoq73alRyeMVJWaUJ1-JvPl09M3qIq97DSuVJAUe0XBWPd4HAlp0d6AORq7P9B56jXVmR-vyq-PYSG4syBQAkuj1C07Zrn12rPKhcI4cQG64xfI0AWyJ-jbYmGFEQFlhNkV5K_90zeFsRZvT8jBhKp-18CgNJCGMjQzy4F03-PVZXY2i15EBh87SSmybdQI2FvyR7xh97tRmEvGlTrMlgHoi46t7GddR4_STVjvM3zlpPuYS6IrY2_u6utqi0v5qS5c3OJEAB-dVkl9iQm7EU4XkEx2b7FAYahMxTF1fEF8WQ_fg62-oHJ2XsDUQZTSB5b5A-sPxZsKIU5kdcHKSojmEcek9OAaiouF-SPqn9XcmqVvkhCk4UAvtvXkgbsTPHZRGgTrzGFc37m5a53QlpI34JvK_FkATQI5lTC7TCeWDMUXB32yciLW2I62PLP55_0D2Nisht6G0hH8qh6G765NAyqKhqPwvfHB4tyyif3g2iOeSGw7OjCWEgtF6ExS6L9FS5Rp2hEKiEvMvBqyxpDqBeWEb47X43w9gCLK2NRN3DUtMfpTe0981_qOrtuuTIBjvss53aSZ2qTxw-t5AbSvctIJzXI6VuR1gs7wiHgdec2lf3XlMgBa5ZMvk-cbIAdqzc4-T846EqerLQx_gpL-_JolARF44dt1zrEi2tKv3-xHaBBacruWsSwkMwfg6MwflE_OpkcBhunDLSJx9N4ij3NhmTsHIrmhcroSJTrvR2FEmmYge5qSPaAZVwk2BTSNfeuychHDu85OiiPFDqnbrZquuzJCCMe0a5CCgdH2YPT31KCrROW-d3FCpDnRfpl1oOO-styQoZvG51BOaMk09pio7anG3AhgeCtzGZVePEKptFihW-lKm1y49CeDeNTvOrO5ZvEJl7J1QAttoNRpbEmo4lFf-4TWvRaRmNTVXm1giHfFWmDJ42QEkfL9fkl3Ax8u1FDJmxqqVP8IKdSNSx5zLDFuGlWNvIKl7pqBEVNAjUSqneIje_2mxcqBoOQaQ0l6ljPebUR5veGSCOuvdL5dMax3ERMztcGBr__jA6mqZosY6o3nmRsFL18ma7FW1u4GD7aW4nuM9oyka839esMQjF3oDmMZLj_CIZzTQEQwiTHN_7vH8hV5kyko_VBbJENCMrqVF9NeO_MsLVB4YCXxpkhdxD7NRUxe_1XOst2YtLimCmmzNdia0IynFN28xfqu0A6KntJio9fewP-tUBGQxF-VWCl2nOFU7rGYbLfBs77cIqfL1fYL3nvUaolKwKy38P1ElqLvBdMpNLIFfEmu7rUhD95sJ92H4t9Hn8lwR2guS0R4ZNuVCAYwIv7oosVuGGDclLFPz_6Ah-HnXr7JyjWn9FOHcueoKAIws2vvZKvr_FmDhrTO6H3oATkS968lWXZDc27rn8RXlK1v0ctBNDBo9GgQmqs58z1mqNyp0wlk1EVBLrIRzg4yVopO1qIXhRkEgZOXcVtdlatc_-3hK7t6_OFc-M6cv1ev6-TVRCLoFeWqMtw3AlkaHMMv9VS1s351xzpGUTojaq4EzvbtLoYR8zLs9iBuwg0mhKlvJpEFK3tVsY3JYRM4qNIQxOYEPY8x1oRnn-lclMdClbIOtJb8b_-2zq_FvU2dc0khZvJk5oaMsd99jFkYxSw2exOwAyNMMKXBq5jypiJMpKymMVT4aSpoE5lg7nhIkJ4elVzw3cVfs7FIhslFybJj0o4f1XkXE2W5xKUKcGvOqYrRWC_zjOMRzqmovKS616CXqSMMhXSP_HLulTrItVP0V11fy73QqEFjXMZKyHoKnyTZ5w2VQ3crhhSDifbKd6EK3D90pYQbHs8jeJDEI5TkU7JxrQtwD7EYHBLeSg_6udaDztLRA02-YBv6CLLXcJzxUVliuSEGkr7cQSzFP8_sKJXkw1CLBmrhSoNyydptxZmdpWB-AUo5UCZTf-CqJ0xzA9LrsNDO3FrqIk9VvnF84YwZ5xFPw8uaRcBVOGHO81JzR9tzgkOtFV4xACrC2u1Lk3SPAWzdeRMyQsqUdoG7OeT18URaCII2EA5P366f2REiMBiPkYeOzxqgmWRogZIaTxymDK-69LShEdhtBv4oVaHYI7YQEDU37gTZv3l_-Ach1CSNQuMk0E8PBdRknn16mPPudqE_zNIka10w6hM2u2nHjwZoNKP9cd50keiCWzlCuz1cSmRoZmLHnwviilVT1vCDPaQDfDtgMVLedpYS5sR7xsHAZIAvHLvClYAPFyF7J-uZA_rXtcEuO5mLUE9c4ES2ATn89X6qn36MDsqoQff4jSF2L6Z6KFvIJQKzFvEzGt0XRW-YLRMSl5o4uqc7fDArxGEdYiHzVu0IDTyuG9Y67dPX-yHNCULIhxT6FOYMB4tlRYgmkdOlW1hwQuS6pPnK83YU4magYIVKL1tvoWY2WrLTuU3CfvkWzxd49ZYu0wQkzjrLNAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABw0RFRof",
+  },
+  "ML-DSA-87": {
+    publicKey: "_DRTNRDPJMvz9rQfPB2gOnF52qnYuUpJU8ZvlwT6S7JrCUjoNkp7A0OXE5WhUyQ_KrA8iiWQybt9Hp0R2E_v90pvm3Cw7M-TB8XtP_Qmob6RdnJ6OjZESDn8ldVpgavNDRoc98cVZPCKrbbsmRPm_FalrCIHt0THZwgpqBjCoWsZSd-UWF7T9A_02s6-bq8-dHofzyZKsQZ9rveolOIJ7JW5QZwkpfUrGReH4aGi5AY_QLNCl0Mw8kPoZKRVZuKRX7MiA6_BtkFF9tUR6cUX4-OdEwrZ8B2qdfZydyXiv4pZ5VX46qjx5eQFfSbu7zMf4AeeHMGMdeeko8fL1cd69ocs3TR3gJFN43FFhQw1bQLjpDn9f3VRYr4N2HASssaIwFyRk9m11mXA6JVscW_uaPnH1vjdPjnahU1PQqcjdvQoTcFRvojE-Kdq5_yNdD3jTdhnLeBmJCKAzSLPjpJs6o65WjFRJxgyQudlmtx8B7w8uDN-kcQhFf4ATkmVOAQquOR9e-KIDj-GlANxL_1Xh5xI0ctlLe2FZbgqrIp_fbWp2wgAeWqXU1QAd-QPxaLTruILJKm7GhJVWlb1-JfJs3d3Ya5-JJ8dJDIDsaMyOdhTtCVBa6c2ZUtuq6uMj1JoKUQhdq1wooyYXZdwPBCE0Qm6CXbj1GlXuwzLgX1gbs6cgxuOeqYExv3PXM9s5HSZX8jZT6-Bn1QyCv3nEHBGDtlhTEyC0KzMaII239PQhjsiXdE7VwoT3He_ov-MDkJ8CGV84njVq45yceWGHha4Tr93xu_ZkbUzyVC37CzWo7oW2wMjCE_nJML8gKmAYnKFQGPu8k0k2MCULQ6ZmoRvsTDpHl4rwsToMQVTfW88b5UrvaoB57fA3DfHi0UwsQI8Sg4wq-QHkN05YiBjrR313IEfgSmkP6J8mLQTD7N-Td2E4DqX5R0_V9xM-m40vNF5nw88FLCR4TLKQS__2JWo0T_LvqHzvbuicUp1kB6rhpmEvqXBQ7GPrdM6r2ZbjqI732mqTB7uwqz68zpUNFSo5mTQc431EgbItapQfSzrPBQ2DD2eeILE37cBjvSN9o6uKI9KAfXPBHPpuFbheo7LS6qJzkCoRe51skT9qTZ7V2OmvLIXj2Ao3v3zjFk5XgL3ofsxJBwwVgTTJFyFXTifPDN1AWYuKfjsGl-YlNVMjweP2lS5W0uUyLTQn8do9MO2FaKY2EnbRZsh0L8xdUJgf02ZR0tc1e3EAqSBM6xCXL8byidj47z2KnGKxFEA5SNJkbYRtlAeIGkrdUffmpc6j7jnd2iUcCZ9EuZ2t3WAqOsanHijtHor8akhmqOmD2J9YdDFn0OoXQVNZB8jfwTuTcvoWua63cyy0Cf0Wq3qPWTNG-P_hTDXju2Js71Ef0NpCvGTHy7htNu5HqhnOX9GcsMsz0Slq0rzMuwT3Laco2i-fRIEVmptOQSOP6YYnoQo5rbU9v83e-r1rkAgPhBOVR0n-NUR7RtmePMYk9IOcxxsVqE7e7mGh2OKnPkLnbAJONe-CJ__5nusJ5VI_LjdXXudrC5VkdxVpaf3zMLGVmXAK2CETAzgw6ODieE7XT2p5RRjZxi4c7RTZpGesuXkbzlU8jH5xQG7gMaFDh-rkdAss-s4dGQ6yxfWPKwTcpiAiJOGSa6zkTa_Zu4ccY9WXaoQjttMrnZ6WfMVOq1GN9wZjiQ2bwAu7m-5luIggDi4_j5_hFAVwPrgPgFrjYlhZjs02HNN9J6U_Oi8wzRGknOfMdrITWN5051WNqc_klyyJXT24pj47Ya-VYLmjI4NONFWiPuyLQ-iPBPnmVFhv0pOsw7ZqfIcF1WImc7BFijdhsHusug3Sx_4ZiizTIc-vK1WS9AjP6nW-gSNAUYJSrymkypGOk_iP8CeyzjqBdbPEhN-xbZNAF6Ckk9EoWumTmL8i43pYQorjJGQ_7mHq-5rK0EtxsDxHHvxyyGgMehudGdrPSTz_TpHTukwtzQhqhzgHHIemhZvPlQZseit4OQ9p-pmhPyKI_TGLSfd--fNtGZybA8Bi_Tsv1ZaRFlwWZUzNRFVRHbeXqlNY7pQDCf3L-g20Zl7cuR-1QmCjpcr6z8QZvMrC9BgXfs9QLC-Ei1-vBJZBFB7VRC4Ptj3TBy0gU9iWC1eSMO23NcGx6dZLZcfj8JFES8IZ-YTT-RcDGlEC8z2cTmqKivU5V0v0fAov336viBFD2D8DBQhiy_pXW7r7wlVrK0ry6JkYNlox1DVGO_UzuYhSXBHuTFTQVt66oPrj6G_1PZ2GrjwmixtLRQutZnVFuaPiYawRMgCaoTURfUw947tlWIj7DVnOC2fG-RN93gWmheZbk5UWgtEpu7OtihTNJNxMzpmKHmTUp2GPkXWGPMYGIuUcwrV6c6inW5SvWxTgqTnJbM_prY1jRIabyjNI3A-QKcS0T88fGvMYCPZ097OteTUm5dDKSWDSRchtJ-qy4Yv7nU4VHyUKnLxoYGnc7fnpNZ4uzet5GKMnbCCeMtXZSH9_Wjh9CBMO_Uh7NeKRdkil72JTX-VuZKy9NPS_KGUjTZxj-GW1qd61aJmWJaxG4Xy1ff5Nn2IRCnH_zzVlF9XRMB29Pz13PoHzrknp0laahJvc_pogmeMCh0n2uzz_E7eM5diRMcYYgkfy9AyXdIIrYLgcyHgz9qzgP18wkGL4MjAKgc-6tmeaUdt0ObrfoGjBfp3nTJ3Hr7xEf1QiDZk9vL6KlEoeUM2HOLZZS0AX_9tsH3TGQA25x8_-hISYb27sx76_WKEp4puhvKyyXZSw_u0vUEv1ZFzQxaf-0fSUZTzGaBnWNNRf48dCqa7LwvwYXjeeeQqoOiNPAfE8YfsLk3wDO-S51VXnkMcFfgEqDW7P-mfNfwEu48nHelXeFI32yM-cJd_rMUyUZKSXDBMsl29LfVq8joXtCG1LtqpNNLr0RiG9SlJswFJNKMzFi_dxoPN8Jju2SdtMi7S2KZrl9ReYh3pKqLSHmf6WnuDr9BdCxU0vE_6uzKsIM1YUvgEA12yG15OL7bhRDZxKpdcq6qq5BK98exSAqmyiXKnuVB8Ah_T1y2akXlJv-7rr4ENmpO4QFh_IWtUhAXq3Psh_rfLomYWqVXmhpOeEcNASi4xpx492SJE56lOaD6bEhBIY198bPUeYXq9mRxiN07f4MV3qiYBisrJHE8644aVAJoXMszefzdNHod8kgK4ihnhn_SOh1kqK542HpbrgDYX7UpzTOQNsCe7Pi378U76VadETppYRAzddHY3jvzAnBUuE6_gIP-bWnoMp2YAPLLtA-9hhrP1QKIDqI0McMTup6x5jP1OUX6eIklHgrvqQb_14LhXpq0MUGAHXRwCAnJVqQRgiKri-eUsYikobCHBNdAxuZEgA3tBnSOBTYi2lNvJx6BbQ62abXGuGGsJeGT9yTRzX_Cx",
+    signature: "j-2qiavUPiB8LInhWxrc6J9StRzbPMtqB3qR44jMgb4bWaL1DNGlFx9C8EVuJivnvwC1zTmTbVwiJOTyskFgO_pUdaOtx0CNtTn3-zrTnoKO9aLNFYebPtij4oXt1BlIZWH9pIlELIUYBk3jjWaZWF0L8nq99J2_Khz7N_lp7n5WXjLJY4f3YQlUp-DOolf3ZuCIvP9A43st0OCK3CRlR8FWK3ODu_RUq-TYRRCDJ-1NBVU7fzGwICnjzp5HrDWHHXXwML2fgbUtWUul4bn8DquFtuibqSy8pejuWyZ7XfOr8RXPbkLgBBVum-SUzD--I35CeI9Q9itRosyuYjyZLQxJici_U3YUW3KmRolIiq1egZQwZCiN9U6Rw5NxqCJZdq5rvxS_DpmHNZrGf2WPKRjTgoW4hOdSqsJjnAHS49b7zOBeJiN_tJQeyz5ENEW_tmjPcfGGnIkKSR5rMpz5qZ-IEQNVstiAmHZBKTw_Um2_nSL10n40JhU67OUyjbb3A4PbBQTXesQlagkLaQD5KapPLfsadKfL299wsGvHKFfBw4zHcoZ_L878ceWVBKaGO0dlzUr6f2xrGG7n2Ck3Duyimz2BVGzWbUUsDk8AZwHJpuw_vQ8yKzusQUabOkX7j5ml03wDe9UVaW6MoZSghs_P5xuSokmhkpUFGxvgEvhCy9lMt97atPZBkpk_czeMaRbXy6f0Divr4ZVNKGOZxh67nszIPhzFeaLCz03MHm-KK6wHL2BKCCatGf6qEI7pOUywCSsRY7eyTLGinChHvwKLwd__87sOjrWAbB9-o5Cqgr7sauFwxJTdgBjOdWwFkiu9mq-Ulm8HuGXZr5CIMr1Kmq5PXAoIw4SBdrYs1Sbzp6GFcMOrttC4v4QDEnGUiZ47QnJrSVlzVXzPaE28hy3mMHgc7_8t_L1bgPrPr8GfYKsGyUcA0455FuLMonGC_Avbxxt-RbdUxoJlT0dWYOHAXWYXMHxaTbM83FmQi0wqs8miwQ090TCrhbVp69D-XfEBjTk8ghW6zM76KRrSQdG3dNHxN841zzOYY2OI4hgcsIOfB17EE-WbgHX_FRZubkKIbmcHvr0i3Ac78fr2Aojj4Cgk8wPp_s5Xg09R3Ta-H0qxlTwEpjDctyhAZhIhXsTN2lGHi67LE6Zi_RxMJUZCXH1BBzDlEnRAQy1_vkiQFYMquE0spBRzrZHwVCAwVwPNDE8rY4X0eoo4wrCcpUb9S7D8AFiVbFdjgaCdprJTbIUccascWKmvrKy9A4UHhlnuT2tnyjOKMETj_LafMgrGhOuhb9wAn0EpurT3-XKSY89GdLOa4Y1ORGXKM0PymYyzff1W26HOXO19oh2SP0ANMzQcC8Oea58ksvtJ2hAOTCyfVP1Ao_Sz3VIbOAF65Vvi3NRDBtRyx8atM3dL-T22AfhVMcD-fRpPuGw36k3T_h1EZ52-3XRuw93ykhsjSzZcgSJs9GWHIjBmzY5M0iAmi-L6xO7HoPYDj-9TJNasniOPXLbcdRPrdcbqL0jcslch6PGRQOQvkBsWcXLC1rdY4FFPz-PVbJ7gDArpmdviRwjVUEiUXFMHHsDmlUjPtUYfodbXdJDeFCTgwTwLADsJzUVxSC_8FW-B1UlTHGeVUu9O72GwiMWnA4sj0ddD2Z4Rsg78WXKrC8Sjfl1Ozw3MpFj5pWadCnrQmm2LFYUC1Km1uwPgWqPel-MvXJBiMIVTJkgT_5ASNGPXWXSeQqyCq1f-KhcY1wD_0or77TDBQkdbp4G0DqszWKKilPAmUSX1ak0ZkNh-7Oa984na4YgvXhZFsOQXU35kvgPXeHs4FYDYN39V807zM_6FlwMF7RBMBq9900RvNpLUEZS64ecvG_q0Wp91U0LNcmdSvXBxS040K2inHBoWWNrVODhFN51houdCh6Z59LjGJNcCJPvYRTX9susKPaNuBWRymvMqMa3NVjXNd0jJKrov06DJsRS4J3Qapql6s6KvjUwq0Dff5cPgMuTk6oW-SPETdbnqPs_8BqrYP6pClgBSNfAqt2FeaLLdT4SCW6j_nLZS9RTWpTV9Qf45MUJdKeYsQSb1cQ9_V7AEyCRRuaNJKKDPfYoU1FBfROTCHt2UyiSA2BStpRa9iRM0YHgSZVYYBpDLV9EF6WDJI7ishp3VDT3lmJed4R5hUbwnsgKh4zmjcapkllUxWs3S7zpBPtvbeVqOvywBovC5Rc01_K12eU45C7DKRMA0JTQxuFer1ZKq-IX0W1VfTo3oSAIhTk41PbgdJiVdUa2eN5YgaIwRwoR83JU1J-9WcsnKZ0vnH-kveePVdpOnLoZtF6gP4gLLMAy88KHoBFbtLsq7VFkiV-6HYWQYpdpnoTJflJ-E6NLq-stDf-eWHYsYw_uzU2vwAHQv5VZ8Be0ASWBrEpqeeVwfwVcAVne8WB-qJro7YEScBRd7o3GKIZA5DmClYtyQ46HUgcSQe-SBWrxE2PHP5KaZrljLqb28y8oDYaKtFXjAukKIibESHtE_106Hk8F1vUbkio_N3v2vHrpLc1CFauuxPoJZq70odCljjW7vDsl1qvelYaiFWF1yElCI9UxYUl8o0s-7EuiJgRLJQRw2AmLed9dlYBeFXnPrZBQw48ceoCLi0UuRS1MT78SC7YQzsgLHCqfsAiYuuDYlb8uIH3XTKvYYCRQMSdDQdHoCbUrEQGbF1mMarDDpHCwHCIWzbqLp9K_Rkwm2_QU91KhZlEGXyR-hhOV828atC-mTUM10XcrrOPt8zcyyu86uErMDgSNKFVd5Qx1H7z6ZOMWeI5QMJHOqih7Go-fwTWZWkIbk7h97Y98Ii3i7-Z3Ov2UHNjk02Dh6pQmAr2fvKZN5gz-nX8-raVgKQt3Du63cE6pPbb4BrcbwoL20X5hw8haQVhh6A-k0eZdPpSzR7RacpVZOKeuhDbzD6JMXM6CBmtyObvqGO7fcTeQNNm7OGyiAVY7HcZufSkXDA0Q8tZr8VftOFeYjGNaRBvDs6yTepx4JRSwtKbCfU-n5CHUHXSQzf1EKdnvfQOSUkvLA_cYr4hTIp9yRSexo49PYSZy6-HbTwI5vOO03M2jNmm1BqKI3WxzO6BmNtCFOsjC3bfjF2Ccgjt4uAoX2Vtp3amwR8h6EHe0wDgcQnC5nQWYEBXgVTPwVivOXLZaoyF1PtLBhOygsTyFUUNvsL1fJ05PyfLgbrCJgeZKZCB6wtLiZEAHC_umNh-go91Ig4sW7mM5F1xfiSHWfpnI12EFyUL8muqgjtjiPEvXjTtQzJDZ8zKuYZJ_q8C4oWGTFlU_dVJmzR3xBeLKwqIMqKgfUko73WjEYIalD6hFkUExhdkRQ2c7VPF2iz_3b11O4aK_wlrfOk9hpfmg7AOo-fJ8yOaHTn1rymp33osZ_bRWYmRnfSIMPFaTO7miRrInp2tXWkWrYXFOlIVFtuz-lR52cx-ukm9rPrAhKxohAZ1y9RowhmjPgI55t7L2Y-9i0K1ujjx-T2LRCOPZMpRBwIPDtFP65yCe0xS824g1vxnrzwBI82RsoutcMx7hYNnLoShqwp-rV-SAMOtQtb2euo2e5HPnP7esD5JnBjal2d_p5Mhnk0AOcZrYaF2MsAgGnPFSPLYsN00dlncP75kJ8m7x4f6bI13QvRRzeYDcftLuMcOtJxvQz6gTkQd0kSGGbPrAMJYnr1kPi_pOxLULV3bwyCs_zS-KMwkAAx9EsaGFvBKU3I9twipP52sJlw8cEN9NYLy5zREbpCRZMYluXlpUi3ArT4ql-sTh8unsNA6stT_tdJhS1SL-7gyT5g0KIWV_We2gEs5LFxaQpmNqKiUeIH-qXw8nMJqjqmvCi16nMh4DdzFHvtFHzeIS5PrzHw8k5XutgyfMkqiEvaBZfWNj0ayklwWoin-5ng9WpvjITN5A4TZzkERUTFh74qTofUMbk8xrNOdOv_d4rqETZHVhsHHcflnDTk7ARMiw8oJBVMD6qY5m1Oelt5fVgoVdGlJGiDK2Szv8jErmmCgGzrt771KLIkYJ3o0Og84rOdBVL4gj6XjoM7T3UvAI99LC69QVN7tU6oHK7QTzH1JYqdZdsZKwCAqzOY6unEBiiQUF8hM84SSLb7WJWDWqfKA5J7qXVooWGiwelFAnPyabcXxuEVK9STQCx7BGxlBjN6CVCyfJf5tjdXtgGrjBdYd44BsAq6pesLGNNh3p6rnfFy93vBhBaEWIlfQLI5c1DsFqeSrvFzNf8vTEBvlY3rdGn7sf41QAj-YNqIePeyQB5rLSRo7Y7Kxw7h4bC8paIg4EC8KGT7L-PjXcLDFfIQ3HJXBtngXgtSGhSK8yrTDyPxHrIvUs3mJKs0M_5hKFsbo0oSpGLBBAEYnAreh-elu4o0YCdRgSXo3ZFlu2HR2kGvaxs-0UOdH8F0IqxEIvy5GAAvjYVSMQI-6jR48QZAOk6CqJ7earG30_IVWq9OhhtFHN3zmddnfYGIlF-t253LDxqQ1VsncwtvaogKe-09_1V93s1UBM9dax8xBzmth8KKMpUQAqUbVn7mUr1bEFwGtcqLZZQ_L7l0rLYDE0gwFQKi951wQxkG9ERYp3YHksyOy1yNpuMtvdMtWgiS5mur-i2GGPHgjrN2vRCbrC3AkB_6sJmE9hvx3aSqsBNnlbKAtE2pmokWqr1aL8jCcfg7-5mr0fe2bJfKSWJXYdynwSBc08h2RfS43UkPlrn6dFBZdJk2auRuP3kxwFe-UaXAaQW-n3cA3hUqIGROnEmkpWj19Rb-u_T-eY5Ra0tZ_dg3Fq5aQsXthvOdktH8MxZ3MNWIG0fsL_VbHje_KW2fOLz0vSZnzGNa4V2xL3NjwRqBolto85T3AH5Ak88idXytIbnwD-IqMWoL2Fywr22M-Wp481HPHlCsVUj6IutIuSaDcX2_Hkytg4jjVU8eTnemMneB1NzL2eOlWphv-T062KwBnqLZabzpGjBURD-NcysF_9Taw52f_ue49hdvIZ3bXVSwQFotcTQmZ7mXtBGI3RRe3cZzt-8hJV99T-7PQ4q1UxViYpANPPHzBgxWGHMkPnoIObb6qz1GEaFDGGwywwyoYlnUB0rkmFCCv1ySWd1jVZrqltojW4aTjJmk_GeSGcEDza0-80nZROjCALgJBOCzZkOJOxnxK0sTduenwg5hvUBxVkx0k6VlaysboxmwTTg-cLDRPFdxoWDC1LN0foC55TP6JHROrBu7R5HsxtrshorWfMrEcZshvvrGBVNngVVYAFsVdzM6oC62i7HO7l4RhC-fXOipxPikMHflFVv6l5FDeaqxij7Cs-dH5xI1RULaKRMLNRb15Y2haRZpd8GmzgjvmOVYNcEKP8GDgh4Z7Z5TZpo_iUsM3s60zgBVyP7f5mR4xjTVo6egji5UjDcCusEVG8xEaezpuschogoRt6XRUuwFI8az6wqmFzoIz8GLbkvRYwp5vSyFLpg71xWB4JZSfqc-8OxWelhSt4dqJGZHSNh-VpiDDjnuLRZds2nVASDOk0f_8p2JO-UCHvtT5I_rP2ZFEVvzr0MIPt7x1SBVsiqRX17_h8XsvrGI0PDY0geoLtfP_3ZPF2PQ4MhsujUUKb7wc180S5TuKTLJeKa-WRu5s1oV4HviSDcd3-EWIYX0rJSdS0pSMQHTTm1BubGGXCjvoulSRNlKHnA4JjjiWTXrvkszmBC5ekHwr_AFwdy4UWXQ-XHhX99bDWOO5xSEnggqGIIriMYS2uhGpyOfDhaI4D7RM6PCheKpt7XwsTQDDJNc-OSwH_NoSxeaPMLtnew-KgT0_VGRtlvQPWn1o5NkaeKs3CUjW260yCsCHoVArVTeAsOSCtpTTtxyKRgHCPJ3VA1fNIpXGBPPeQgv30DHTMpHpsr-zsPNZ5PU7TlQb3AUI-UnP_0XLSY5-UyMKRPeGgf2fo8agKKbhIbRlcRRzfWPd3bSaNpdZ2AI-bbprJEnwkgbM4A0p7wBXuLHzhS4rC24QMQj92dxBrqzUmZfL-Ihj--5dgcvQqVZIq-9mMCYuhZZt4NHSidqLLoCRchOTuFqsno8iw3Ro-W7jVyAxMgMnmCzdHS8_gOGhwmlekEMEbE3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADChQaHCctMg",
+  },
+};
+
+function katVerifies(keyAlgorithm: string): boolean {
+  const vector = KNOWN_ANSWERS[keyAlgorithm];
+  if (!vector) return false;
+  const signature = Buffer.from(vector.signature, "base64url");
+  if (keyAlgorithm === "Ed25519") {
+    try {
+      // Raw Ed25519 public key wrapped in its SPKI DER prefix.
+      const spki = Buffer.concat([
+        Buffer.from("302a300506032b6570032100", "hex"),
+        Buffer.from(vector.publicKey, "base64url"),
+      ]);
+      const key = createPublicKey({ key: spki, format: "der", type: "spki" });
+      return nodeVerifySignature(null, KNOWN_ANSWER_MESSAGE, key, signature);
+    } catch (_error) {
+      return false;
+    }
+  }
+  return mldsa(keyAlgorithm, vector.publicKey, KNOWN_ANSWER_MESSAGE, signature);
+}
+
+export function capabilities(): { linkedCrypto: string; algorithms: Array<{ name: string; keyAlgorithm: string; verifiable: boolean }> } {
+  const algorithms = ALG_ROWS.map((row) => ({
+    name: row.name,
+    keyAlgorithm: row.keyAlgorithm,
+    verifiable: katVerifies(row.keyAlgorithm),
+  }));
+  return { linkedCrypto: process.versions.openssl ?? "", algorithms };
+}
+
+// The signature registry's published identity, mirroring the reference
+// Algorithm.registry_digest/0 byte for byte: the canonical object of every
+// row under the signature-registry digest domain.
+export function algorithmRegistryDigest(): string {
+  const value: CanonicalValue = Object.fromEntries(
+    ALG_ROWS.map((row) => [
+      row.name,
+      Object.fromEntries([
+        ["name", row.name],
+        ["min_protocol_revision", row.minProtocolRevision],
+        ["key_algorithm", row.keyAlgorithm],
+        ["public_key_bytes", row.publicKeyBytes],
+        ["signature_bytes", row.signatureBytes],
+      ]),
+    ]),
+  ) as CanonicalValue;
+
+  return taggedDigest("signature_registry", Buffer.from(canonical(value), "utf8"));
+}
+
+// Strict like the reference Profile.new/1: shape errors report invalid_type;
+// unknown names or out-of-accepted-range bounds report invalid_profile.
+// Omitted members mean the full axis.
+function parseProfile(spec: AnyRecord | undefined):
+  { ok: true; algorithms: string[]; minRevision: number; maxRevision: number } |
+  { ok: false; code: "invalid_type" | "invalid_profile" } {
+  const registryNames = ALG_ROWS.map((row) => row.name);
+  let algorithms = registryNames;
+  if (spec !== undefined && spec.algorithms !== undefined) {
+    if (!Array.isArray(spec.algorithms)) return { ok: false, code: "invalid_type" };
+    const names = spec.algorithms as unknown[];
+    if (names.length === 0 || new Set(names).size !== names.length) return { ok: false, code: "invalid_profile" };
+    if (!names.every((name) => typeof name === "string" && registryNames.includes(name))) {
+      return { ok: false, code: "invalid_profile" };
+    }
+    algorithms = names as string[];
+  }
+
+  let minRevision = Math.min(...ACCEPTED_PROTOCOL_REVISIONS);
+  let maxRevision = Math.max(...ACCEPTED_PROTOCOL_REVISIONS);
+  if (spec !== undefined && spec.revisions !== undefined) {
+    const bounds = spec.revisions as AnyRecord;
+    if (typeof bounds !== "object" || bounds === null ||
+        typeof bounds.min !== "number" || typeof bounds.max !== "number") {
+      return { ok: false, code: "invalid_type" };
+    }
+    if (!ACCEPTED_PROTOCOL_REVISIONS.includes(bounds.min) ||
+        !ACCEPTED_PROTOCOL_REVISIONS.includes(bounds.max) || bounds.min > bounds.max) {
+      return { ok: false, code: "invalid_profile" };
+    }
+    minRevision = bounds.min;
+    maxRevision = bounds.max;
+  }
+
+  return { ok: true, algorithms, minRevision, maxRevision };
+}
+
+// "ok" | "algorithm" | "revision" | "invalid_type" | "invalid_profile" |
+// "decode": the admission walk mirrors the reference Chain.verify STAGE
+// order (descriptors, then revisions, then acceptances and terminations),
+// so a view whose defects are in different stages reports the same stage
+// in both implementations. Within one stage, admission defects are
+// decided before signature work here exactly as there. A view with BOTH a
+// structural defect and an admission defect in the SAME stage may differ
+// (this mirror reports the admission code; the reference reports the
+// structural one) — no certified corpus case carries that shape.
+function admitView(input: AnyRecord):
+  "ok" | "algorithm" | "revision" | "invalid_type" | "invalid_profile" | "decode" {
+  const profile = parseProfile(input.profile);
+  if (!profile.ok) return profile.code;
+
+  const admitEnvelope = (compact: unknown): "ok" | "algorithm" | "revision" | "decode" => {
+    const decoded = decodeJws(compact);
+    if (!decoded.ok) return "decode";
+    const revision = decoded.value.payload.protocol_revision;
+    if (typeof revision !== "number") return "decode";
+    if (!profile.algorithms.includes(decoded.value.header.alg)) return "algorithm";
+    if (revision < profile.minRevision || revision > profile.maxRevision) return "revision";
+    return "ok";
+  };
+
+  for (const compact of Array.isArray(input.descriptors) ? input.descriptors : []) {
+    const outcome = admitEnvelope(compact);
+    if (outcome !== "ok") return outcome;
+  }
+
+  for (const text of Array.isArray(input.revisions) ? input.revisions : []) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text as string); } catch (_error) { return "decode"; }
+    if (typeof parsed !== "object" || parsed === null) return "decode";
+    const revision = (parsed as AnyRecord).protocol_revision;
+    if (typeof revision !== "number") return "decode";
+    if (revision < profile.minRevision || revision > profile.maxRevision) return "revision";
+  }
+
+  for (const compact of [
+    ...(Array.isArray(input.acceptances) ? input.acceptances : []),
+    ...(Array.isArray(input.terminations) ? input.terminations : []),
+  ]) {
+    const outcome = admitEnvelope(compact);
+    if (outcome !== "ok") return outcome;
+  }
+
+  return "ok";
+}
+
 function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
@@ -1033,6 +1207,24 @@ function execute(one: ConformanceCase): CaseResult {
     case "chain.verify": {
       const chain = chainFromInput(input);
       return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology, accepted_revision_digests: facts.acceptedDigests, superseded_revision_digests: facts.supersededDigests }));
+    }
+    case "chain.verify_profile": {
+      // The capability-profile mirror. The admission walk mirrors the
+      // reference Chain.verify STAGE order (descriptors, then revisions,
+      // then acceptances and terminations), so a view whose defects are in
+      // different stages reports the same stage in both implementations.
+      // Within one stage, admission defects are decided before signature
+      // work here exactly as there. A view with BOTH a structural defect
+      // and an admission defect in the SAME stage may differ (this mirror
+      // reports the admission code; the reference reports the structural
+      // one) — no certified corpus case carries that shape.
+      const admission = admitView(input);
+      if (admission === "algorithm") return invalid("algorithm_outside_profile");
+      if (admission === "revision") return invalid("revision_outside_profile");
+      if (admission === "invalid_type") return invalid("invalid_type");
+      if (admission === "invalid_profile") return invalid("invalid_profile");
+      const chain = chainFromInput(input);
+      return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology }));
     }
     case "governing_revision": {
       const chain = chainFromInput(input);

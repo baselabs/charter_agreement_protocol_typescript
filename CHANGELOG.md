@@ -3,6 +3,42 @@
 All notable public changes to `@charter-agreement-protocol/verifier` are
 documented here.
 
+## [0.5.0] — 2026-09-24
+
+The CAP 0.4.0 release-identity act, mirrored: the capability profile, the
+honest capability probe, the signature registry's own identity, the
+descriptor timestamp floor, and the 104-case certified corpus.
+
+### Added
+
+- The `chain.verify_profile` corpus surface: the capability-profile mirror
+  of the reference `Chain.verify/6`. Admission walks the reference STAGE
+  order (descriptors, then revisions, then acceptances and terminations);
+  out-of-profile artifacts report `algorithm_outside_profile` /
+  `revision_outside_profile` before any signature work; malformed profile
+  specs report `invalid_type` / `invalid_profile` (strict, like the
+  reference `Profile.new/1`).
+- `capabilities()` — one verifiable verdict per registry row, derived from
+  pinned known-answer verification vectors identical to the reference
+  probe's bytes; linked-crypto identity informational only.
+- `algorithmRegistryDigest()` — the signature algorithm registry's
+  domain-separated identity, byte-equal to the reference
+  `Algorithm.registry_digest/0`
+  (`sha-256:bPZY8aw4NCp3kMt4bZAACFZIcBctGGuTSa6avESQlrM`); also exported
+  from the package root alongside `capabilities()`.
+
+### Changed
+
+- `PartyDescriptor.effective_from` gains the 1..64 string-BYTE floor its
+  seven sibling timestamp members carry (the reference schema-stage order:
+  before key resolution and signature work; byte length, not UTF-16
+  units) — the last live timestamp asymmetry.
+- The vendored certified corpus is the 104-case snapshot (census digest
+  `sha-256:bp_w7EUD…`; certified index identity
+  `f--8DXp39J4wJkrpkD8ZTQpHkMlduX43Xvnz0HeObeA`): the three
+  `chain.verify_profile` cases and the descriptor timestamp-floor witness
+  join the population; agreement recomputed 104/104.
+
 ## [0.4.0] — 2026-09-17
 
 ### Added

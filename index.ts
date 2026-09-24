@@ -10,7 +10,9 @@
 // recomputed from raw bytes.
 
 export {
+  algorithmRegistryDigest,
   canonical,
+  capabilities,
   loadCorpus,
   reportFor,
   selfChecks,

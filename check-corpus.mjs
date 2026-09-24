@@ -21,6 +21,7 @@ const surfaces = [
   "acceptance.equivocation",
   "termination.verify",
   "chain.verify",
+  "chain.verify_profile",
   "governing_revision",
   "receipt.verify",
 ];
@@ -44,6 +45,9 @@ const classes = [
   "descriptor_fork",
   "equivocation",
   "chain_fork",
+  "profile_algorithm_outside",
+  "profile_revision_outside",
+  "profile_narrow_valid",
   "supersession",
   "precedence_selection",
   "outcome_indeterminate",
@@ -65,6 +69,7 @@ const required = {
   "acceptance.equivocation": ["equivocation", "invalid_constraint"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
   "chain.verify": ["valid", "chain_fork", "supersession", "chain_invalid"],
+  "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
   "governing_revision": ["precedence_selection"],
   "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
