@@ -5,6 +5,8 @@ documented here.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-13
+
 ### Breaking
 
 - `verifyDescriptor` requires a predecessor with retained signed `lineage`;
