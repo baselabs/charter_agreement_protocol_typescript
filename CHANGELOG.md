@@ -38,10 +38,13 @@ documented here.
   `algorithm_unsupported_on_substrate`. The runtime is asked once through the
   known-answer vector, which must verify while a tampered message must not,
   and the answer is kept. CI runs the test suite with Bun installed.
-- Two profile rejections were reported under another code, matching a
-  change in the reference. A receipt outside the profile whose `kid` names no
-  key in its chain view returned `signature_invalid`; it now returns the
-  profile code, as it does against a bare revision. `verifyDescriptor` given
+- Profile rejections were reported under another code in some cases,
+  matching a change in the reference. An acceptance, termination, descriptor
+  or receipt outside the profile whose `kid` names no key returned the key
+  lookup code (`acceptance_invalid`, `termination_invalid`,
+  `descriptor_key_invalid`) or, for a receipt in a chain view,
+  `signature_invalid`; the envelope is now admitted before the key is looked
+  up, so it returns the profile code. `verifyDescriptor` given
   a predecessor outside the profile returned `descriptor_chain_invalid`; it
   now returns the profile code, as `verifyDescriptorChain` does, and a
   predecessor whose signature the runtime cannot check returns
@@ -154,7 +157,7 @@ observations; and artifact lists or byte totals exceeding caller limits.
   separately from invalid signatures, outside corpus verdict reports.
 - JSON projections preserve input member order, including numeric-looking
   names. The float boxing seam used by the differential gate is unchanged.
-- The vendored certified corpus contains 159 cases for verification semantics
+- The vendored certified corpus contains 163 cases for verification semantics
   5 and uses the reference's expanded applicability floor. The registry digest
   and package version remain unchanged.
 

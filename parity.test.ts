@@ -609,3 +609,17 @@ test("a runtime whose ML-DSA keys report no type still verifies ML-DSA", (t) => 
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout.trim()), [true, { ok: false, code: "signature_invalid" }]);
 });
+
+test("a predecessor the runtime cannot check reports the substrate diagnostic, never a broken chain", async () => {
+  // The browser bundle has no ML-DSA; Node 24.8 and later verify it. The
+  // target is an unrelated genesis, so once the predecessor history verifies
+  // the call fails as a broken chain.
+  const mldsaGenesis = fixture("party_descriptor-verify", "descriptor-mldsa65-rev3-valid").compact;
+  const target = fixture("party_descriptor-verify", "party-descriptor-genesis-valid").compact;
+  const digest = api.descriptorDigest(mldsaGenesis);
+  assert.ok(digest.ok);
+  const predecessor = { lineage: [mldsaGenesis], descriptor_digest: digest.digest } as any;
+  const browser = await bundledVerifier();
+  assert.deepEqual(browser.verifyDescriptor(target, predecessor), { ok: false, code: "algorithm_unsupported_on_substrate" });
+  assert.deepEqual(api.verifyDescriptor(target, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+});

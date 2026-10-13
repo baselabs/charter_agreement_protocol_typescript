@@ -1026,13 +1026,17 @@ function replaceHeader(compact: string, changes: Record<string, unknown>): strin
   return `${Buffer.from(canonical({ ...JSON.parse(Buffer.from(header, "base64url").toString()), ...changes })).toString("base64url")}.${payload}.${signature}`;
 }
 
-test("profile checks follow key resolution in signed artifact context", () => {
-  for (const [file, id, fn, code] of [
+test("profile checks precede key resolution in signed artifact context", () => {
+  // Outside the profile, the profile code wins over a kid that names no key
+  // (as in the reference); inside it, the missing key is reported.
+  for (const [file, id, fn, keyCode] of [
     ["acceptance-verify.json", "acceptance-profile-narrow-valid", verifyAcceptance, "acceptance_invalid"],
     ["termination-verify.json", "termination-profile-narrow-valid", verifyTermination, "termination_invalid"],
   ] as const) {
     const input = corpusCase(file, id).input;
-    assert.deepEqual(withOptions(fn, [replaceHeader(input.compact, { kid: "missing-key" }), input.revision_text, input.descriptor_compacts], { profile: { algorithms: ["EdDSA"] } }), { ok: false, code });
+    const unknownKid = replaceHeader(input.compact, { kid: "missing-key" });
+    assert.deepEqual(withOptions(fn, [unknownKid, input.revision_text, input.descriptor_compacts], { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "algorithm_outside_profile" });
+    assert.deepEqual(withOptions(fn, [unknownKid, input.revision_text, input.descriptor_compacts], {}), { ok: false, code: keyCode });
   }
   const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
   assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "signature_invalid" });

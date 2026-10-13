@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "7i_NlDo0I_m38oodj2C1j55R89rYIUx46RRzHhEnhIU";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "n2Se2on9kG3cdeFMiy9OW9lKalvM_02Fmdw-XbYe-A4";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -639,6 +639,11 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
     return fail("descriptor_chain_invalid");
   }
+  // The envelope is admitted before its kid is looked up, as in the
+  // reference, so an out-of-profile artifact whose kid names no key reports
+  // the profile code. Acceptances and terminations do the same.
+  const descriptorAdmission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
+  if (descriptorAdmission) return fail(descriptorAdmission);
   const resolved = Array.isArray(keys) && keys.find((one) =>
     one.key_id === decoded.value.header.kid && one.status === "active"
   );
@@ -963,6 +968,8 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
   if (!descriptor) return fail("acceptance_claims_mismatch");
+  const acceptanceAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (acceptanceAdmission) return fail(acceptanceAdmission);
   if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("acceptance_invalid");
   const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys, settings);
   if (!signature.ok) return signature;
@@ -980,6 +987,8 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
   if (!descriptor) return fail("termination_claims_mismatch");
+  const terminationAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (terminationAdmission) return fail(terminationAdmission);
   if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("termination_invalid");
   const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys, settings);
   if (!signature.ok) return signature;
@@ -1499,13 +1508,11 @@ function execute(one: ConformanceCase): CaseResult {
     case "charter_revision.decode":
       return project(revisionFromText(input.text), (revision) => ({ revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration, abp_binding: { blueprint_id: revision.value.abp_bindings[0].blueprint_id, release_number: revision.value.abp_bindings[0].release_number, content_digest: revision.value.abp_bindings[0].content_digest, deployment_digest: revision.value.abp_bindings[0].deployment_digest } }));
     case "acceptance.verify": {
-      const settings = resolveOptions({ profile: input.profile });
-      if (!settings.ok) return invalid(settings.code);
-      const revision = revisionWithProfile(input.revision_text, settings.value);
-      if (!revision.ok) return invalid(revision.code);
-      const chain = descriptorChain(input.descriptor_compacts, settings.value);
-      if (!chain.ok) return invalid(chain.code);
-      return project(acceptanceFromCompact(input.compact, revision.value, chain.value, settings.value), (facts) => ({ acceptance_digest: facts.digest, revision_digest: facts.claims.revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, descriptor_position: facts.descriptorPosition }));
+      // The runner calls the public function, so the corpus checks the code
+      // consumers run.
+      const verified = verifyAcceptance(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ acceptance_digest: verified.facts.acceptance_digest, revision_digest: verified.facts.claims.revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, descriptor_position: verified.facts.descriptor_position });
     }
     case "acceptance.equivocation": {
       const chain = descriptorChain(input.descriptor_compacts);
@@ -1525,13 +1532,9 @@ function execute(one: ConformanceCase): CaseResult {
       return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).value.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.value.claims.revision_digest).sort(), winner: null });
     }
     case "termination.verify": {
-      const settings = resolveOptions({ profile: input.profile });
-      if (!settings.ok) return invalid(settings.code);
-      const revision = revisionWithProfile(input.revision_text, settings.value);
-      if (!revision.ok) return invalid(revision.code);
-      const chain = descriptorChain(input.descriptor_compacts, settings.value);
-      if (!chain.ok) return invalid(chain.code);
-      return project(terminationFromCompact(input.compact, revision.value, chain.value, settings.value), (facts) => ({ termination_digest: facts.digest, governing_revision_digest: facts.claims.governing_revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, reason_code: facts.claims.reason_code, descriptor_position: facts.descriptorPosition }));
+      const verified = verifyTermination(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
     }
     case "chain.verify": {
       const chain = chainWithOptions(input, { limits: input.limits });
