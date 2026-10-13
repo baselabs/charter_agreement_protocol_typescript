@@ -1,0 +1,18 @@
+title = "charter_agreement_protocol_typescript gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic signed conformance fixtures are public test vectors, not credentials"
+targetRules = ["jwt"]
+paths = [
+  '''^conformance/cases/(party_descriptor-verify|descriptor_chain-verify|acceptance-verify|acceptance-equivocation|termination-verify|chain-verify|chain-verify_profile|governing_revision|receipt-verify)\.json$'''
+]
+
+[[allowlists]]
+description = "Pinned known-answer verification vectors are public test data, not credentials"
+targetRules = ["github-app-token"]
+paths = [
+  '''^core\.ts$'''
+]
