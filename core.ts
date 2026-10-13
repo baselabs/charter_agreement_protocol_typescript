@@ -169,6 +169,7 @@ interface JsonReader {
   value?: unknown;
   index?: number;
   code?: string;
+  deferredCode?: string;
 }
 
 interface CorpusEntry { path: string; size: number; }
@@ -251,10 +252,12 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
       if (text[cursor] !== ":") return { status: "syntax" };
       const item = readJsonValue(text, skipWhitespace(text, cursor + 1), limits, depth + 1);
       if (item.status !== "ok") return item;
+      cursor = skipWhitespace(text, item.index);
+      if (text[cursor] !== "," && text[cursor] !== "}") return { status: "syntax" };
+      if (item.deferredCode) return { status: "error", code: item.deferredCode };
       if (++count > limits.max_object_members) return { status: "error", code: "limit_exceeded" };
       duplicate ||= members.has(key.value);
       members.set(key.value, item.value);
-      cursor = skipWhitespace(text, item.index);
       if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }
       if (text[cursor] === "}") {
         if (duplicate) return { status: "error", code: "duplicate_member" };
@@ -272,9 +275,11 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
     for (;;) {
       const item = readJsonValue(text, cursor, limits, depth + 1);
       if (item.status !== "ok") return item;
+      cursor = skipWhitespace(text, item.index);
+      if (text[cursor] !== "," && text[cursor] !== "]") return { status: "syntax" };
+      if (item.deferredCode) return { status: "error", code: item.deferredCode };
       if (items.length >= limits.max_array_items) return { status: "error", code: "limit_exceeded" };
       items.push(item.value);
-      cursor = skipWhitespace(text, item.index);
       if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }
       if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
       return { status: "syntax" };
@@ -292,16 +297,17 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   const token = NUMBER_TOKEN.exec(text);
   if (token) {
     const literal = token[0];
+    const numberError = (code: string): JsonReader => ({ status: "ok", deferredCode: code, index: index + literal.length });
     if (/^-?[0-9]+$/.test(literal)) {
-      if (literal.replace(/^-/, "").length > 21) return { status: "error", code: "number_not_double_expressible" };
+      if (literal.replace(/^-/, "").length > 21) return numberError("number_not_double_expressible");
       const magnitude = BigInt(literal);
       if (magnitude > MAXIMUM_SAFE_INTEGER || magnitude < -MAXIMUM_SAFE_INTEGER) {
-        if (JSON.stringify(Number(literal)) !== literal) return { status: "error", code: "number_not_double_expressible" };
+        if (JSON.stringify(Number(literal)) !== literal) return numberError("number_not_double_expressible");
         return { status: "ok", value: new Number(Number(literal)), index: index + literal.length };
       }
     } else {
-      if (literal.length > 32) return { status: "error", code: "number_not_double_expressible" };
-      if (!Number.isFinite(Number(literal))) return { status: "error", code: "invalid_number" };
+      if (literal.length > 32) return numberError("number_not_double_expressible");
+      if (!Number.isFinite(Number(literal))) return numberError("invalid_number");
     }
     // Float-ness follows the lexeme (fraction or exponent), never the value:
     // "0.0" and "2e0" are floats even though their double is integral, so the
@@ -354,6 +360,7 @@ export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Re
   if (value.status === "need-character" || value.status === "syntax") return fail("invalid_syntax");
   if (value.status === "error") return fail(value.code as string);
   if (value.index === undefined || skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
+  if (value.deferredCode) return fail(value.deferredCode);
   return ok(value.value as CanonicalValue);
 }
 

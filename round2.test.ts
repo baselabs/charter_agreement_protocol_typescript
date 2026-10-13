@@ -239,6 +239,20 @@ test("S11 JSON limits count every parsed member and parse over-limit values firs
   assert.deepEqual(api.decodeJsonText('{"a":1,"a":2}', { max_object_members: 2 }), { ok: false, code: "duplicate_member" });
 });
 
+test("JSON separators precede container counts and number conversion", async (t) => {
+  for (const text of ['[1,2,3}', '[1,2,"x"', '[1,2,true ', '[1,2,{}', '{"a":1,"b":2,"c":3]', '{"a":1,"b":2,"a":3']) {
+    await t.test(text, () => assert.deepEqual(api.decodeJsonText(text, { max_array_items: 2, max_object_members: 2 }), { ok: false, code: "invalid_syntax" }));
+  }
+  for (const literal of ["1e400", "12345678901234567", "12345678901234567890123"]) {
+    for (const text of [`[${literal}`, `[${literal}x`, `[${literal}}`, `{"a":${literal}`, `{"a":${literal}]`]) {
+      await t.test(text, () => assert.deepEqual(api.decodeJsonText(text), { ok: false, code: "invalid_syntax" }));
+    }
+  }
+  assert.deepEqual(api.decodeJsonText('[1,2,3,', { max_array_items: 2 }), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(api.decodeJsonText('[1e400]'), { ok: false, code: "invalid_number" });
+  assert.deepEqual(api.decodeJsonText('[12345678901234567]'), { ok: false, code: "number_not_double_expressible" });
+});
+
 test("S12 revision decoding requires text", () => {
   for (const value of [5, null, {}, [], true]) {
     assert.deepEqual(api.decodeCharterRevision(value), { ok: false, code: "invalid_type" });
