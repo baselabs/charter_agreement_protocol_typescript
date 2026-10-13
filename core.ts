@@ -1475,7 +1475,47 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
   return chain.ok ? receiptFromCompact(compact, { kind: "chain", chain: chain.value }, settings) : chain;
 }
 
+function executeArtifactCase(one: ConformanceCase): CaseResult | null {
+  const input = one.input;
+  switch (one.surface) {
+    case "party_descriptor.verify": {
+      // A case may name its predecessor history, genesis first; each entry
+      // verifies under the full profile against the one before it.
+      let predecessor: DescriptorPredecessor | null = null;
+      for (const compact of (input.predecessor_compacts ?? []) as string[]) {
+        const verified = verifyDescriptor(compact, predecessor);
+        if (!verified.ok) throw new Error("corpus predecessor history does not verify");
+        predecessor = verified.facts as DescriptorPredecessor;
+      }
+      const verified = verifyDescriptor(input.compact, predecessor, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ descriptor_digest: verified.facts.descriptor_digest, party_id: verified.facts.party_id, descriptor_number: verified.facts.descriptor_number });
+    }
+    case "acceptance.verify": {
+      // The runner calls the public function, so the corpus checks the code
+      // consumers run.
+      const verified = verifyAcceptance(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ acceptance_digest: verified.facts.acceptance_digest, revision_digest: verified.facts.claims.revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, descriptor_position: verified.facts.descriptor_position });
+    }
+    case "termination.verify": {
+      const verified = verifyTermination(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
+    }
+    case "receipt.verify": {
+      const settings = resolveOptions({ profile: input.profile });
+      if (!settings.ok) return invalid(settings.code);
+      return project(receiptWithContext(input.compact, input.revision_text ?? input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
+    }
+    default:
+      return null;
+  }
+}
+
 function execute(one: ConformanceCase): CaseResult {
+  const artifact = executeArtifactCase(one);
+  if (artifact) return artifact;
   const input = one.input;
   switch (one.surface) {
     case "base64url.decode":
@@ -1522,19 +1562,7 @@ function execute(one: ConformanceCase): CaseResult {
       if (Buffer.byteLength(members.name) < 2 || Buffer.byteLength(members.name) > 4) return invalid("cardinality_violation");
       return valid({ members });
     }
-    case "party_descriptor.verify": {
-      // A case may name its predecessor history, genesis first; each entry
-      // verifies under the full profile against the one before it.
-      let predecessor: DescriptorPredecessor | null = null;
-      for (const compact of (input.predecessor_compacts ?? []) as string[]) {
-        const verified = verifyDescriptor(compact, predecessor);
-        if (!verified.ok) throw new Error("corpus predecessor history does not verify");
-        predecessor = verified.facts as DescriptorPredecessor;
-      }
-      const verified = verifyDescriptor(input.compact, predecessor, { profile: input.profile });
-      if (!verified.ok) return invalid(verified.code);
-      return valid({ descriptor_digest: verified.facts.descriptor_digest, party_id: verified.facts.party_id, descriptor_number: verified.facts.descriptor_number });
-    }
+
     case "descriptor_chain.verify": {
       const chain = descriptorChain(input.compacts);
       return project(chain, (value) => {
@@ -1543,13 +1571,7 @@ function execute(one: ConformanceCase): CaseResult {
     }
     case "charter_revision.decode":
       return project(revisionFromText(input.text), (revision) => ({ revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration, abp_binding: { blueprint_id: revision.value.abp_bindings[0].blueprint_id, release_number: revision.value.abp_bindings[0].release_number, content_digest: revision.value.abp_bindings[0].content_digest, deployment_digest: revision.value.abp_bindings[0].deployment_digest } }));
-    case "acceptance.verify": {
-      // The runner calls the public function, so the corpus checks the code
-      // consumers run.
-      const verified = verifyAcceptance(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
-      if (!verified.ok) return invalid(verified.code);
-      return valid({ acceptance_digest: verified.facts.acceptance_digest, revision_digest: verified.facts.claims.revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, descriptor_position: verified.facts.descriptor_position });
-    }
+
     case "acceptance.equivocation": {
       const chain = descriptorChain(input.descriptor_compacts);
       if (!chain.ok || !Array.isArray(input.signed_revisions) || input.signed_revisions.length !== 2) {
@@ -1567,11 +1589,7 @@ function execute(one: ConformanceCase): CaseResult {
       if (!pairable) return invalid("acceptance_equivocation_invalid");
       return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).value.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.value.claims.revision_digest).sort(), winner: null });
     }
-    case "termination.verify": {
-      const verified = verifyTermination(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
-      if (!verified.ok) return invalid(verified.code);
-      return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
-    }
+
     case "chain.verify": {
       const chain = chainWithOptions(input, { limits: input.limits });
       return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology, accepted_revision_digests: facts.acceptedDigests, superseded_revision_digests: facts.supersededDigests }));
@@ -1592,11 +1610,7 @@ function execute(one: ConformanceCase): CaseResult {
         }),
       });
     }
-    case "receipt.verify": {
-      const settings = resolveOptions({ profile: input.profile });
-      if (!settings.ok) return invalid(settings.code);
-      return project(receiptWithContext(input.compact, input.revision_text ?? input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
-    }
+
     default:
       throw new Error("unsupported surface");
   }
