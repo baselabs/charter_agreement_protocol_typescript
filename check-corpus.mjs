@@ -50,28 +50,29 @@ const classes = [
   "profile_narrow_valid",
   "supersession",
   "precedence_selection",
+  "terminated",
   "outcome_indeterminate",
   "extension_unknown_critical",
-  "extension_invalid",
   "extension_optional_roundtrip",
+  "extension_invalid",
 ];
 
 const required = {
   "base64url.decode": ["valid", "exact_bound", "invalid_encoding"],
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
-  "canonicalization.encode": ["valid", "invalid_encoding", "non_canonical_bytes", "invalid_type"],
+  "canonicalization.encode": ["valid", "invalid_encoding", "invalid_type", "non_canonical_bytes"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
-  "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical", "extension_invalid"],
-  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
+  "charter_revision.decode": ["valid", "invalid_encoding", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "non_canonical_bytes", "extension_unknown_critical", "extension_invalid"],
+  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
   "acceptance.equivocation": ["equivocation", "invalid_constraint"],
-  "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
-  "chain.verify": ["valid", "chain_fork", "supersession", "chain_invalid"],
+  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
+  "chain.verify": ["valid", "exact_bound", "maximum_plus_one", "chain_fork", "supersession", "chain_invalid"],
   "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
-  "governing_revision": ["precedence_selection"],
-  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
+  "governing_revision": ["precedence_selection", "terminated"],
+  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
 
 function canonical(value) {

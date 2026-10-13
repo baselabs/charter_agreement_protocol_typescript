@@ -84,3 +84,14 @@ test("T13 integer-like members project in source order", () => {
   });
   assert.equal(canonical(decoded.value), '{"10":1,"9":2,"nested":{"1":4,"2":3}}');
 });
+
+// The standalone integrity checker keeps its own copy of the case-class list
+// and the required-cell floor, so it must accept the vendored corpus too.
+test("check-corpus.mjs accepts the vendored corpus and reports its digest", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const run = spawnSync(process.execPath, [join(here, "check-corpus.mjs"), join(here, "conformance")], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  const index = JSON.parse(readFileSync(join(here, "conformance", "index.json"), "utf8"));
+  assert.equal(run.stdout.trim(), index.corpus_digest);
+});
