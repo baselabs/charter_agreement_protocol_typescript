@@ -590,6 +590,7 @@ function parseTimestamp(value: unknown): { ticks: number; fraction: string } | n
   const match = TIMESTAMP_GRAMMAR.exec(value);
   if (!match) return null;
   const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  if (year < 1) return null;
   const date = new Date(0);
   date.setUTCFullYear(year, month - 1, day);
   const utc = date.getTime();

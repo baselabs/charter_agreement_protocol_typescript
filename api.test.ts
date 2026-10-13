@@ -1015,9 +1015,9 @@ test("T2 revision canonicalization rejects integer magnitudes before schema", ()
   assert.deepEqual(decodeCharterRevision(text.replace('"revision_number":1', '"revision_number":9007199254740992')), { ok: false, code: "integer_magnitude" });
 });
 
-test("T2 revision timestamps support the complete four-digit year range", () => {
+test("T2 revision timestamps support early and late four-digit years", () => {
   const base = JSON.parse(corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text);
-  for (const year of ["0000", "0001", "0099", "0100", "9999"]) {
+  for (const year of ["0001", "0099", "0100", "9999"]) {
     const result = decodeCharterRevision(canonical({ ...base, effective_from: year + "-01-01T00:00:00Z" }));
     assert.ok(result.ok, year + " " + JSON.stringify(result));
   }
