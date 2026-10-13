@@ -599,6 +599,31 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
   }
 }
 
+type DecodedJws = Extract<ReturnType<typeof decodeJws>, { ok: true }>["value"];
+type PreparedArtifact<F extends AnyRecord = AnyRecord> = { decoded: DecodedJws; keys: AnyRecord[]; facts: F; missingKeyCode: string; unnamed: boolean };
+
+function preparedArtifact<F extends AnyRecord>(decoded: DecodedJws, keys: AnyRecord[], facts: F, missingKeyCode: string, unnamed = false): Result<PreparedArtifact<F>> {
+  return ok({ decoded, keys: keys.filter((key) => key.key_id === decoded.header.kid && key.status === "active"), facts, missingKeyCode, unnamed });
+}
+
+function finishPreparedArtifact<F extends AnyRecord>(prepared: Result<PreparedArtifact<F>>, settings: Settings): Result<F> {
+  if (!prepared.ok) return prepared;
+  const { decoded, keys, facts, missingKeyCode, unnamed } = prepared.value;
+  if (unnamed) return ok(facts);
+  if (keys.length === 0) return fail(missingKeyCode);
+  if (decoded.header.typ !== "cap+receipt") {
+    const signature = verifyDecodedJws(decoded, decoded.header.typ, keys, settings);
+    return signature.ok ? ok(facts) : signature;
+  }
+  const candidates = keys.map((key) => ({ key, result: verifyDecodedJws(decoded, "cap+receipt", [key], settings) }));
+  const verifiedPublicKeys = new Set(candidates.filter((one) => one.result.ok).map((one) => one.key.public_key));
+  if (verifiedPublicKeys.size !== 1) {
+    const diagnostic = candidates.find((one) => !one.result.ok && ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"].includes(one.result.code));
+    return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
+  }
+  return ok(facts);
+}
+
 const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
 
 // Exact RFC 3339 UTC parse mirroring Timestamp.ex: real calendar date, hour
@@ -631,7 +656,7 @@ function compareTimestamps(left: { ticks: number; fraction: string }, right: { t
   return paddedLeft < paddedRight ? -1 : 1;
 }
 
-function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
+function prepareDescriptor(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+party");
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
@@ -650,16 +675,15 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   // the profile code. Acceptances and terminations do the same.
   const descriptorAdmission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
   if (descriptorAdmission) return fail(descriptorAdmission);
-  const resolved = Array.isArray(keys) && keys.find((one) =>
-    one.key_id === decoded.value.header.kid && one.status === "active"
-  );
-  if (!resolved) return fail("descriptor_key_invalid");
   if (!parseTimestamp(payload.effective_from)) {
     return fail("timestamp_invalid");
   }
-  const signature = verifyDecodedJws(decoded.value, "cap+party", keys, settings);
-  if (!signature.ok) return signature;
-  return ok(factsRecord({ ...decoded.value, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
+  const facts = factsRecord({ ...decoded.value, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg });
+  return preparedArtifact(decoded.value, keys, facts, "descriptor_key_invalid");
+}
+
+function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
+  return finishPreparedArtifact(prepareDescriptor(compact, predecessor, settings), settings);
 }
 
 // The nested schema admits registry encoding lengths; extraction checks
@@ -962,7 +986,7 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   return ok(factsRecord({ value, bytes, digest: taggedHash("charter_revision_content", bytes), protocol_revision: value.protocol_revision }));
 }
 
-function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+function prepareAcceptance(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -976,13 +1000,15 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   if (!descriptor) return fail("acceptance_claims_mismatch");
   const acceptanceAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (acceptanceAdmission) return fail(acceptanceAdmission);
-  if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("acceptance_invalid");
-  const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys, settings);
-  if (!signature.ok) return signature;
-  return ok(factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
+  const facts = factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  return preparedArtifact(decoded.value, descriptor.payload.verification_keys, facts, "acceptance_invalid");
 }
 
-function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+  return finishPreparedArtifact(prepareAcceptance(compact, revision, chain, settings), settings);
+}
+
+function prepareTermination(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+termination");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -995,10 +1021,12 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   if (!descriptor) return fail("termination_claims_mismatch");
   const terminationAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (terminationAdmission) return fail(terminationAdmission);
-  if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("termination_invalid");
-  const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys, settings);
-  if (!signature.ok) return signature;
-  return ok(factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
+  const facts = factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  return preparedArtifact(decoded.value, descriptor.payload.verification_keys, facts, "termination_invalid");
+}
+
+function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+  return finishPreparedArtifact(prepareTermination(compact, revision, chain, settings), settings);
 }
 
 // Chain-level structural checks mirroring Chain.verify: unique revision
@@ -1241,10 +1269,10 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   for (const compact of ((input.acceptances as string[]) || [])) {
     const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
     if (!decoded.ok) return decoded;
-    if (typeof decoded.value.payload.revision_digest !== "string" || typeof decoded.value.payload.party_descriptor_digest !== "string") return fail("chain_invalid");
-    const revision = byDigest.get(decoded.value.payload.revision_digest);
-    if (!revision || !descriptors.value.descriptors.some((one) => one.digest === decoded.value.payload.party_descriptor_digest)) return fail("chain_invalid");
-    const verified = acceptanceFromCompact(compact, revision, descriptors.value, settings);
+    const routed = signingContextFromSet(byDigest, descriptors.value, decoded.value.payload.revision_digest, decoded.value.payload.party_descriptor_digest);
+    if (!routed.ok) return routed;
+    const { revision, chain } = routed.value;
+    const verified = acceptanceFromCompact(compact, revision, chain, settings);
     if (!verified.ok) return verified;
     const coordinate = `${verified.value.claims.revision_digest}\0${verified.value.claims.party_descriptor_digest}\0${verified.value.claims.party_role}`;
     if (coordinates.has(coordinate)) return fail("chain_invalid");
@@ -1266,10 +1294,10 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   for (const compact of ((input.terminations as string[]) || [])) {
     const decoded = decodeJws(compact, settings.limits, "cap+termination");
     if (!decoded.ok) return decoded;
-    if (typeof decoded.value.payload.governing_revision_digest !== "string" || typeof decoded.value.payload.party_descriptor_digest !== "string") return fail("chain_invalid");
-    const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
-    if (!revision || !descriptors.value.descriptors.some((one) => one.digest === decoded.value.payload.party_descriptor_digest)) return fail("chain_invalid");
-    const verified = terminationFromCompact(compact, revision, descriptors.value, settings);
+    const routed = signingContextFromSet(byDigest, descriptors.value, decoded.value.payload.governing_revision_digest, decoded.value.payload.party_descriptor_digest);
+    if (!routed.ok) return routed;
+    const { revision, chain } = routed.value;
+    const verified = terminationFromCompact(compact, revision, chain, settings);
     if (!verified.ok) return verified;
     terminations.push(verified.value);
   }
@@ -1297,6 +1325,14 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
   return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId }));
+}
+
+// Both set verification and pre-sign checks route through this lookup.
+function signingContextFromSet(revisions: Map<string, RevisionRecord>, descriptors: Extract<ReturnType<typeof descriptorViews>, { ok: true }>["value"], revisionDigest: unknown, descriptorDigest: unknown, code = "chain_invalid") {
+  if (typeof revisionDigest !== "string" || typeof descriptorDigest !== "string") return fail(code);
+  const revision = revisions.get(revisionDigest);
+  const chain = descriptors.histories.find((history) => history.descriptors.some((one) => one.digest === descriptorDigest));
+  return revision && chain ? ok({ revision, chain }) : fail(code);
 }
 
 // Governing mirrors the reference semantics exactly: candidates are accepted,
@@ -1394,7 +1430,7 @@ type ChainView = Extract<ReturnType<typeof chainFromInput>, { ok: true }>["value
 // stays unchecked and governance cannot be decided.
 type ReceiptContext = { kind: "chain"; chain: ChainView } | { kind: "revision"; revision: RevisionRecord };
 
-function receiptFromCompact(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
+function prepareReceipt(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
   const revisionOnly = context.kind === "revision";
   const chain = context.kind === "chain" ? context.chain : { accepted: [context.revision], charterId: context.revision.value.charter_id || context.revision.digest };
   const decoded = decodeJws(compact, settings.limits, "cap+receipt");
@@ -1412,22 +1448,21 @@ function receiptFromCompact(compact: string, context: ReceiptContext, settings: 
     if (!claimedRevision) return fail("receipt_claims_mismatch");
     const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
     if (admission) return fail(admission);
-    return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]));
+    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]);
+    return preparedArtifact(decoded.value, [], facts, "signature_invalid", true);
   }
   // The envelope is admitted before any key is looked up, so an
   // out-of-profile receipt reports the profile rejection in both context
   // forms, even when its kid names no key in the view.
   const envelopeAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (envelopeAdmission) return fail(envelopeAdmission);
-  const candidates = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role)
-    .filter((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")
-    .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key], settings) }));
-  const verifiedPublicKeys = new Set(candidates.filter((one: any) => one.result.ok).map((one: any) => one.key.public_key));
-  if (verifiedPublicKeys.size !== 1) {
-    const diagnostic = candidates.find((one: any) => !one.result.ok && ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"].includes(one.result.code));
-    return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
-  }
-  return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
+  const keys = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role);
+  const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  return preparedArtifact(decoded.value, keys, facts, "signature_invalid");
+}
+
+function receiptFromCompact(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
+  return finishPreparedArtifact(prepareReceipt(compact, context, settings), settings);
 }
 
 function receiptWithContext(compact: string, context: AnyRecord | string, settings: Settings) {
@@ -2119,6 +2154,7 @@ function buildSigningInput(
   kid: unknown,
   claims: unknown,
   algorithm: unknown,
+  limits: Limits = DEFAULT_LIMITS,
 ): ProducerResult {
   if (typeof algorithm === "undefined") algorithm = defaultEmissionName();
   if (typeof algorithm !== "string" || !(algorithm in emissions())) {
@@ -2145,7 +2181,7 @@ function buildSigningInput(
   );
   const message = Buffer.from(`${protectedSegment}.${payloadSegment}`, "utf8");
   const signatureSegmentLength = Math.ceil((row.signatureBytes * 4) / 3);
-  if (message.length + 1 + signatureSegmentLength > JSON_DEFAULT_LIMITS.max_bytes) {
+  if (message.length + 1 + signatureSegmentLength > limits.max_bytes) {
     return { ok: false, code: "signing_input_invalid" };
   }
 
@@ -2159,7 +2195,7 @@ function buildSigningInput(
   // frame and bind.
   const zeroSignature = Buffer.alloc(row.signatureBytes);
   const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
-  const decoded = decodeSigningArtifact(provisional);
+  const decoded = decodeSigningArtifact(provisional, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
 
   return { ok: true, input: { alg: algorithm as string, protectedSegment, payloadSegment, message } };
@@ -2192,8 +2228,8 @@ export function terminationSigningInput(kid: string, claims: AnyRecord, chainInp
   return built;
 }
 
-function decodeSigningArtifact(compact: string): Result<null> {
-  const decoded = decodeJws(compact);
+function decodeSigningArtifact(compact: string, limits: Limits = DEFAULT_LIMITS): Result<null> {
+  const decoded = decodeJws(compact, limits);
   if (!decoded.ok) return decoded;
   const kind = (Object.keys(PRODUCER_TYPES) as Array<keyof typeof PRODUCER_TYPES>).find((one) => PRODUCER_TYPES[one] === decoded.value.header.typ);
   if (!kind) return fail("signing_input_invalid");
@@ -2204,6 +2240,10 @@ function decodeSigningArtifact(compact: string): Result<null> {
 // Assemble a validated signing input and its exact raw signature (the
 // reference assemble): registry-row length, full artifact decode, size gate.
 export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
+  return assembleUnderLimits(input, signature, DEFAULT_LIMITS);
+}
+
+function assembleUnderLimits(input: SigningInput, signature: Buffer, limits: Limits): { ok: true; compact: string } | { ok: false; code: string } {
   if (!input || typeof input !== "object" || !Buffer.isBuffer(signature)) return { ok: false, code: "invalid_type" };
   // The input is a struct the producer minted: the message must BE the
   // protected/payload framing (a caller-modified copy is invalid, never
@@ -2216,8 +2256,8 @@ export function assembleCompact(input: SigningInput, signature: Buffer): { ok: t
   if (!row) return { ok: false, code: "algorithm_unsupported" };
   if (signature.length !== row.signatureBytes) return { ok: false, code: "signature_invalid" };
   const compact = `${input.message.toString("utf8")}.${encodeBase64url(signature)}`;
-  if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return { ok: false, code: "signing_input_invalid" };
-  const decoded = decodeSigningArtifact(compact);
+  if (Buffer.byteLength(compact) > limits.max_bytes) return { ok: false, code: "signing_input_invalid" };
+  const decoded = decodeSigningArtifact(compact, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
   return { ok: true, compact };
 }
@@ -2279,7 +2319,10 @@ export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): Ref
   }
   const resolved = refusalChain(chainInput);
   if ("invalidSet" in resolved) return { ok: false, code: resolved.invalidSet };
-  const chain = resolved.chain;
+  return acceptanceRefusalInChain(claims, resolved.chain);
+}
+
+function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalResult {
 
   // R1 claims-truth: the named revision exists and every coordinate binds.
   const revision = chain.revisions.find((one: any) => one.digest === claims.revision_digest);
@@ -2322,7 +2365,10 @@ export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): Re
   if (!effectiveAt) return { ok: false, code: "signing_input_invalid" };
   const resolved = refusalChain(chainInput);
   if ("invalidSet" in resolved) return { ok: false, code: resolved.invalidSet };
-  const chain = resolved.chain;
+  return terminationRefusalInChain(claims, resolved.chain);
+}
+
+function terminationRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalResult {
 
   // R1 claims-truth: the named revision exists, the reason is listed in its
   // termination rules, and the signing party is one of its parties.
@@ -2338,7 +2384,7 @@ export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): Re
   // R3 governing coverage: the named revision must be THE unique governing
   // revision at the notice's own effective instant — a stale or contested
   // view refuses.
-  if (governing(chain, effectiveAt) !== revision.digest) return refused();
+  if (governing(chain, parseTimestamp(claims.effective_at)!) !== revision.digest) return refused();
 
   return { ok: true };
 }
