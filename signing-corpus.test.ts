@@ -1,10 +1,56 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import * as api from "./index.ts";
 
 const cases: api.ConformanceCase[] = JSON.parse(readFileSync(new URL("./conformance/cases/signing-prepare.json", import.meta.url), "utf8")).cases;
+
+test("signing corpus runner matches Elixir kinds contexts and extra option members", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-runner-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    // Expose the actual private runner in an isolated copy of the source.
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    const byId = (id: string) => {
+      const one = cases.find((one) => one.id === id);
+      assert.ok(one, id);
+      return one;
+    };
+    const descriptor = byId("signing-ed25519-party_descriptor");
+    const acceptance = byId("signing-ed25519-acceptance");
+    const receipt = byId("signing-ed25519-receipt");
+    const invalidType: api.CaseResult = { status: "invalid", error_code: "invalid_type" };
+    const checks: Array<[string, api.ConformanceCase, Record<string, any>, api.CaseResult]> = [
+      ["descriptor alias", descriptor, { kind: "descriptor" }, invalidType],
+      ["receipt set wrapper", receipt, { context: acceptance.input.context }, invalidType],
+      ["acceptance chain wrapper", acceptance, { context: receipt.input.context }, invalidType],
+      ["termination chain wrapper", byId("signing-ed25519-termination"), { context: receipt.input.context }, invalidType],
+      ["receipt raw revision", receipt, { context: receipt.input.context.chain.revisions[0] }, invalidType],
+      ["acceptance raw set", acceptance, { context: acceptance.input.context.set }, invalidType],
+      ["receipt raw set", receipt, { context: receipt.input.context.chain }, invalidType],
+      ["profile extra member", descriptor, { profile: { unknown: 42 } }, descriptor.expect],
+      ["profile extra unrecognized name", descriptor, { profile: { ts_verifier_uninterned_member_12345: 42 } }, descriptor.expect],
+      ["limits extra member", descriptor, { limits: { unknown: 42 } }, descriptor.expect],
+      ["revision bounds extra member", descriptor, { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, descriptor.expect],
+      ["null profile", descriptor, { profile: null }, descriptor.expect],
+      ["null algorithms", descriptor, { profile: { algorithms: null } }, { status: "invalid", error_code: "invalid_profile" }],
+      ["limits before wrong kind", descriptor, { kind: "descriptor", limits: { max_bytes: -1 } }, { status: "invalid", error_code: "invalid_limits" }],
+      ["profile before wrong context", receipt, { context: acceptance.input.context, profile: { algorithms: [] } }, { status: "invalid", error_code: "invalid_profile" }],
+      ["key decode before wrong kind", descriptor, { kind: "descriptor", public_key: "=" }, { status: "invalid", error_code: "base64url_padded" }],
+      ["chain read before wrong kind", acceptance, { context: { chain: { ...receipt.input.context.chain, descriptors: ["garbage"] } } }, { status: "invalid", error_code: "compact_invalid" }],
+    ];
+    for (const [name, one, patch, expected] of checks) await t.test(name, () => {
+      assert.deepEqual(executeCase({ ...one, input: { ...one.input, ...patch } }), expected);
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test("public signing preparation matches every corpus projection independently", async (t) => {
   assert.equal(cases.length, 57);

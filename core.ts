@@ -1477,16 +1477,18 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
   return chain.ok ? receiptFromCompact(compact, { kind: "chain", chain: chain.value }, settings) : chain;
 }
 
-function signingCaseContext(context: any): Result<DescriptorPredecessor | null | ChainInput | string> {
-  if (!isRecord(context)) return ok(context);
-  if ("set" in context) return ok(context.set);
+type SigningCaseContext = { value: DescriptorPredecessor | null | ChainInput | string; kind: "set" | "chain" | "revision" | "descriptor" | "raw" };
+
+function signingCaseContext(context: any): Result<SigningCaseContext> {
+  if (!isRecord(context)) return ok({ value: context, kind: context === null ? "descriptor" : "raw" });
+  if ("set" in context) return ok({ value: context.set, kind: "set" });
   if ("chain" in context) {
     const verified = verifyChain(context.chain, { limits: context.chain.limits });
-    return verified.ok ? ok(context.chain) : fail(verified.code);
+    return verified.ok ? ok({ value: context.chain, kind: "chain" }) : fail(verified.code);
   }
   if ("revision_text" in context) {
     const decoded = decodeCharterRevision(context.revision_text);
-    return decoded.ok ? ok(context.revision_text) : fail(decoded.code);
+    return decoded.ok ? ok({ value: context.revision_text, kind: "revision" }) : fail(decoded.code);
   }
   if ("predecessor_compacts" in context) {
     let previous: DescriptorPredecessor | null = null;
@@ -1495,22 +1497,38 @@ function signingCaseContext(context: any): Result<DescriptorPredecessor | null |
       if (!verified.ok) return fail(verified.code);
       previous = verified.facts as DescriptorPredecessor;
     }
-    return ok(previous);
+    return ok({ value: previous, kind: "descriptor" });
   }
-  return ok(context);
+  return ok({ value: context, kind: "raw" });
+}
+
+function signingCaseOptions(input: AnyRecord): SigningOptions {
+  const selectedLimits = input.limits ?? {};
+  const limits = Object.fromEntries(Object.entries(selectedLimits).filter(([name]) => Object.hasOwn(DEFAULT_LIMITS, name)));
+  const selectedProfile = input.profile ?? {};
+  const range = selectedProfile.revisions;
+  const profile = {
+    algorithms: Object.hasOwn(selectedProfile, "algorithms") ? selectedProfile.algorithms : DEFAULT_SETTINGS.profile.algorithms,
+    revisions: range ? { min: range.min, max: range.max } : { min: 1, max: 3 },
+  };
+  return { algorithm: input.algorithm, limits, profile };
 }
 
 function executeArtifactCase(one: ConformanceCase): CaseResult | null {
   const input = one.input;
   switch (one.surface) {
     case "signing.prepare": {
+      const options = signingCaseOptions(input);
       const context = signingCaseContext(input.context);
       if (!context.ok) return invalid(context.code);
       const key = strictBase64url(input.public_key);
       if (!key.ok) return invalid(key.code);
-      const kind = input.kind === "party_descriptor" ? "descriptor" : input.kind as SigningKind;
-      const prepared = prepareSigning(kind, input.kid, input.claims, encodeBase64url(key.value), context.value,
-        { algorithm: input.algorithm, limits: input.limits ?? undefined, profile: input.profile ?? undefined });
+      const kind: SigningKind = input.kind === "party_descriptor" ? "descriptor" :
+        ["acceptance", "termination", "receipt"].includes(input.kind) ? input.kind : "unknown";
+      const matches = kind === "descriptor" ? context.value.kind === "descriptor" :
+        kind === "receipt" ? ["chain", "revision"].includes(context.value.kind) :
+        (kind === "acceptance" || kind === "termination") && context.value.kind === "set";
+      const prepared = prepareSigning(kind, input.kid, input.claims, encodeBase64url(key.value), matches ? context.value.value : {}, options);
       if (!prepared.ok) return invalid(prepared.code);
       return valid({ protected_segment: prepared.plan.input.protectedSegment, payload_segment: prepared.plan.input.payloadSegment, key: prepared.plan.key });
     }
