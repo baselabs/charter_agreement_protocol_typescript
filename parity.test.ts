@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createContext, runInContext } from "node:vm";
 import * as api from "./index.ts";
 
 function fixture(file: string, id: string): any {
@@ -83,7 +85,7 @@ test("real signature verification skips signature vectors on its normal path", a
 const badDigest = "sha-256:" + "A".repeat(42) + "B";
 const sampleDigest = "sha-256:" + "A".repeat(43);
 
-test("S1 signed claims reject every noncanonical digest", async (t) => {
+test("signed claims reject every noncanonical digest", async (t) => {
   for (const [file, id, verify, fields, code] of [
     ["acceptance-verify", "acceptance-valid", api.verifyAcceptance, ["charter_id", "revision_digest", "prev_revision_digest", "party_descriptor_digest"], "acceptance_invalid"],
     ["termination-verify", "termination-valid", api.verifyTermination, ["charter_id", "governing_revision_digest", "party_descriptor_digest", "detail_digest"], "termination_invalid"],
@@ -114,7 +116,7 @@ test("S1 signed claims reject every noncanonical digest", async (t) => {
   });
 });
 
-test("B1 revision parties and supplied histories are distinct and named", async (t) => {
+test("revision parties and supplied histories are distinct and named", async (t) => {
   const repeated = fixture("charter_revision-decode", "charter-revision-shared-descriptor");
   await t.test("revision repeats a descriptor", () => {
     assert.deepEqual(api.decodeCharterRevision(repeated.text), { ok: false, code: "revision_invalid" });
@@ -148,7 +150,7 @@ test("B1 revision parties and supplied histories are distinct and named", async 
   });
 });
 
-test("S2 malformed signed timestamps keep the parser code and ordering", async (t) => {
+test("malformed signed timestamps keep the parser code and ordering", async (t) => {
   for (const [file, id, verify, fields] of [
     ["termination-verify", "termination-valid", api.verifyTermination, ["effective_at", "issued_at"]],
     ["receipt-verify", "receipt-signed-governing-match", api.verifyReceipt, ["occurred_at", "recorded_at"]],
@@ -167,7 +169,7 @@ test("S2 malformed signed timestamps keep the parser code and ordering", async (
   });
 });
 
-test("S3 year 0000 and its leap day pass every timestamp surface", async (t) => {
+test("year 0000 and its leap day pass every timestamp surface", async (t) => {
   const f = fixture("charter_revision-decode", "charter-revision-effective-from-year-zero");
   await t.test("revision decode", () => assert.ok(api.decodeCharterRevision(f.text).ok));
   await t.test("year zero leap day", () => {
@@ -194,7 +196,7 @@ test("S3 year 0000 and its leap day pass every timestamp surface", async (t) => 
   });
 });
 
-test("S4 producers and assembly reject malformed artifact claims", async (t) => {
+test("producers and assembly reject malformed artifact claims", async (t) => {
   const f = fixture("termination-verify", "termination-valid");
   const view = fixture("chain-verify", "chain-dual-acceptance-valid");
   const coordinates = claimsOf(view.acceptances[0]);
@@ -239,7 +241,7 @@ test("producer build failures always return signing_input_invalid", async (t) =>
   }
 });
 
-test("S7 revision timestamps precede binding digest extraction", () => {
+test("revision timestamps precede binding digest extraction", () => {
   const base = JSON.parse(fixture("charter_revision-decode", "charter-revision-genesis-valid").text);
   base.abp_bindings[0].content_digest = badDigest;
   base.effective_from = "bad-time";
@@ -254,7 +256,7 @@ test("revision optional digests and supersession uniqueness stay strict", () => 
   assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, attribution_declaration: { ...base.attribution_declaration, detail_digest: badDigest } })), { ok: false, code: "revision_invalid" });
 });
 
-test("S8 descriptor key extraction uses codec errors before times and extensions", async (t) => {
+test("descriptor key extraction uses codec errors before times and extensions", async (t) => {
   const f = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
   const base = claimsOf(f.compact);
   const key = base.verification_keys[0];
@@ -269,7 +271,7 @@ test("S8 descriptor key extraction uses codec errors before times and extensions
   });
 });
 
-test("S9 chain routing checks the envelope and both routing coordinates first", async (t) => {
+test("chain routing checks the envelope and both routing coordinates first", async (t) => {
   const base = fixture("chain-verify", "chain-dual-acceptance-valid");
   for (const [kind, list, original, revisionField] of [
     ["acceptance", "acceptances", base.acceptances[0], "revision_digest"],
@@ -318,7 +320,7 @@ test("every set consuming API rejects omitted artifact lists with invalid_type",
   }
 });
 
-test("S10 successor links are checked before selecting a key", () => {
+test("successor links are checked before selecting a key", () => {
   const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
   const previous = api.decodePartyDescriptor(root);
   assert.ok(previous.ok);
@@ -329,7 +331,7 @@ test("S10 successor links are checked before selecting a key", () => {
   assert.deepEqual(api.verifyDescriptor(compact, predecessor), { ok: false, code: "descriptor_chain_invalid" });
 });
 
-test("S11 JSON limits count every parsed member and parse over-limit values first", async (t) => {
+test("JSON limits count every parsed member and parse over-limit values first", async (t) => {
   await t.test("duplicate members count toward the object limit", () => {
     assert.deepEqual(api.decodeJsonText('{"a":1,"a":2,"b":3}', { max_object_members: 2 }), { ok: false, code: "limit_exceeded" });
   });
@@ -357,13 +359,13 @@ test("JSON separators precede container counts and number conversion", async (t)
   assert.deepEqual(api.decodeJsonText('[12345678901234567]'), { ok: false, code: "number_not_double_expressible" });
 });
 
-test("S12 revision decoding requires text", () => {
+test("revision decoding requires text", () => {
   for (const value of [5, null, {}, [], true]) {
     assert.deepEqual(api.decodeCharterRevision(value), { ok: false, code: "invalid_type" });
   }
 });
 
-test("S13 descriptor predecessors are reverified from their signed lineage", async (t) => {
+test("descriptor predecessors are reverified from their signed lineage", async (t) => {
   const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
   const previous = api.decodePartyDescriptor(root);
   assert.ok(previous.ok);
@@ -416,7 +418,7 @@ test("S13 descriptor predecessors are reverified from their signed lineage", asy
   });
 });
 
-test("S5 file imports cannot alter source or built signature verdicts", async (t) => {
+test("file imports cannot alter source or built signature verdicts", async (t) => {
   const input = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
   const [header, payload, signature] = input.compact.split(".");
   const bytes = Buffer.from(signature, "base64url");
@@ -513,4 +515,92 @@ test("unsigned revision profile bounds and optional termination digest grammar s
   assert.deepEqual(api.verifyChain({ ...view, revisions: [api.canonical(revision)], acceptances: [] }, { profile: { revisions: { min: 1, max: 1 } } }), { ok: false, code: "revision_outside_profile" });
   const f = fixture("termination-verify", "termination-valid");
   assert.deepEqual(api.verifyTermination(changeClaims(f.compact, (claims) => ({ ...claims, detail_digest: "bad" })), f.revision_text, f.descriptor_compacts), { ok: false, code: "constraint_violation" });
+});
+
+test("root numbers report the reference code for a cut-off fraction or exponent", () => {
+  // Codes recorded from the Elixir reference's Json.decode on each text.
+  const expected: Array<[string, string]> = [
+    ["1e", "invalid_syntax"], ["1.", "invalid_syntax"], ["-0.", "invalid_syntax"], ["1e+", "invalid_syntax"],
+    ["1ex", "invalid_syntax"], ["1.e5", "invalid_syntax"], ["1.5e", "invalid_syntax"], ["1.5E+", "invalid_syntax"],
+    ["0.", "invalid_syntax"], ["0e", "invalid_syntax"], ["-1.x", "invalid_syntax"], ["1E", "invalid_syntax"],
+    ["1e5.", "trailing_bytes"], ["1.5.", "trailing_bytes"], ["1e5e", "trailing_bytes"], ["1.5x", "trailing_bytes"],
+    ["0x", "trailing_bytes"], ["01", "trailing_bytes"], ["1 .", "trailing_bytes"], ["1 e", "trailing_bytes"],
+    ["1e5x", "trailing_bytes"], ["[1e]", "invalid_syntax"], ["[1.]", "invalid_syntax"], ["[01]", "invalid_syntax"],
+  ];
+  for (const [text, code] of expected) assert.deepEqual(api.decodeJsonText(text), { ok: false, code }, text);
+});
+
+test("trailing bytes outrank a deferred number error at the root", () => {
+  assert.deepEqual(api.decodeJsonText("9007199254740993}"), { ok: false, code: "trailing_bytes" });
+  assert.deepEqual(api.decodeJsonText("1e400 x"), { ok: false, code: "trailing_bytes" });
+  assert.deepEqual(api.decodeJsonText("1e400"), { ok: false, code: "invalid_number" });
+  assert.deepEqual(api.decodeJsonText("9007199254740993"), { ok: false, code: "number_not_double_expressible" });
+});
+
+test("browser bundle rejects every forged signature the corpus carries", async () => {
+  const browser = await bundledVerifier();
+  const one = (file: string, id: string) => fixture(file, id);
+  const descriptor = one("party_descriptor-verify", "party-descriptor-wrong-signature");
+  const chain = one("descriptor_chain-verify", "descriptor-chain-wrong-signer");
+  const acceptance = one("acceptance-verify", "acceptance-wrong-signature");
+  const termination = one("termination-verify", "termination-wrong-signature");
+  const receipt = one("receipt-verify", "receipt-signature-invalid");
+  const pairs: Array<[string, (v: any) => unknown, unknown]> = [
+    ["descriptor", (v) => v.verifyDescriptor(descriptor.compact), { ok: false, code: "signature_invalid" }],
+    ["descriptor chain", (v) => v.verifyDescriptorChain(chain.compacts), { ok: false, code: "descriptor_chain_invalid" }],
+    ["acceptance", (v) => v.verifyAcceptance(acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts), { ok: false, code: "signature_invalid" }],
+    ["termination", (v) => v.verifyTermination(termination.compact, termination.revision_text, termination.descriptor_compacts), { ok: false, code: "signature_invalid" }],
+    ["receipt", (v) => v.verifyReceipt(receipt.compact, receipt.chain), { ok: false, code: "signature_invalid" }],
+  ];
+  for (const [name, call, expected] of pairs) {
+    assert.deepEqual(call(api), expected, `node ${name}`);
+    assert.deepEqual(call(browser), expected, `browser ${name}`);
+  }
+});
+
+test("the browser bundle runs in a page that has no process object", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-page-"));
+  try {
+    const outfile = join(scratch, "page.js");
+    await build({
+      entryPoints: ["index.ts"], bundle: true, outfile, format: "iife", globalName: "CAP", platform: "browser", target: "es2022",
+      alias: { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" },
+      inject: ["./web/shim/buffer-global.ts"],
+    });
+    const page = createContext({ TextEncoder, TextDecoder, atob, btoa });
+    runInContext(`${readFileSync(outfile, "utf8")}\nglobalThis.CAP = CAP;`, page);
+    assert.equal(runInContext("typeof process", page), "undefined");
+    const verifier = (page as any).CAP;
+    const capabilities = verifier.capabilities();
+    assert.equal(capabilities.linkedCrypto, "");
+    // Values from the page's realm carry its own prototypes; compare plain copies.
+    const verifiable = JSON.parse(JSON.stringify(capabilities.algorithms.filter((row: any) => row.verifiable).map((row: any) => row.name)));
+    assert.deepEqual(verifiable, ["EdDSA", "Ed25519"]);
+    const genesis = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+    assert.equal(verifier.verifyDescriptor(genesis.compact).ok, true);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a runtime whose ML-DSA keys report no type still verifies ML-DSA", (t) => {
+  // Bun imports ML-DSA keys without setting asymmetricKeyType. Run the
+  // source verifier on a real Bun when one is installed.
+  const bun = spawnSync("bun", ["--version"], { encoding: "utf8" });
+  if (bun.status !== 0) {
+    t.skip("bun is not installed");
+    return;
+  }
+  const script = [
+    `const core = await import(${JSON.stringify(new URL("./core.ts", import.meta.url).pathname)});`,
+    `const doc = JSON.parse(await Bun.file(${JSON.stringify(new URL("./conformance/cases/party_descriptor-verify.json", import.meta.url).pathname)}).text());`,
+    `const compact = doc.cases.find((c) => c.id === "descriptor-mldsa65-rev3-valid").input.compact;`,
+    `const parts = compact.split(".");`,
+    `const signature = Buffer.from(parts[2], "base64url"); signature[10] ^= 1;`,
+    `const forged = parts[0] + "." + parts[1] + "." + signature.toString("base64url");`,
+    `console.log(JSON.stringify([core.verifyDescriptor(compact).ok, core.verifyDescriptor(forged)]));`,
+  ].join("\n");
+  const run = spawnSync("bun", ["-e", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim()), [true, { ok: false, code: "signature_invalid" }]);
 });

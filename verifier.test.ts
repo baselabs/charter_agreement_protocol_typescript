@@ -67,12 +67,12 @@ test("a corpus whose index bytes are edited fails the certified pin", () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("T12 duplicate members reject even before a distinct final member", () => {
+test("duplicate members reject even before a distinct final member", () => {
   assert.deepEqual(decodeJsonText('{"a":1,"a":2,"b":3}'), { ok: false, code: "duplicate_member" });
   assert.deepEqual(decodeJsonText('{"outer":{"a":1,"a":2,"b":3}}'), { ok: false, code: "duplicate_member" });
 });
 
-test("T13 integer-like members project in source order", () => {
+test("integer-like members project in source order", () => {
   const decoded = decodeJsonText('{"10":1,"9":2,"nested":{"2":3,"1":4}}');
   assert.ok(decoded.ok);
   assert.deepEqual(jsonProjection(decoded.value), {
@@ -93,7 +93,7 @@ test("check-corpus.mjs accepts the vendored corpus and reports its digest", asyn
   const run = spawnSync(process.execPath, [join(here, "check-corpus.mjs"), join(here, "conformance")], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr || run.stdout);
   const index = JSON.parse(readFileSync(join(here, "conformance", "index.json"), "utf8"));
-  assert.equal(index.total_cases, 149);
+  assert.equal(index.total_cases, 151);
   assert.equal(run.stdout.trim(), index.corpus_digest);
   for (const surface of ["acceptance.verify", "termination.verify", "receipt.verify"]) {
     for (const name of ["profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"]) {

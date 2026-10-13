@@ -30,13 +30,22 @@ documented here.
 
 - Browser bundles using the shipped crypto shim now verify valid Ed25519
   signatures instead of returning `algorithm_unsupported_on_substrate`.
-  ML-DSA still reports that code on this substrate.
+  ML-DSA still reports that code on this substrate. `capabilities()` no
+  longer throws in a page that has no `process` object; it reports an empty
+  `linkedCrypto` there.
+- A runtime whose ML-DSA key objects do not report their key type, such as
+  Bun, now verifies ML-DSA signatures instead of returning
+  `algorithm_unsupported_on_substrate`. The runtime is asked once through the
+  known-answer vector and the answer is kept.
 - Standalone acceptance and termination profiles now admit the supplied
   revision first, then every descriptor in the supplied history, then the
   signed artifact. Receipt profiles reach the whole reverified chain view.
   Excluded context now returns `algorithm_outside_profile` or
   `revision_outside_profile` before artifact decoding, claims or signature
   errors that previously took precedence, or instead of a successful result.
+  The supplied revision is checked against the profile before the supplied
+  descriptors are decoded, so an excluded revision beside a malformed
+  descriptor returns `revision_outside_profile`.
 - `verifyReceipt(compact, revisionText, options)` now accepts a canonical
   revision as context. Recognized claims return `governing_match: "undetermined"`
   and `chain_conflict: "none"`; `not_verified` includes `signature` because this
@@ -44,9 +53,11 @@ documented here.
   the profile. Excluded revisions or envelopes return `revision_outside_profile`
   or `algorithm_outside_profile`; mismatched claims return
   `receipt_claims_mismatch`. Previously text context returned `chain_invalid`.
-- Omitted artifact lists now return `invalid_type` through `governingRevision`,
-  `acceptanceRefusal`, `terminationRefusal`, `acceptanceSigningInput` and
-  `terminationSigningInput`, replacing `chain_invalid`. `verifyChain` and
+- Omitted artifact lists, and lists given as `null`, a string, an object or an
+  array holding a non-string, now return `invalid_type` through
+  `governingRevision`, `acceptanceRefusal`, `terminationRefusal`,
+  `acceptanceSigningInput` and `terminationSigningInput`, replacing
+  `chain_invalid`. `verifyChain` and
   `verifyReceipt` also require all four lists, including explicit empty lists.
 - All producer build failures now return `signing_input_invalid`, including
   malformed claims, extra members, invalid timestamps and unsupported emission
@@ -105,7 +116,9 @@ documented here.
   until a container separator or the end of the root value is accepted.
   An excess duplicate member now reports `limit_exceeded`; an invalid value
   beyond an item or member bound reports its parse error first.
-  Nontext revision inputs now report `invalid_type`.
+  Nontext revision inputs now report `invalid_type`. A root number whose
+  fraction or exponent starts without digits, such as `1.` or `1e+`, reports
+  `invalid_syntax` instead of `trailing_bytes`, as the reference does.
 - `verifySignature` returns false for messages over 1 MiB under default
   limits. Explicit null artifact lists report `invalid_type`.
   The exported `Profile` type accepts `algorithms` or `revisions` alone,
@@ -132,7 +145,7 @@ observations; and artifact lists or byte totals exceeding caller limits.
   separately from invalid signatures, outside corpus verdict reports.
 - JSON projections preserve input member order, including numeric-looking
   names. The float boxing seam used by the differential gate is unchanged.
-- The vendored certified corpus contains 149 cases for verification semantics
+- The vendored certified corpus contains 151 cases for verification semantics
   5 and uses the reference's expanded applicability floor. The registry digest
   and package version remain unchanged.
 

@@ -610,7 +610,7 @@ test("algorithmRegistryDigest equals the reference identity", () => {
   );
 });
 
-test("T1 termination closes governing at its instant and later", () => {
+test("termination closes governing at its instant and later", () => {
   const fixture = corpusCase("governing_revision.json", "governing-revision-closed-by-termination");
   for (const [i, query] of fixture.input.queries.entries()) {
     const actual = governingRevision(fixture.input, query.at);
@@ -622,7 +622,7 @@ test("T1 termination closes governing at its instant and later", () => {
   assert.equal(chain.facts.terminations.length, 1);
 });
 
-test("T1 receipt after termination reports a governing mismatch", () => {
+test("receipt after termination reports a governing mismatch", () => {
   const fixture = corpusCase("receipt-verify.json", "receipt-after-termination-mismatch");
   const actual = verifyReceipt(fixture.input.compact, fixture.input.chain);
   assert.ok(actual.ok);
@@ -659,13 +659,13 @@ const revisionRules: [string, unknown, unknown][] = [
   ["abp_bindings.0.deployment_digest", 1, "bad"],
 ];
 
-test("T2 revision decode uses strict JSON and exact canonical bytes", () => {
+test("revision decode uses strict JSON and exact canonical bytes", () => {
   const text = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input.revisions[0];
   assert.deepEqual(decodeCharterRevision(" " + text), { ok: false, code: "non_canonical_bytes" });
   assert.deepEqual(decodeCharterRevision(text.replace('"protocol_revision":1', '"protocol_revision":1,"protocol_revision":1')), { ok: false, code: "duplicate_member" });
 });
 
-test("T2 revision schema covers every declared member rule", async (t) => {
+test("revision schema covers every declared member rule", async (t) => {
   const base = JSON.parse(corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input.revisions[0]);
   for (const [path, wrongType, wrongConstraint] of revisionRules) {
     const nested = path.includes(".");
@@ -707,14 +707,14 @@ test("T2 revision schema covers every declared member rule", async (t) => {
   assert.ok(decodeCharterRevision(canonical(base)).ok);
 });
 
-test("T4 descriptor histories reject mixed parties and unbound successors", () => {
+test("descriptor histories reject mixed parties and unbound successors", () => {
   for (const id of ["descriptor-chain-two-party-set", "descriptor-chain-successor-without-party"]) {
     const fixture = corpusCase("descriptor_chain-verify.json", id);
     assert.deepEqual(verifyDescriptorChain(fixture.input.compacts), { ok: false, code: "descriptor_chain_invalid" });
   }
 });
 
-test("T4 a descriptor fork only contests its own party", () => {
+test("a descriptor fork only contests its own party", () => {
   const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   const fork = corpusCase("descriptor_chain-verify.json", "descriptor-chain-signed-sibling-fork").input.compacts;
   const forkRoot = JSON.parse(Buffer.from(fork[0].split(".")[1], "base64url").toString());
@@ -734,7 +734,7 @@ test("T4 a descriptor fork only contests its own party", () => {
   assert.equal(forkRoot.descriptor_number, 1);
 });
 
-test("T4 a chain view requires exactly the two revision party histories", () => {
+test("a chain view requires exactly the two revision party histories", () => {
   const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   assert.deepEqual(verifyChain({ ...base, acceptances: [], descriptors: base.descriptors.slice(0, 1) }), { ok: false, code: "chain_invalid" });
   const revision = JSON.parse(base.revisions[0]);
@@ -748,7 +748,7 @@ function replaceClaims(compact: string, change: (claims: Record<string, any>) =>
   return `${header}.${Buffer.from(canonical(change(claims))).toString("base64url")}.${signature}`;
 }
 
-test("T3 signed claims reject unknown top-level members in all four kinds", async (t) => {
+test("signed claims reject unknown top-level members in all four kinds", async (t) => {
   await t.test("descriptor", () => {
     const f = corpusCase("party_descriptor-verify.json", "descriptor-claims-unknown-member");
     assert.deepEqual(verifyDescriptor(f.input.compact), { ok: false, code: "unknown_member" });
@@ -766,7 +766,7 @@ test("T3 signed claims reject unknown top-level members in all four kinds", asyn
   });
 });
 
-test("T3 every closed nested claims object rejects extra members", async (t) => {
+test("every closed nested claims object rejects extra members", async (t) => {
   const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input.compact;
   for (const [name, change, code] of [
     ["verification key", (c: Record<string, any>) => copyWithPath(c, "verification_keys.0.extra", true), "nested_invalid"],
@@ -781,7 +781,7 @@ test("T3 every closed nested claims object rejects extra members", async (t) => 
   });
 });
 
-test("T8 indexed revision terms validate all fields and nested rules", async (t) => {
+test("indexed revision terms validate all fields and nested rules", async (t) => {
   const revision = JSON.parse(corpusCase("charter_revision-decode.json", "revision-indexed-price-valid").input.text);
   const body = revision.extensions.critical["com.example/pricing-indexed"];
   const rules: [string, unknown, unknown][] = [
@@ -802,7 +802,7 @@ test("T8 indexed revision terms validate all fields and nested rules", async (t)
   assert.ok(verifyBody(body).ok);
 });
 
-test("T8 indexed receipt observation validates its full closed body", async (t) => {
+test("indexed receipt observation validates its full closed body", async (t) => {
   const fixture = corpusCase("receipt-verify.json", "receipt-indexed-price-observation-quarantine");
   const claims = JSON.parse(Buffer.from(fixture.input.compact.split(".")[1], "base64url").toString());
   const body = claims.extensions.optional["com.example/pricing-indexed-observation"];
@@ -836,7 +836,7 @@ function optionProbes(): [string, Function, unknown[]][] {
   ];
 }
 
-test("T5 all public artifact verifiers apply trailing profiles", async (t) => {
+test("all public artifact verifiers apply trailing profiles", async (t) => {
   for (const [name, fn, args] of optionProbes()) await t.test(name, () => {
     assert.deepEqual(withOptions(fn, args, { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
     assert.deepEqual(withOptions(fn, args, { profile: { algorithms: [], revisions: { min: 1, max: 3 } } }), { ok: false, code: "invalid_profile" });
@@ -844,7 +844,7 @@ test("T5 all public artifact verifiers apply trailing profiles", async (t) => {
   });
 });
 
-test("T5 profile validation is closed and admission follows local checks", () => {
+test("profile validation is closed and admission follows local checks", () => {
   const descriptor = optionProbes()[0][2][0] as string;
   for (const profile of [null, [], { algorithms: ["EdDSA", "EdDSA"] }, { algorithms: ["unlisted"] }, { algorithms: 1 }, { revisions: { min: 3, max: 1 } }, { revisions: { min: 0, max: 3 } }, { extra: true }]) {
     assert.deepEqual(withOptions(verifyDescriptor, [descriptor, null], { profile }), { ok: false, code: "invalid_profile" });
@@ -856,7 +856,7 @@ test("T5 profile validation is closed and admission follows local checks", () =>
   assert.deepEqual(withOptions(verifyAcceptance, [acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts], { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
 });
 
-test("T6 all public artifact verifiers validate and enforce limits", async (t) => {
+test("all public artifact verifiers validate and enforce limits", async (t) => {
   for (const [name, fn, args] of optionProbes()) await t.test(name, () => {
     assert.deepEqual(withOptions(fn, args, { limits: { max_bytes: 0 } }), { ok: false, code: name === "descriptor history" ? "descriptor_chain_invalid" : "limit_exceeded" });
     for (const limits of [null, [], { extra: 1 }, { max_depth: -1 }, { max_depth: 1.5 }, { max_depth: 129 }, { max_bytes: Infinity }]) {
@@ -865,7 +865,7 @@ test("T6 all public artifact verifiers validate and enforce limits", async (t) =
   });
 });
 
-test("T6 item ceilings apply per list and byte ceilings span the entire view", () => {
+test("item ceilings apply per list and byte ceilings span the entire view", () => {
   const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   const bytes = [base.revisions, base.acceptances, base.descriptors, base.terminations].flat().reduce((sum: number, item: string) => sum + Buffer.byteLength(item), 0);
   assert.ok(withOptions(verifyChain, [base], { limits: { max_artifact_set_items: 2, max_artifact_set_bytes: bytes } }).ok);
@@ -879,7 +879,7 @@ test("T6 item ceilings apply per list and byte ceilings span the entire view", (
 });
 
 
-test("T5 raw signature primitive accepts options without changing its boolean result", () => {
+test("raw signature primitive accepts options without changing its boolean result", () => {
   const compact = optionProbes()[0][2][0] as string;
   const [header, payload, signature] = compact.split(".");
   const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
@@ -889,7 +889,7 @@ test("T5 raw signature primitive accepts options without changing its boolean re
   assert.equal(withOptions(verifySignature, args, {}), true);
 });
 
-test("T6 limits expose the reference defaults and compiled maximums", () => {
+test("limits expose the reference defaults and compiled maximums", () => {
   assert.deepEqual(publicApi.DEFAULT_LIMITS, { max_bytes: 1048576, max_depth: 64, max_object_members: 1024, max_array_items: 4096, max_string_bytes: 65536, max_artifact_set_items: 1024, max_artifact_set_bytes: 67108864 });
   assert.deepEqual(publicApi.MAXIMUM_LIMITS, { max_bytes: 16777216, max_depth: 128, max_object_members: 65536, max_array_items: 65536, max_string_bytes: 1048576, max_artifact_set_items: 4096, max_artifact_set_bytes: 1073741824 });
   const compact = optionProbes()[0][2][0] as string;
@@ -899,7 +899,7 @@ test("T6 limits expose the reference defaults and compiled maximums", () => {
   assert.deepEqual(withOptions(verifyDescriptor, [compact, null], { limits: { max_depth: -1 }, profile: { algorithms: [] } }), { ok: false, code: "invalid_limits" });
 });
 
-test("T6 every artifact list is bounded before any artifact decode", () => {
+test("every artifact list is bounded before any artifact decode", () => {
   for (const name of ["revisions", "acceptances", "descriptors", "terminations"]) {
     const view = { revisions: [], acceptances: [], descriptors: [], terminations: [], [name]: ["broken", "broken"] };
     assert.deepEqual(withOptions(verifyChain, [view], { limits: { max_artifact_set_items: 1 } }), { ok: false, code: "limit_exceeded" });
@@ -908,7 +908,7 @@ test("T6 every artifact list is bounded before any artifact decode", () => {
 });
 
 
-test("T7 a capable substrate still reports bad signatures as signature_invalid", () => {
+test("a capable substrate still reports bad signatures as signature_invalid", () => {
   const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
   const [header, payload, signature] = input.compact.split(".");
   const changed = Buffer.from(signature, "base64url");
@@ -936,19 +936,19 @@ function factSamples(): [string, Record<string, any>][] {
   return samples;
 }
 
-test("T9 every facts record contains the reference floor", () => {
+test("every facts record contains the reference floor", () => {
   const floor = REFERENCE_FLOOR;
   for (const [name, facts] of factSamples()) assert.deepEqual(facts.not_verified, floor, name);
 });
 
-test("T9 framing facts accumulate the unverified signature addition", () => {
+test("framing facts accumulate the unverified signature addition", () => {
   const compact = optionProbes()[0][2][0] as string;
   const decoded = decodeArtifact(compact);
   assert.ok(decoded.ok);
   assert.deepEqual(decoded.facts.not_verified, [...REFERENCE_FLOOR, "signature"]);
 });
 
-test("T10 facts retain protocol revision and signed algorithm names", () => {
+test("facts retain protocol revision and signed algorithm names", () => {
   for (const [name, facts] of factSamples()) {
     assert.ok(Object.hasOwn(facts, "protocol_revision"), name);
     if (facts.claims || facts.payload) {
@@ -970,12 +970,12 @@ test("T10 facts retain protocol revision and signed algorithm names", () => {
   }
 });
 
-test("T2 revision integer members reject double-resolved large literals", () => {
+test("revision integer members reject double-resolved large literals", () => {
   const text = corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text;
   assert.deepEqual(decodeCharterRevision(text.replace('"revision_number":1', '"revision_number":9007199254740992')), { ok: false, code: "invalid_type" });
 });
 
-test("T2 revision timestamps support early and late four-digit years", () => {
+test("revision timestamps support early and late four-digit years", () => {
   const base = JSON.parse(corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text);
   for (const year of ["0001", "0099", "0100", "9999"]) {
     const result = decodeCharterRevision(canonical({ ...base, effective_from: year + "-01-01T00:00:00Z" }));
@@ -983,7 +983,7 @@ test("T2 revision timestamps support early and late four-digit years", () => {
   }
 });
 
-test("T2 revision string rules use byte bounds and exact whole-string matches", () => {
+test("revision string rules use byte bounds and exact whole-string matches", () => {
   const base = JSON.parse(corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text);
   for (const [path, max, nested] of [
     ["parties.0.role", 128, true], ["legal_text.media_type", 255, true], ["legal_text.uri_hint", 2048, true],
@@ -1000,7 +1000,7 @@ test("T2 revision string rules use byte bounds and exact whole-string matches", 
   ]) assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, value))), { ok: false, code });
 });
 
-test("T4 an individual successor must retain its predecessor party", () => {
+test("an individual successor must retain its predecessor party", () => {
   const [root, child] = corpusCase("descriptor_chain-verify.json", "descriptor-chain-superseded-position").input.compacts;
   const previous = decodePartyDescriptor(root);
   assert.ok(previous.ok);
@@ -1008,7 +1008,7 @@ test("T4 an individual successor must retain its predecessor party", () => {
 });
 
 
-test("T2 strict numeric decode follows reference tagging and lexeme bounds", () => {
+test("strict numeric decode follows reference tagging and lexeme bounds", () => {
   const decoded = publicApi.decodeJsonText("9007199254740992");
   assert.ok(decoded.ok);
   assert.deepEqual(publicApi.jsonProjection(decoded.value), { tag: "float", value: 9007199254740992 });
@@ -1016,7 +1016,7 @@ test("T2 strict numeric decode follows reference tagging and lexeme bounds", () 
   assert.deepEqual(publicApi.decodeJsonText("0." + "0".repeat(33)), { ok: false, code: "number_not_double_expressible" });
 });
 
-test("T6 explicit null artifact lists reject instead of using omitted defaults", () => {
+test("explicit null artifact lists reject instead of using omitted defaults", () => {
   const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   for (const name of ["acceptances", "terminations"]) assert.deepEqual(verifyChain({ ...view, [name]: null }), { ok: false, code: "invalid_type" });
 });
@@ -1026,7 +1026,7 @@ function replaceHeader(compact: string, changes: Record<string, unknown>): strin
   return `${Buffer.from(canonical({ ...JSON.parse(Buffer.from(header, "base64url").toString()), ...changes })).toString("base64url")}.${payload}.${signature}`;
 }
 
-test("T5 profile checks follow key resolution in signed artifact context", () => {
+test("profile checks follow key resolution in signed artifact context", () => {
   for (const [file, id, fn, code] of [
     ["acceptance-verify.json", "acceptance-profile-narrow-valid", verifyAcceptance, "acceptance_invalid"],
     ["termination-verify.json", "termination-profile-narrow-valid", verifyTermination, "termination_invalid"],

@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "bb5h181EI3WIBPXycxBh36CwIj4R5pQ7T4DC_yXAf9s";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "VBXm6KSuAgm0QfIOiohu5l0ldgZCby-61XF0UF2fIps";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -297,6 +297,11 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   const token = NUMBER_TOKEN.exec(text);
   if (token) {
     const literal = token[0];
+    // A fraction or exponent that starts without its digits is a syntax error,
+    // as in the reference: "1." and "1e" are invalid_syntax, while a "." after
+    // a fraction or an "e" after an exponent is ordinary trailing input.
+    const next = text[index + literal.length];
+    if ((next === "." && !/[.eE]/.test(literal)) || ((next === "e" || next === "E") && !/[eE]/.test(literal))) return { status: "syntax" };
     const numberError = (code: string): JsonReader => ({ status: "ok", deferredCode: code, index: index + literal.length });
     if (/^-?[0-9]+$/.test(literal)) {
       if (literal.replace(/^-/, "").length > 21) return numberError("number_not_double_expressible");
@@ -1035,18 +1040,28 @@ function katVerifies(keyAlgorithm: string): boolean {
 
 // Importing an algorithm-specific SPKI asks the runtime whether it knows
 // that key type without running a signature vector. This works on Node 24.8
-// as well as runtimes that support the ML-DSA key types. A provider failure
-// during the real crypto call is classified by the selected vector only.
+// as well as runtimes that support the ML-DSA key types. A runtime whose key
+// objects do not report their type (Bun's ML-DSA keys, for example) is asked
+// once through the known-answer vector instead, and the answer is kept. A
+// provider failure during the real crypto call is classified by the selected
+// vector only.
+const UNTYPED_KEY_SUPPORT = new Map<string, boolean>();
+
 function runtimeSupportsAlgorithm(keyAlgorithm: string): boolean {
   const vector = KNOWN_ANSWERS[keyAlgorithm];
   if (!vector) return false;
   const prefix = keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
   try {
     const key = createPublicKey({ key: Buffer.concat([prefix, Buffer.from(vector.publicKey, "base64url")]), format: "der", type: "spki" });
-    return key.asymmetricKeyType === keyAlgorithm.toLowerCase();
+    if (key.asymmetricKeyType !== undefined) return key.asymmetricKeyType === keyAlgorithm.toLowerCase();
   } catch (_error) {
     return false;
   }
+  const known = UNTYPED_KEY_SUPPORT.get(keyAlgorithm);
+  if (known !== undefined) return known;
+  const supported = katVerifies(keyAlgorithm);
+  UNTYPED_KEY_SUPPORT.set(keyAlgorithm, supported);
+  return supported;
 }
 
 export function capabilities(): { linkedCrypto: string; algorithms: Array<{ name: string; keyAlgorithm: string; verifiable: boolean }> } {
@@ -1055,7 +1070,9 @@ export function capabilities(): { linkedCrypto: string; algorithms: Array<{ name
     keyAlgorithm: row.keyAlgorithm,
     verifiable: katVerifies(row.keyAlgorithm),
   }));
-  return { linkedCrypto: process.versions.openssl ?? "", algorithms };
+  // A browser page has no `process`; it then reports no linked library.
+  const versions = typeof process === "undefined" ? undefined : process.versions;
+  return { linkedCrypto: versions?.openssl ?? "", algorithms };
 }
 
 // The signature registry's published identity, mirroring the reference
@@ -1355,7 +1372,17 @@ function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
   return [...new Map<string, AnyRecord>(keys.map((key: any) => [canonical(key), key])).values()];
 }
 
-function receiptFromCompact(compact: string, chain: any, settings: Settings = DEFAULT_SETTINGS, revisionOnly = false) {
+type RevisionRecord = { value: AnyRecord; bytes: Buffer; digest: string };
+type ChainView = Extract<ReturnType<typeof chainFromInput>, { ok: true }>["value"];
+
+// A receipt is checked against a verified chain view, or against one bare
+// revision. A bare revision names no signing key, so its receipt's signature
+// stays unchecked and governance cannot be decided.
+type ReceiptContext = { kind: "chain"; chain: ChainView } | { kind: "revision"; revision: RevisionRecord };
+
+function receiptFromCompact(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
+  const revisionOnly = context.kind === "revision";
+  const chain = context.kind === "chain" ? context.chain : { accepted: [context.revision], charterId: context.revision.value.charter_id || context.revision.digest };
   const decoded = decodeJws(compact, settings.limits, "cap+receipt");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -1364,7 +1391,7 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
   const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
   const receiptTiming = receiptTimingError(claims);
   if (receiptTiming) return fail(receiptTiming);
-  const governingDigest = revisionOnly ? "contested" : governing(chain, parseTimestamp(claims.occurred_at)!);
+  const governingDigest = context.kind === "revision" ? "contested" : governing(context.chain, parseTimestamp(claims.occurred_at)!);
   const projection = projectReceipt(claims, chain, governingDigest);
   if (!projection.ok) return projection;
   if (revisionOnly) {
@@ -1373,7 +1400,7 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
     if (admission) return fail(admission);
     return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]));
   }
-  const candidates = receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
+  const candidates = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role)
     .filter((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")
     .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key], settings) }));
   const verifiedPublicKeys = new Set(candidates.filter((one: any) => one.result.ok).map((one: any) => one.key.public_key));
@@ -1388,11 +1415,10 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
   if (typeof context === "string") {
     const revision = revisionWithProfile(context, settings);
     if (!revision.ok) return revision;
-    const view = { accepted: [revision.value], charterId: revision.value.value.charter_id || revision.value.digest };
-    return receiptFromCompact(compact, view, settings, true);
+    return receiptFromCompact(compact, { kind: "revision", revision: revision.value }, settings);
   }
   const chain = chainFromInput(context, settings);
-  return chain.ok ? receiptFromCompact(compact, chain.value, settings) : chain;
+  return chain.ok ? receiptFromCompact(compact, { kind: "chain", chain: chain.value }, settings) : chain;
 }
 
 function execute(one: ConformanceCase): CaseResult {
