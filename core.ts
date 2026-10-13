@@ -912,7 +912,7 @@ function validTaggedDigest(value: string): boolean {
 }
 
 function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
-  if (typeof text !== "string") return fail("revision_invalid");
+  if (typeof text !== "string") return fail("invalid_type");
   const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
   const encoding = canonicalTextError(decoded.value, text);

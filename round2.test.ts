@@ -219,3 +219,9 @@ test("S11 JSON limits count every parsed member and parse over-limit values firs
   assert.deepEqual(api.decodeJsonText('[1,2,3]', { max_array_items: 2 }), { ok: false, code: "limit_exceeded" });
   assert.deepEqual(api.decodeJsonText('{"a":1,"a":2}', { max_object_members: 2 }), { ok: false, code: "duplicate_member" });
 });
+
+test("S12 revision decoding requires text", () => {
+  for (const value of [5, null, {}, [], true]) {
+    assert.deepEqual(api.decodeCharterRevision(value), { ok: false, code: "invalid_type" });
+  }
+});
