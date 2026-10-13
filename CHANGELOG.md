@@ -75,7 +75,7 @@ observations; and artifact lists or byte totals exceeding caller limits.
   separately from invalid signatures, outside corpus verdict reports.
 - JSON projections preserve input member order, including numeric-looking
   names. The float boxing seam used by the differential gate is unchanged.
-- The vendored certified corpus contains 138 cases for verification semantics
+- The vendored certified corpus contains 139 cases for verification semantics
   5 and uses the reference's expanded applicability floor. The registry digest
   and package version remain unchanged.
 
