@@ -86,3 +86,30 @@ test("S2 malformed signed timestamps keep the parser code and ordering", async (
     assert.deepEqual(api.verifyAcceptance(compact, f.revision_text, f.descriptor_compacts), { ok: false, code: "timestamp_invalid" });
   });
 });
+
+test("S3 year 0000 and its leap day pass every timestamp surface", async (t) => {
+  const f = fixture("charter_revision-decode", "charter-revision-effective-from-year-zero");
+  await t.test("revision decode", () => assert.ok(api.decodeCharterRevision(f.text).ok));
+  await t.test("year zero leap day", () => {
+    const revision = JSON.parse(f.text);
+    assert.ok(api.decodeCharterRevision(api.canonical({ ...revision, effective_from: "0000-02-29T00:00:00Z" })).ok);
+    assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...revision, effective_from: "0000-02-30T00:00:00Z" })), { ok: false, code: "timestamp_invalid" });
+  });
+  for (const [kind, file, id, field] of [
+    ["descriptor", "party_descriptor-verify", "party-descriptor-genesis-valid", "effective_from"],
+    ["acceptance", "acceptance-verify", "acceptance-valid", "accepted_at"],
+    ["termination", "termination-verify", "termination-valid", "issued_at"],
+    ["receipt", "receipt-verify", "receipt-signed-governing-match", "occurred_at"],
+  ] as const) await t.test(kind, () => {
+    const claims = claimsOf(fixture(file, id).compact);
+    assert.deepEqual(api.checkSigningClaims(kind, { ...claims, [field]: "0000-01-01T00:00:00Z" }), { ok: true });
+  });
+  await t.test("indexed observation", () => {
+    const claims = claimsOf(fixture("receipt-verify", "receipt-indexed-price-observation-quarantine").compact);
+    claims.extensions.optional["com.example/pricing-indexed-observation"].observation_instant = "0000-02-29T00:00:00Z";
+    assert.deepEqual(api.checkSigningClaims("receipt", claims), { ok: true });
+  });
+  await t.test("governing instant", () => {
+    assert.deepEqual(api.governingRevision(fixture("chain-verify", "chain-dual-acceptance-valid"), "0000-01-01T00:00:00Z"), { ok: true, governing: "none" });
+  });
+});

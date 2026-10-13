@@ -5,6 +5,10 @@ documented here.
 
 ## [Unreleased]
 
+- Year 0000, including February 29, now passes timestamp parsing on every
+  artifact, indexed observation and governing query, matching RFC 3339 and
+  the reference. The self-check now asserts acceptance of year zero.
+
 Several inputs that verified under 0.5.0 now reject: revision JSON with
 whitespace or duplicate members; revisions with invalid member types,
 constraints, timestamps or party counts; unknown signed claims or extra
