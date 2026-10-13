@@ -1046,7 +1046,7 @@ test("T4 an individual successor must retain its predecessor party", () => {
   const [root, child] = corpusCase("descriptor_chain-verify.json", "descriptor-chain-superseded-position").input.compacts;
   const previous = decodePartyDescriptor(root);
   assert.ok(previous.ok);
-  assert.deepEqual(verifyDescriptor(replaceClaims(child, (c) => ({ ...c, party_id: sampleDigest })), { digest: previous.digest, claims: previous.claims }), { ok: false, code: "descriptor_chain_invalid" });
+  assert.deepEqual(verifyDescriptor(replaceClaims(child, (c) => ({ ...c, party_id: sampleDigest })), { digest: previous.digest, claims: previous.claims, lineage: [root] }), { ok: false, code: "descriptor_chain_invalid" });
 });
 
 

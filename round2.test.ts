@@ -225,3 +225,41 @@ test("S12 revision decoding requires text", () => {
     assert.deepEqual(api.decodeCharterRevision(value), { ok: false, code: "invalid_type" });
   }
 });
+
+test("S13 descriptor predecessors are reverified from their signed lineage", async (t) => {
+  const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
+  const previous = api.decodePartyDescriptor(root);
+  assert.ok(previous.ok);
+  const pair = generateKeyPairSync("ed25519");
+  const attackerKey = pair.publicKey.export({ format: "jwk" }).x!;
+  const spoofed = { ...previous.claims, verification_keys: previous.claims.verification_keys.map((key: any) => ({ ...key, public_key: attackerKey })) };
+  const [header, payload] = child.split(".");
+  const message = Buffer.from(`${header}.${payload}`);
+  const forged = `${message}.${sign(null, message, pair.privateKey).toString("base64url")}`;
+  await t.test("claims without lineage cannot supply a predecessor", () => {
+    assert.deepEqual(api.verifyDescriptor(forged, { digest: previous.digest, claims: spoofed }), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("signed lineage replaces caller key claims", () => {
+    const predecessor = { digest: previous.digest, claims: spoofed, lineage: [root] };
+    assert.deepEqual(api.verifyDescriptor(forged, predecessor), { ok: false, code: "signature_invalid" });
+  });
+  await t.test("null claims produce a typed result", () => {
+    assert.deepEqual(api.verifyDescriptor(child, { digest: previous.digest, claims: null } as never), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("honest successors use retained facts", () => {
+    const genesis = api.verifyDescriptor(root);
+    assert.ok(genesis.ok);
+    assert.deepEqual(genesis.facts.lineage, [root]);
+    const next = api.verifyDescriptor(child, genesis.facts);
+    assert.ok(next.ok);
+    assert.deepEqual(next.facts.lineage, [child, root]);
+  });
+  await t.test("lineage digest must equal the supplied digest", () => {
+    const predecessor = { digest: sampleDigest, claims: previous.claims, lineage: [root] };
+    assert.deepEqual(api.verifyDescriptor(child, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("every retained signature is reverified", () => {
+    const predecessor = { digest: previous.digest, claims: previous.claims, lineage: [changeClaims(root, (claims) => ({ ...claims, effective_from: "2026-08-25T09:00:00Z" }))] };
+    assert.deepEqual(api.verifyDescriptor(child, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+  });
+});

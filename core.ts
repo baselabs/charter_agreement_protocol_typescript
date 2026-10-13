@@ -616,7 +616,7 @@ function compareTimestamps(left: { ticks: number; fraction: string }, right: { t
   return paddedLeft < paddedRight ? -1 : 1;
 }
 
-function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord } | null = null, settings: Settings = DEFAULT_SETTINGS) {
+function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+party");
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
@@ -639,7 +639,7 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   }
   const signature = verifyDecodedJws(decoded.value, "cap+party", keys, settings);
   if (!signature.ok) return signature;
-  return ok(factsRecord({ ...decoded.value, digest, compact, protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
+  return ok(factsRecord({ ...decoded.value, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
 }
 
 // The nested schema admits registry encoding lengths; extraction checks
@@ -1728,14 +1728,33 @@ export function verifySignature(message: Buffer, signature: Buffer, publicKeyBas
   return mldsa(row.keyAlgorithm, publicKeyBase64url, message, signature);
 }
 
+type DescriptorPredecessor = { digest?: string; descriptor_digest?: string; claims?: AnyRecord | null; lineage?: string[] };
+
+function reverifyPredecessor(supplied: DescriptorPredecessor | null, settings: Settings): Result<{ digest: string; payload: AnyRecord; lineage?: string[] } | null> {
+  if (supplied === null) return ok(null);
+  if (!isRecord(supplied) || !Array.isArray(supplied.lineage) || supplied.lineage.length === 0) return fail("descriptor_chain_invalid");
+  let previous: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null;
+  for (const compact of [...supplied.lineage].reverse()) {
+    if (typeof compact !== "string") return fail("descriptor_chain_invalid");
+    const verified = descriptorFromCompact(compact, previous, settings);
+    if (!verified.ok) return fail("descriptor_chain_invalid");
+    previous = verified.value;
+  }
+  if (!previous || (supplied.descriptor_digest ?? supplied.digest) !== previous.digest ||
+      (supplied.digest !== undefined && supplied.digest !== previous.digest)) return fail("descriptor_chain_invalid");
+  return ok(previous);
+}
+
 export function verifyDescriptor(
   compact: string,
-  predecessor: { digest: string; claims: AnyRecord } | null = null,
+  predecessor: DescriptorPredecessor | null = null,
   options: VerificationOptions = {},
 ): VerifyResult {
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const verified = descriptorFromCompact(compact, predecessor ? { digest: predecessor.digest, payload: predecessor.claims } : null, settings.value);
+  const previous = reverifyPredecessor(predecessor, settings.value);
+  if (!previous.ok) return previous;
+  const verified = descriptorFromCompact(compact, previous.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   const one = verified.value;
   return {
@@ -1744,6 +1763,7 @@ export function verifyDescriptor(
       descriptor_digest: one.digest,
       party_id: one.payload.party_id ?? one.digest,
       descriptor_number: one.payload.descriptor_number,
+      lineage: [...one.lineage],
       protocol_revision: one.payload.protocol_revision,
       alg: one.header.alg,
     }),
