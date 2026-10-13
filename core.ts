@@ -1841,8 +1841,8 @@ function acceptanceClaimsError(claims: AnyRecord): string | null {
   const shape = schemaError(claims, ACCEPTANCE_SCHEMA);
   if (shape) return shape;
   if ([claims.charter_id, claims.revision_digest, claims.prev_revision_digest, claims.party_descriptor_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "acceptance_invalid";
-  if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return "acceptance_invalid";
   if (!parseTimestamp(claims.accepted_at)) return "timestamp_invalid";
+  if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return "acceptance_invalid";
   return null;
 }
 
@@ -1852,7 +1852,8 @@ function terminationClaimsError(claims: AnyRecord): string | null {
   if ([claims.charter_id, claims.governing_revision_digest, claims.party_descriptor_digest, claims.detail_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "termination_invalid";
   const issuedAt = parseTimestamp(claims.issued_at);
   const effectiveAt = parseTimestamp(claims.effective_at);
-  if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return "termination_invalid";
+  if (!issuedAt || !effectiveAt) return "timestamp_invalid";
+  if (compareTimestamps(issuedAt, effectiveAt) > 0) return "termination_invalid";
   return null;
 }
 
@@ -1869,7 +1870,8 @@ function receiptGrantError(claims: AnyRecord): string | null {
 function receiptTimingError(claims: AnyRecord): string | null {
   const occurredAt = parseTimestamp(claims.occurred_at);
   const recordedAt = parseTimestamp(claims.recorded_at);
-  if (!occurredAt || !recordedAt || compareTimestamps(recordedAt, occurredAt) < 0) return "receipt_invalid";
+  if (!occurredAt || !recordedAt) return "timestamp_invalid";
+  if (compareTimestamps(recordedAt, occurredAt) < 0) return "receipt_invalid";
   return receiptTimingMatrixError(claims);
 }
 

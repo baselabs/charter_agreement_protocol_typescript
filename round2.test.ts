@@ -67,3 +67,22 @@ test("B1 revision parties and supplied histories are distinct and named", async 
     assert.ok(api.verifyChain({ ...base, revisions: [text, api.canonical(next)], acceptances: [] }).ok);
   });
 });
+
+test("S2 malformed signed timestamps keep the parser code and ordering", async (t) => {
+  for (const [file, id, verify, fields] of [
+    ["termination-verify", "termination-valid", api.verifyTermination, ["effective_at", "issued_at"]],
+    ["receipt-verify", "receipt-signed-governing-match", api.verifyReceipt, ["occurred_at", "recorded_at"]],
+  ] as const) {
+    const f = fixture(file, id);
+    for (const field of fields) await t.test(field, () => {
+      const compact = changeClaims(f.compact, (claims) => ({ ...claims, [field]: "2026-13-01T00:00:00Z" }));
+      const result = verify === api.verifyReceipt ? api.verifyReceipt(compact, f.chain) : api.verifyTermination(compact, f.revision_text, f.descriptor_compacts);
+      assert.deepEqual(result, { ok: false, code: "timestamp_invalid" });
+    });
+  }
+  await t.test("acceptance time precedes predecessor shape", () => {
+    const f = fixture("acceptance-verify", "acceptance-valid");
+    const compact = changeClaims(f.compact, (claims) => ({ ...claims, prev_revision_digest: sampleDigest, accepted_at: "bad-time" }));
+    assert.deepEqual(api.verifyAcceptance(compact, f.revision_text, f.descriptor_compacts), { ok: false, code: "timestamp_invalid" });
+  });
+});
