@@ -529,9 +529,9 @@ function strictEd25519Point(point: Buffer): boolean {
 
 function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
   try {
+    if (!validPublicKey(rawKey, ALG_ROWS.find((row) => row.name === "Ed25519")!)) return false;
     const key = Buffer.from(rawKey, "base64url");
     if (signature.length !== 64 || key.length !== 32) return false;
-    if (!strictEd25519Point(key)) return false;
     const r = signature.subarray(0, 32);
     const s = signature.subarray(32);
     if (!strictEd25519Point(r)) return false;
@@ -570,6 +570,12 @@ function keyMatchesRow(key: AnyRecord | undefined, row: any): boolean {
   if (!key || key.algorithm !== row.keyAlgorithm || key.status !== "active") return false;
   const bytes = Buffer.from(key.public_key, "base64url");
   return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
+}
+
+function validPublicKey(rawKey: unknown, row: AlgRow): boolean {
+  const decoded = strictBase64url(rawKey);
+  return decoded.ok && decoded.value.length === row.publicKeyBytes &&
+    (row.keyAlgorithm !== "Ed25519" || strictEd25519Point(decoded.value));
 }
 
 function verifyDecodedJws(decoded: { header: Record<string, string>; payload: AnyRecord; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[], settings: Settings = DEFAULT_SETTINGS): Result<null> {
@@ -1051,29 +1057,24 @@ function katVerifies(keyAlgorithm: string, message: Buffer = KNOWN_ANSWER_MESSAG
 // whose verify accepts everything is never counted as supporting a key type.
 const KNOWN_ANSWER_TAMPERED = Buffer.from("charter-agreement-protocol capability known-answer, tampered");
 
-// Importing an algorithm-specific SPKI asks the runtime whether it knows
-// that key type without running a signature vector. This works on Node 24.8
-// as well as runtimes that support the ML-DSA key types. A runtime whose key
-// objects do not report their type (Bun's ML-DSA keys, for example) is asked
-// once through the known-answer vector instead, and the answer is kept. A
-// provider failure during the real crypto call is classified by the selected
-// vector only.
-const UNTYPED_KEY_SUPPORT = new Map<string, boolean>();
+// Keep the declared type and known-answer result once per key algorithm.
+const RUNTIME_SUPPORT = new Map<string, boolean>();
 
 function runtimeSupportsAlgorithm(keyAlgorithm: string): boolean {
+  const known = RUNTIME_SUPPORT.get(keyAlgorithm);
+  if (known !== undefined) return known;
   const vector = KNOWN_ANSWERS[keyAlgorithm];
   if (!vector) return false;
   const prefix = keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
+  let declared = false;
   try {
     const key = createPublicKey({ key: Buffer.concat([prefix, Buffer.from(vector.publicKey, "base64url")]), format: "der", type: "spki" });
-    if (key.asymmetricKeyType !== undefined) return key.asymmetricKeyType === keyAlgorithm.toLowerCase();
+    declared = key.asymmetricKeyType === undefined || key.asymmetricKeyType === keyAlgorithm.toLowerCase();
   } catch (_error) {
-    return false;
+    declared = false;
   }
-  const known = UNTYPED_KEY_SUPPORT.get(keyAlgorithm);
-  if (known !== undefined) return known;
-  const supported = katVerifies(keyAlgorithm) && !katVerifies(keyAlgorithm, KNOWN_ANSWER_TAMPERED);
-  UNTYPED_KEY_SUPPORT.set(keyAlgorithm, supported);
+  const supported = declared && katVerifies(keyAlgorithm) && !katVerifies(keyAlgorithm, KNOWN_ANSWER_TAMPERED);
+  RUNTIME_SUPPORT.set(keyAlgorithm, supported);
   return supported;
 }
 
@@ -1081,7 +1082,7 @@ export function capabilities(): { linkedCrypto: string; algorithms: Array<{ name
   const algorithms = ALG_ROWS.map((row) => ({
     name: row.name,
     keyAlgorithm: row.keyAlgorithm,
-    verifiable: katVerifies(row.keyAlgorithm),
+    verifiable: runtimeSupportsAlgorithm(row.keyAlgorithm),
   }));
   // A browser page has no `process`; it then reports no linked library.
   const versions = typeof process === "undefined" ? undefined : process.versions;
@@ -1821,8 +1822,7 @@ export function verifySignature(message: Buffer, signature: Buffer, publicKeyBas
   if (!settings.ok || !settings.value.profile.algorithms.includes(alg) || message.length > settings.value.limits.max_bytes) return false;
   const row = ALG_ROWS.find((one) => one.name === alg);
   if (!row) return false;
-  const key = Buffer.from(publicKeyBase64url, "base64url");
-  if (key.length !== row.publicKeyBytes) return false;
+  if (!validPublicKey(publicKeyBase64url, row) || !runtimeSupportsAlgorithm(row.keyAlgorithm)) return false;
   if (row.keyAlgorithm === "Ed25519") return ed25519(publicKeyBase64url, message, signature);
   return mldsa(row.keyAlgorithm, publicKeyBase64url, message, signature);
 }

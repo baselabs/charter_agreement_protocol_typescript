@@ -77,3 +77,34 @@ test("public verify functions return typed results for generated malformed input
     if (!result.ok) assert.equal(typeof result.code, "string");
   }
 });
+
+test("signature guard requires canonical base64url", () => {
+  const compact = fixture("party_descriptor-verify", "party-descriptor-genesis-valid").compact;
+  const [header, payload, signature] = compact.split(".");
+  const key = claimsOf(compact).verification_keys[0].public_key;
+  const message = Buffer.from(`${header}.${payload}`);
+  const bytes = Buffer.from(signature, "base64url");
+  assert.equal(api.verifySignature(message, bytes, key, "EdDSA"), true);
+  assert.equal(api.verifySignature(message, bytes, key + "=", "EdDSA"), false);
+});
+
+test("runtime support checks declared types and known answers once per key algorithm", async () => {
+  const { Session } = await import("node:inspector/promises");
+  const fresh = await import(new URL("./core.ts?support-check", import.meta.url).href);
+  const session = new Session();
+  session.connect();
+  try {
+    await session.post("Profiler.enable");
+    await session.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
+    fresh.capabilities();
+    fresh.capabilities();
+    const { result } = await session.post("Profiler.takePreciseCoverage");
+    const core = result.find((script) => script.url.endsWith("core.ts?support-check"));
+    assert.ok(core);
+    const count = core.functions.filter((fn) => fn.functionName === "katVerifies").reduce((sum, fn) => sum + fn.ranges[0].count, 0);
+    assert.equal(count, 8);
+  } finally {
+    await session.post("Profiler.stopPreciseCoverage");
+    session.disconnect();
+  }
+});

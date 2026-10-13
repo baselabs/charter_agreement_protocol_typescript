@@ -59,7 +59,8 @@ test("real web crypto diagnostics stay outside corpus verdict reports", async ()
   assert.throws(() => verifier.reportFor("conformance"), /algorithm_unsupported_on_substrate/);
 });
 
-test("real signature verification skips signature vectors on its normal path", async () => {
+test("real signature verification uses cached signature vectors on its normal path", async () => {
+  api.capabilities();
   const session = new Session();
   session.connect();
   try {
