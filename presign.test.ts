@@ -237,6 +237,18 @@ test("successor requires a verified predecessor and uses its active key", () => 
   }
 });
 
+test("malformed predecessor history returns invalid_type", () => {
+  const set = mintedSet();
+  for (const predecessor of [{ lineage: [42] }, { lineage: null }, {},
+    { descriptor_digest: set.parties[0].digest, lineage: [42] },
+    { descriptor_digest: set.parties[0].digest, lineage: null },
+    { descriptor_digest: set.parties[0].digest, lineage: [] }]) {
+    assert.deepEqual(api.verifyDescriptor(set.parties[0].compact, predecessor as any), { ok: false, code: "invalid_type" });
+    assert.deepEqual(api.prepareSigning("descriptor", "k", set.parties[0].claims, set.parties[0].publicKey,
+      predecessor as any), { ok: false, code: "invalid_type" });
+  }
+});
+
 test("prepare keeps the retained context and signing input private", () => {
   const set = mintedSet();
   const options: api.VerificationOptions = { profile: { algorithms: ["Ed25519"] } };

@@ -1917,10 +1917,10 @@ const PREDECESSOR_PASS_THROUGH = new Set(["algorithm_outside_profile", "revision
 
 function reverifyPredecessor(supplied: DescriptorPredecessor | null, settings: Settings): Result<{ digest: string; payload: AnyRecord; lineage?: string[] } | null> {
   if (supplied === null) return ok(null);
-  if (!isRecord(supplied) || !Array.isArray(supplied.lineage) || supplied.lineage.length === 0) return fail("descriptor_chain_invalid");
+  if (!isRecord(supplied) || !Array.isArray(supplied.lineage) || supplied.lineage.length === 0) return fail("invalid_type");
   let previous: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null;
   for (const compact of [...supplied.lineage].reverse()) {
-    if (typeof compact !== "string") return fail("descriptor_chain_invalid");
+    if (typeof compact !== "string") return fail("invalid_type");
     const verified = descriptorFromCompact(compact, previous, settings);
     // A profile rejection, or a runtime that cannot check the signature, is
     // reported as itself, as a chain view reports it; any other failure is a

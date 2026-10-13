@@ -380,14 +380,14 @@ test("descriptor predecessors are reverified from their signed lineage", async (
   const message = Buffer.from(`${header}.${payload}`);
   const forged = `${message}.${sign(null, message, pair.privateKey).toString("base64url")}`;
   await t.test("claims without lineage cannot supply a predecessor", () => {
-    assert.deepEqual(api.verifyDescriptor(forged, { digest: previous.digest, claims: spoofed }), { ok: false, code: "descriptor_chain_invalid" });
+    assert.deepEqual(api.verifyDescriptor(forged, { digest: previous.digest, claims: spoofed }), { ok: false, code: "invalid_type" });
   });
   await t.test("signed lineage replaces caller key claims", () => {
     const predecessor = { digest: previous.digest, claims: spoofed, lineage: [root] };
     assert.deepEqual(api.verifyDescriptor(forged, predecessor), { ok: false, code: "signature_invalid" });
   });
   await t.test("null claims produce a typed result", () => {
-    assert.deepEqual(api.verifyDescriptor(child, { digest: previous.digest, claims: null } as never), { ok: false, code: "descriptor_chain_invalid" });
+    assert.deepEqual(api.verifyDescriptor(child, { digest: previous.digest, claims: null } as never), { ok: false, code: "invalid_type" });
   });
   await t.test("honest successors use retained facts", () => {
     const genesis = api.verifyDescriptor(root);
