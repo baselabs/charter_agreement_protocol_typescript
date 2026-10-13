@@ -34,6 +34,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck the site
+        run: npm run typecheck:web
+
       - name: Unit + tamper tests
         run: npm test
 
@@ -42,6 +45,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Build the site
+        run: npm run build:site
 
       - name: Vendored certified corpus through the built CLI
         run: node dist/cli.js --corpus conformance

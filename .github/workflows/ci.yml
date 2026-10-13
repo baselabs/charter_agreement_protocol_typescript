@@ -37,6 +37,9 @@ jobs:
       - name: Typecheck (strict)
         run: npm run typecheck
 
+      - name: Typecheck the site
+        run: npm run typecheck:web
+
       - name: Unit + tamper tests
         env:
           CAP_REQUIRE_BUN: "1"
@@ -47,6 +50,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Build the site
+        run: npm run build:site
 
       - name: Vendored certified corpus through the built CLI
         run: node dist/cli.js --corpus conformance

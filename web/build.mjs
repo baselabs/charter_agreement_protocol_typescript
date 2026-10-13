@@ -6,6 +6,8 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { browserBundleOptions } from "./bundle.ts";
 
 const web = dirname(fileURLToPath(import.meta.url));
 const out = join(web, "..", "site-dist");
@@ -23,4 +25,10 @@ let html = readFileSync(join(web, "index.html"), "utf8");
 html = html.replace(/\.\/styles\.css"/g, `./styles.css?v=${version}"`).replace(/\.\/app\.js"/g, `./app.js?v=${version}"`);
 writeFileSync(join(out, "index.html"), html);
 cpSync(join(web, "styles.css"), join(out, "styles.css"));
+await build({
+  ...browserBundleOptions,
+  absWorkingDir: join(web, ".."),
+  entryPoints: ["web/main.ts"], bundle: true, minify: true, format: "iife",
+  outfile: join(out, "app.js"),
+});
 console.log(`site: static assets staged in ${out} (asset version ?v=${version})`);

@@ -32,11 +32,11 @@
     "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
-    "test": "npm run build && node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts parity.test.ts presign.test.ts signing-corpus.test.ts",
+    "test": "npm run build && node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts parity.test.ts presign.test.ts signing-corpus.test.ts workshop.test.ts",
     "conformance": "node --experimental-strip-types --no-warnings cli.ts",
     "prepack": "npm run build",
     "typecheck:web": "tsc -p tsconfig.web.json",
-    "build:site": "node web/build.mjs && esbuild web/main.ts --bundle --minify --format=iife --target=es2022 --outfile=site-dist/app.js --alias:node:crypto=./web/shim/node-crypto.ts --alias:node:fs=./web/shim/node-fs.ts --alias:node:path=./web/shim/node-path.ts --inject:./web/shim/buffer-global.ts"
+    "build:site": "node web/build.mjs"
   },
   "devDependencies": {
     "@charter-agreement-protocol/signer": "^0.2.0",
