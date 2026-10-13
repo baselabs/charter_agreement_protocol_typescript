@@ -919,13 +919,14 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   const value = decoded.value as AnyRecord;
   const shape = schemaError(value, REVISION_SCHEMA);
   if (shape) return fail(shape);
-  const digests = [value.charter_id, value.prev_revision_digest, value.legal_text.content_digest, value.attribution_declaration.detail_digest, ...value.parties.map((party: any) => party.party_descriptor_digest), ...value.abp_bindings.flatMap((binding: any) => [binding.content_digest, binding.deployment_digest])].filter((v) => v !== undefined);
+  const digests = [value.charter_id, value.prev_revision_digest, value.legal_text.content_digest, value.attribution_declaration.detail_digest, ...value.parties.map((party: any) => party.party_descriptor_digest)].filter((v) => v !== undefined);
   if (digests.some((v) => !validTaggedDigest(v))) return fail("revision_invalid");
   const from = parseTimestamp(value.effective_from);
   const until = value.effective_until === undefined ? null : parseTimestamp(value.effective_until);
   if (!from || (value.effective_until !== undefined && !until)) return fail("timestamp_invalid");
   const reasons = value.termination_rules.reason_codes;
   if (reasons.some((v: any) => typeof v !== "string" || !stringBytes(1, 128)(v)) || new Set(reasons).size !== reasons.length) return fail("revision_invalid");
+  if (value.abp_bindings.some((binding: AnyRecord) => !validTaggedDigest(binding.content_digest) || !validTaggedDigest(binding.deployment_digest))) return fail("revision_invalid");
   const supersedes = value.supersedes ?? [];
   if (supersedes.some((v: any) => typeof v !== "string" || !validTaggedDigest(v)) || new Set(supersedes).size !== supersedes.length) return fail("revision_invalid");
   const extensions = extensionError(value.extensions, "charter_revision");

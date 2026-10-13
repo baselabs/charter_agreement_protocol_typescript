@@ -134,3 +134,18 @@ test("S4 producers and assembly reject malformed artifact claims", async (t) => 
     assert.deepEqual(api.assembleCompact(input, Buffer.alloc(64)), { ok: false, code: "signing_input_invalid" });
   });
 });
+
+test("S7 revision timestamps precede binding digest extraction", () => {
+  const base = JSON.parse(fixture("charter_revision-decode", "charter-revision-genesis-valid").text);
+  base.abp_bindings[0].content_digest = badDigest;
+  base.effective_from = "bad-time";
+  assert.deepEqual(api.decodeCharterRevision(api.canonical(base)), { ok: false, code: "timestamp_invalid" });
+  base.effective_from = "2026-08-25T12:00:00Z";
+  assert.deepEqual(api.decodeCharterRevision(api.canonical(base)), { ok: false, code: "revision_invalid" });
+});
+
+test("revision optional digests and supersession uniqueness stay strict", () => {
+  const base = JSON.parse(fixture("charter_revision-decode", "charter-revision-genesis-valid").text);
+  assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, supersedes: [sampleDigest, sampleDigest] })), { ok: false, code: "revision_invalid" });
+  assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, attribution_declaration: { ...base.attribution_declaration, detail_digest: badDigest } })), { ok: false, code: "revision_invalid" });
+});
