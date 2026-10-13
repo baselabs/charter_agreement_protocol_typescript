@@ -1,7 +1,11 @@
 import test from "node:test";
 import { build } from "esbuild";
+import { Session } from "node:inspector/promises";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { generateKeyPairSync, sign } from "node:crypto";
 import * as api from "./index.ts";
 
@@ -21,13 +25,23 @@ function changeClaims(compact: string, change: (claims: any) => any): string {
   return `${header}.${Buffer.from(api.canonical(change(claimsOf(compact)))).toString("base64url")}.${signature}`;
 }
 
+async function bundledVerifier(platform: "browser" | "node" = "browser") {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-bundle-"));
+  try {
+    const outfile = join(scratch, "verifier.mjs");
+    await build({
+      entryPoints: ["index.ts"], bundle: true, outfile, format: "esm", platform, target: "es2022",
+      alias: platform === "browser" ? { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" } : { "node:crypto": "./web/shim/node-crypto.ts" },
+      inject: ["./web/shim/buffer-global.ts"],
+    });
+    return await import(pathToFileURL(outfile).href);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 test("browser bundle verifies signed descriptors and a dual acceptance chain", async () => {
-  const bundle = await build({
-    entryPoints: ["index.ts"], bundle: true, write: false, format: "esm", platform: "browser", target: "es2022",
-    alias: { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" },
-    inject: ["./web/shim/buffer-global.ts"],
-  });
-  const browser = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
+  const browser = await bundledVerifier();
   const genesis = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
   const view = fixture("chain-verify", "chain-dual-acceptance-valid");
   assert.equal(browser.verifyDescriptor(genesis.compact).ok, true);
@@ -36,6 +50,34 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
   assert.deepEqual(browser.verifyDescriptor(pq.compact), { ok: false, code: "algorithm_unsupported_on_substrate" });
   assert.deepEqual(browser.verifyDescriptor(changeClaims(pq.compact, (c) => ({ ...c, extra: true }))), { ok: false, code: "unknown_member" });
   assert.deepEqual(browser.verifyDescriptor(pq.compact, null, { profile: { algorithms: ["Ed25519"] } }), { ok: false, code: "algorithm_outside_profile" });
+});
+
+test("real web crypto diagnostics stay outside corpus verdict reports", async () => {
+  const verifier = await bundledVerifier("node");
+  assert.throws(() => verifier.reportFor("conformance"), /algorithm_unsupported_on_substrate/);
+});
+
+test("real signature verification skips signature vectors on its normal path", async () => {
+  const session = new Session();
+  session.connect();
+  try {
+    await session.post("Profiler.enable");
+    await session.post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
+    const genesis = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+    const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+    assert.ok(api.verifyDescriptor(genesis.compact).ok);
+    assert.ok(api.verifyChain(view).ok);
+    assert.ok(api.verifyChain(view).ok);
+    const { result } = await session.post("Profiler.takePreciseCoverage");
+    const core = result.find((script) => script.url.endsWith("/core.ts"));
+    assert.ok(core);
+    const calls = (name: string) => core.functions.filter((fn) => fn.functionName === name).reduce((sum, fn) => sum + fn.ranges[0].count, 0);
+    assert.equal(calls("runtimeSupportsAlgorithm"), 9);
+    assert.equal(calls("katVerifies"), 0);
+  } finally {
+    await session.post("Profiler.stopPreciseCoverage");
+    session.disconnect();
+  }
 });
 
 const badDigest = "sha-256:" + "A".repeat(42) + "B";
@@ -382,25 +424,9 @@ test("S5 file imports cannot alter source or built signature verdicts", async (t
   const forged = `${header}.${payload}.${bytes.toString("base64url")}`;
   for (const [entry, seam] of [["./index.ts", "./internal/capability-probe.ts"], ["./dist/index.js", "./dist/internal/capability-probe.js"]]) await t.test(entry, async () => {
     const verifier = await import(new URL(entry, import.meta.url).href);
-    let probe: any;
-    try { probe = (await import(new URL(seam, import.meta.url).href)).capabilityProbe; }
-    catch (error: any) { assert.equal(error.code, "ERR_MODULE_NOT_FOUND"); }
-    const savedVerify = probe?.verify;
-    const savedRun = probe?.run;
-    try {
-      if (probe) {
-        try { probe.run = () => false; } catch (error) { assert.ok(error instanceof TypeError); }
-      }
-      const genuine = verifier.verifyDescriptor(input.compact);
-      if (probe) {
-        try { probe.run = () => true; probe.verify = () => true; } catch (error) { assert.ok(error instanceof TypeError); }
-      }
-      const changed = verifier.verifyDescriptor(forged);
-      assert.deepEqual([genuine.ok, changed.ok], [true, false]);
-      assert.deepEqual(changed, { ok: false, code: "signature_invalid" });
-    } finally {
-      if (probe && !Object.isFrozen(probe)) { probe.verify = savedVerify; probe.run = savedRun; }
-    }
+    await assert.rejects(import(new URL(seam, import.meta.url).href), { code: "ERR_MODULE_NOT_FOUND" });
+    assert.equal(verifier.verifyDescriptor(input.compact).ok, true);
+    assert.deepEqual(verifier.verifyDescriptor(forged), { ok: false, code: "signature_invalid" });
   });
 });
 

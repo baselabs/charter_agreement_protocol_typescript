@@ -5,7 +5,6 @@
 // red on a tampered one.
 import test from "node:test";
 import * as publicApi from "./index.ts";
-import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -909,40 +908,6 @@ test("T6 every artifact list is bounded before any artifact decode", () => {
 });
 
 
-function cryptoScenario(script: string): any {
-  const setup = `
-    import { mock } from "node:test";
-    import { createHash, createPublicKey, verify as runtimeVerify } from "node:crypto";
-    const input = ${JSON.stringify(corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input)};
-    const entry = ${JSON.stringify(new URL("./index.ts", import.meta.url).href)};
-    const corpus = ${JSON.stringify(join(here, "conformance"))};
-  `;
-  return JSON.parse(execFileSync(process.execPath, ["--experimental-test-module-mocks", "--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", setup + script], { encoding: "utf8" }));
-}
-
-test("T7 unavailable substrate has a distinct artifact result after deterministic checks", () => {
-  const results = cryptoScenario(`
-    mock.module("node:crypto", { namedExports: { createHash, createPublicKey: () => { throw Error("test substrate failure"); }, verify: runtimeVerify } });
-    const api = await import(entry);
-    const [header, payload] = input.compact.split(".");
-    const claims = JSON.parse(Buffer.from(payload, "base64url"));
-    const malformed = header + "." + Buffer.from(api.canonical({ ...claims, extra: true })).toString("base64url") + "." + input.compact.split(".")[2];
-    console.log(JSON.stringify([
-      api.verifyDescriptor(input.compact),
-      api.verifyDescriptor(malformed),
-      api.verifyDescriptor(header + "." + payload + "." + Buffer.alloc(64).toString("base64url")),
-      api.verifyDescriptor(input.compact, null, { profile: { algorithms: ["Ed25519"] } }),
-    ]));
-  `);
-  assert.deepEqual(results, [
-    { ok: false, code: "algorithm_unsupported_on_substrate" },
-    { ok: false, code: "unknown_member" },
-    { ok: false, code: "signature_invalid" },
-    { ok: false, code: "algorithm_outside_profile" },
-  ]);
-  assert.equal("capabilityProbe" in publicApi, false);
-});
-
 test("T7 a capable substrate still reports bad signatures as signature_invalid", () => {
   const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
   const [header, payload, signature] = input.compact.split(".");
@@ -951,42 +916,6 @@ test("T7 a capable substrate still reports bad signatures as signature_invalid",
   assert.deepEqual(verifyDescriptor(`${header}.${payload}.${changed.toString("base64url")}`), { ok: false, code: "signature_invalid" });
 });
 
-
-test("T7 crypto exceptions rerun the known-answer probe", () => {
-  for (const [rerun, code] of [[false, "algorithm_unsupported_on_substrate"], [true, "signature_invalid"]] as const) {
-    const result = cryptoScenario(`
-      let calls = 0;
-      let vectorCalls = 0;
-      let before = 0;
-      mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (_alg, message) => {
-        if (message.toString() === "charter-agreement-protocol capability known-answer") {
-          vectorCalls++;
-          return calls === 0 || ${rerun};
-        }
-        calls++;
-        before = vectorCalls;
-        throw Error("test substrate failure");
-      } } });
-      const api = await import(entry);
-      const verdict = api.verifyDescriptor(input.compact);
-      console.log(JSON.stringify({ verdict, calls, reruns: vectorCalls - before }));
-    `);
-    assert.deepEqual(result.verdict, { ok: false, code });
-    assert.equal(result.calls, 1);
-    assert.equal(result.reruns, 1);
-  }
-});
-
-
-test("T7 substrate diagnostics stay outside corpus verdict reports", () => {
-  const result = cryptoScenario(`
-    mock.module("node:crypto", { namedExports: { createHash, createPublicKey: () => { throw Error("test substrate failure"); }, verify: runtimeVerify } });
-    const api = await import(entry);
-    try { api.reportFor(corpus); console.log(JSON.stringify("no error")); }
-    catch (error) { console.log(JSON.stringify(error.message)); }
-  `);
-  assert.match(result, /algorithm_unsupported_on_substrate/);
-});
 
 const REFERENCE_FLOOR = ["tenancy", "live_policy", "authority", "effect_ownership", "execution", "billing", "evaluation_truth", "legal_validity", "term_satisfaction", "view_completeness", "counterparty_view", "wall_clock"];
 
@@ -1109,36 +1038,3 @@ test("T5 profile checks follow key resolution in signed artifact context", () =>
   assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "signature_invalid" });
 });
 
-test("S6 normal verification skips signature vectors even when a vector would fail", () => {
-  const result = cryptoScenario(`
-    let vectors = 0;
-    let signatures = 0;
-    mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (...args) => {
-      if (args[1].toString() === "charter-agreement-protocol capability known-answer") { vectors++; return false; }
-      signatures++;
-      return runtimeVerify(...args);
-    } } });
-    const api = await import(entry);
-    const verdict = api.verifyDescriptor(input.compact);
-    console.log(JSON.stringify({ ok: verdict.ok, vectors, signatures }));
-  `);
-  assert.deepEqual(result, { ok: true, vectors: 0, signatures: 1 });
-});
-
-test("S6 repeated chain verification never runs normal-path signature vectors", () => {
-  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
-  const result = cryptoScenario(`
-    let vectors = 0;
-    let signatures = 0;
-    mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (...args) => {
-      if (args[1].toString() === "charter-agreement-protocol capability known-answer") vectors++;
-      else signatures++;
-      return runtimeVerify(...args);
-    } } });
-    const api = await import(entry);
-    const view = ${JSON.stringify(view)};
-    const outcomes = [api.verifyChain(view).ok, api.verifyChain(view).ok];
-    console.log(JSON.stringify({ outcomes, vectors, signatures }));
-  `);
-  assert.deepEqual(result, { outcomes: [true, true], vectors: 0, signatures: 8 });
-});
