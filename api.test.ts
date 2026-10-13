@@ -1010,9 +1010,9 @@ test("T10 facts retain protocol revision and signed algorithm names", () => {
   }
 });
 
-test("T2 revision canonicalization rejects integer magnitudes before schema", () => {
+test("T2 revision integer members reject double-resolved large literals", () => {
   const text = corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text;
-  assert.deepEqual(decodeCharterRevision(text.replace('"revision_number":1', '"revision_number":9007199254740992')), { ok: false, code: "integer_magnitude" });
+  assert.deepEqual(decodeCharterRevision(text.replace('"revision_number":1', '"revision_number":9007199254740992')), { ok: false, code: "invalid_type" });
 });
 
 test("T2 revision timestamps support early and late four-digit years", () => {
@@ -1045,4 +1045,18 @@ test("T4 an individual successor must retain its predecessor party", () => {
   const previous = decodePartyDescriptor(root);
   assert.ok(previous.ok);
   assert.deepEqual(verifyDescriptor(replaceClaims(child, (c) => ({ ...c, party_id: sampleDigest })), { digest: previous.digest, claims: previous.claims }), { ok: false, code: "descriptor_chain_invalid" });
+});
+
+
+test("T2 strict numeric decode follows reference tagging and lexeme bounds", () => {
+  const decoded = publicApi.decodeJsonText("9007199254740992");
+  assert.ok(decoded.ok);
+  assert.deepEqual(publicApi.jsonProjection(decoded.value), { tag: "float", value: 9007199254740992 });
+  assert.deepEqual(publicApi.decodeJsonText("9".repeat(400)), { ok: false, code: "number_not_double_expressible" });
+  assert.deepEqual(publicApi.decodeJsonText("0." + "0".repeat(33)), { ok: false, code: "number_not_double_expressible" });
+});
+
+test("T6 explicit null artifact lists reject instead of using omitted defaults", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  for (const name of ["acceptances", "terminations"]) assert.deepEqual(verifyChain({ ...view, [name]: null }), { ok: false, code: "invalid_type" });
 });

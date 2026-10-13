@@ -292,13 +292,15 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   if (token) {
     const literal = token[0];
     if (/^-?[0-9]+$/.test(literal)) {
+      if (literal.replace(/^-/, "").length > 21) return { status: "error", code: "number_not_double_expressible" };
       const magnitude = BigInt(literal);
-      if ((magnitude > MAXIMUM_SAFE_INTEGER || magnitude < -MAXIMUM_SAFE_INTEGER) &&
-          magnitude !== BigInt(Number(literal))) {
-        return { status: "error", code: "number_not_double_expressible" };
+      if (magnitude > MAXIMUM_SAFE_INTEGER || magnitude < -MAXIMUM_SAFE_INTEGER) {
+        if (JSON.stringify(Number(literal)) !== literal) return { status: "error", code: "number_not_double_expressible" };
+        return { status: "ok", value: new Number(Number(literal)), index: index + literal.length };
       }
-    } else if (!Number.isFinite(Number(literal))) {
-      return { status: "error", code: "invalid_number" };
+    } else {
+      if (literal.length > 32) return { status: "error", code: "number_not_double_expressible" };
+      if (!Number.isFinite(Number(literal))) return { status: "error", code: "invalid_number" };
     }
     // Float-ness follows the lexeme (fraction or exponent), never the value:
     // "0.0" and "2e0" are floats even though their double is integral, so the
@@ -414,7 +416,7 @@ function jsonWithinLimits(value: any, bytes: Buffer, selected: AnyRecord = {}): 
       item.forEach((child) => visit(child, depth + 1));
       return;
     }
-    if (item && typeof item === "object") {
+    if (item && typeof item === "object" && !(item instanceof Number)) {
       const entries = Object.entries(item);
       if (depth + 1 > limits.max_depth || entries.length > limits.max_object_members) throw new Error("limit");
       entries.forEach(([key, child]) => {
@@ -1133,7 +1135,7 @@ function chainWithOptions(input: AnyRecord, options: VerificationOptions = {}): 
 
 function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!isRecord(input)) return fail("chain_invalid");
-  const bounded = boundedArtifacts([input.revisions, input.acceptances ?? [], input.descriptors, input.terminations ?? []], settings.limits);
+  const bounded = boundedArtifacts([input.revisions, input.acceptances === undefined ? [] : input.acceptances, input.descriptors, input.terminations === undefined ? [] : input.terminations], settings.limits);
   if (bounded) return fail(bounded);
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorViews(input.descriptors, settings);
