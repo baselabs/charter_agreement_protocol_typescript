@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "VBXm6KSuAgm0QfIOiohu5l0ldgZCby-61XF0UF2fIps";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "7i_NlDo0I_m38oodj2C1j55R89rYIUx46RRzHhEnhIU";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -79,7 +79,7 @@ const REQUIRED = {
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "governing_revision": ["precedence_selection", "terminated"],
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
-  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
+  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
   "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
@@ -1018,7 +1018,7 @@ const KNOWN_ANSWERS: Record<string, { publicKey: string; signature: string }> = 
   },
 };
 
-function katVerifies(keyAlgorithm: string): boolean {
+function katVerifies(keyAlgorithm: string, message: Buffer = KNOWN_ANSWER_MESSAGE): boolean {
   const vector = KNOWN_ANSWERS[keyAlgorithm];
   if (!vector) return false;
   const signature = Buffer.from(vector.signature, "base64url");
@@ -1030,13 +1030,17 @@ function katVerifies(keyAlgorithm: string): boolean {
         Buffer.from(vector.publicKey, "base64url"),
       ]);
       const key = createPublicKey({ key: spki, format: "der", type: "spki" });
-      return nodeVerifySignature(null, KNOWN_ANSWER_MESSAGE, key, signature);
+      return nodeVerifySignature(null, message, key, signature);
     } catch (_error) {
       return false;
     }
   }
-  return mldsa(keyAlgorithm, vector.publicKey, KNOWN_ANSWER_MESSAGE, signature);
+  return mldsa(keyAlgorithm, vector.publicKey, message, signature);
 }
+
+// The known-answer signature over any other message must fail: a runtime
+// whose verify accepts everything is never counted as supporting a key type.
+const KNOWN_ANSWER_TAMPERED = Buffer.from("charter-agreement-protocol capability known-answer, tampered");
 
 // Importing an algorithm-specific SPKI asks the runtime whether it knows
 // that key type without running a signature vector. This works on Node 24.8
@@ -1059,7 +1063,7 @@ function runtimeSupportsAlgorithm(keyAlgorithm: string): boolean {
   }
   const known = UNTYPED_KEY_SUPPORT.get(keyAlgorithm);
   if (known !== undefined) return known;
-  const supported = katVerifies(keyAlgorithm);
+  const supported = katVerifies(keyAlgorithm) && !katVerifies(keyAlgorithm, KNOWN_ANSWER_TAMPERED);
   UNTYPED_KEY_SUPPORT.set(keyAlgorithm, supported);
   return supported;
 }
@@ -1400,6 +1404,11 @@ function receiptFromCompact(compact: string, context: ReceiptContext, settings: 
     if (admission) return fail(admission);
     return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]));
   }
+  // The envelope is admitted before any key is looked up, so an
+  // out-of-profile receipt reports the profile rejection in both context
+  // forms, even when its kid names no key in the view.
+  const envelopeAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (envelopeAdmission) return fail(envelopeAdmission);
   const candidates = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role)
     .filter((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")
     .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key], settings) }));
@@ -1469,8 +1478,17 @@ function execute(one: ConformanceCase): CaseResult {
       return valid({ members });
     }
     case "party_descriptor.verify": {
-      const descriptor = descriptorFromCompact(input.compact);
-      return project(descriptor, (oneDescriptor) => ({ descriptor_digest: oneDescriptor.digest, party_id: oneDescriptor.digest, descriptor_number: oneDescriptor.payload.descriptor_number }));
+      // A case may name its predecessor history, genesis first; each entry
+      // verifies under the full profile against the one before it.
+      let predecessor: DescriptorPredecessor | null = null;
+      for (const compact of (input.predecessor_compacts ?? []) as string[]) {
+        const verified = verifyDescriptor(compact, predecessor);
+        if (!verified.ok) throw new Error("corpus predecessor history does not verify");
+        predecessor = verified.facts as DescriptorPredecessor;
+      }
+      const verified = verifyDescriptor(input.compact, predecessor, { profile: input.profile });
+      if (!verified.ok) return invalid(verified.code);
+      return valid({ descriptor_digest: verified.facts.descriptor_digest, party_id: verified.facts.party_id, descriptor_number: verified.facts.descriptor_number });
     }
     case "descriptor_chain.verify": {
       const chain = descriptorChain(input.compacts);
@@ -1806,6 +1824,8 @@ export function verifySignature(message: Buffer, signature: Buffer, publicKeyBas
 
 export type DescriptorPredecessor = { digest?: string; descriptor_digest?: string; claims?: AnyRecord | null; lineage?: string[] };
 
+const PREDECESSOR_PASS_THROUGH = new Set(["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"]);
+
 function reverifyPredecessor(supplied: DescriptorPredecessor | null, settings: Settings): Result<{ digest: string; payload: AnyRecord; lineage?: string[] } | null> {
   if (supplied === null) return ok(null);
   if (!isRecord(supplied) || !Array.isArray(supplied.lineage) || supplied.lineage.length === 0) return fail("descriptor_chain_invalid");
@@ -1813,7 +1833,10 @@ function reverifyPredecessor(supplied: DescriptorPredecessor | null, settings: S
   for (const compact of [...supplied.lineage].reverse()) {
     if (typeof compact !== "string") return fail("descriptor_chain_invalid");
     const verified = descriptorFromCompact(compact, previous, settings);
-    if (!verified.ok) return fail("descriptor_chain_invalid");
+    // A profile rejection, or a runtime that cannot check the signature, is
+    // reported as itself, as a chain view reports it; any other failure is a
+    // broken chain.
+    if (!verified.ok) return PREDECESSOR_PASS_THROUGH.has(verified.code) ? verified : fail("descriptor_chain_invalid");
     previous = verified.value;
   }
   if (!previous || (supplied.descriptor_digest ?? supplied.digest) !== previous.digest ||
