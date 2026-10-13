@@ -1983,7 +1983,7 @@ export function governingRevision(chainInput: AnyRecord, at: string, options: Ve
     return { ok: false, code: "signing_input_invalid" };
   }
   const chain = chainWithOptions(chainInput, options);
-  if (!chain.ok) return chain.code === "invalid_type" ? fail("chain_invalid") : chain;
+  if (!chain.ok) return chain;
   return { ok: true, governing: governing(chain.value, instant) };
 }
 
@@ -2198,10 +2198,10 @@ function refusalClaimsShape(claims: AnyRecord, stringFields: string[], integerFi
 // A non-object view mirrors the reference producer's non-ArtifactSet arm
 // (the typed producer code); an object that fails the chain discipline is
 // the caller's invalid set. Neither may throw out of the refusal boundary.
-function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: "signing_input_invalid" } | { invalidSet: "chain_invalid" } {
+function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: "signing_input_invalid" | "chain_invalid" | "invalid_type" } {
   if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) return { invalidSet: "signing_input_invalid" };
   const chain = chainFromInput(chainInput);
-  return chain.ok ? { chain: chain.value } : { invalidSet: "chain_invalid" };
+  return chain.ok ? { chain: chain.value } : { invalidSet: chain.code === "invalid_type" ? "invalid_type" : "chain_invalid" };
 }
 
 function refusalPartyMatches(revision: { value: AnyRecord }, claims: AnyRecord): boolean {

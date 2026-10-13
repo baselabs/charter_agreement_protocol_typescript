@@ -214,6 +214,25 @@ test("chain artifact lists must be supplied explicitly", () => {
   }
 });
 
+test("every set consuming API rejects omitted artifact lists with invalid_type", async (t) => {
+  const base = fixture("chain-verify", "chain-dual-acceptance-valid");
+  const acceptance = { ...claimsOf(base.acceptances[0]), protocol_revision: 2 };
+  const termination = { ...claimsOf(fixture("termination-verify", "termination-valid").compact), protocol_revision: 2, charter_id: acceptance.charter_id, governing_revision_digest: acceptance.revision_digest, party_descriptor_digest: acceptance.party_descriptor_digest, party_role: acceptance.party_role };
+  for (const list of ["revisions", "descriptors", "acceptances", "terminations"]) {
+    const view = { ...base };
+    delete view[list];
+    for (const [name, run] of [
+      ["verifyChain", () => api.verifyChain(view)],
+      ["verifyReceipt", () => api.verifyReceipt("broken", view)],
+      ["governingRevision", () => api.governingRevision(view, "2026-08-25T12:00:00Z")],
+      ["acceptanceRefusal", () => api.acceptanceRefusal(acceptance, view)],
+      ["terminationRefusal", () => api.terminationRefusal(termination, view)],
+      ["acceptanceSigningInput", () => api.acceptanceSigningInput("k", acceptance, view)],
+      ["terminationSigningInput", () => api.terminationSigningInput("k", termination, view)],
+    ] as const) await t.test(`${name} ${list}`, () => assert.deepEqual(run(), { ok: false, code: "invalid_type" }));
+  }
+});
+
 test("S10 successor links are checked before selecting a key", () => {
   const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
   const previous = api.decodePartyDescriptor(root);
