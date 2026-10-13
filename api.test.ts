@@ -737,3 +737,42 @@ test("T4 a chain view requires exactly the two revision party histories", () => 
   const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   assert.deepEqual(verifyChain({ ...base, acceptances: [], descriptors: base.descriptors.slice(0, 1) }), { ok: false, code: "chain_invalid" });
 });
+
+function replaceClaims(compact: string, change: (claims: Record<string, any>) => Record<string, any>): string {
+  const [header, payload, signature] = compact.split(".");
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+  return `${header}.${Buffer.from(canonical(change(claims))).toString("base64url")}.${signature}`;
+}
+
+test("T3 signed claims reject unknown top-level members in all four kinds", async (t) => {
+  await t.test("descriptor", () => {
+    const f = corpusCase("party_descriptor-verify.json", "descriptor-claims-unknown-member");
+    assert.deepEqual(verifyDescriptor(f.input.compact), { ok: false, code: "unknown_member" });
+  });
+  for (const [kind, file, id, verify] of [
+    ["acceptance", "acceptance-verify.json", "acceptance-claims-unknown-member", verifyAcceptance],
+    ["termination", "termination-verify.json", "termination-claims-unknown-member", verifyTermination],
+  ] as const) await t.test(kind, () => {
+    const f = corpusCase(file, id);
+    assert.deepEqual(verify(f.input.compact, f.input.revision_text, f.input.descriptor_compacts), { ok: false, code: "unknown_member" });
+  });
+  await t.test("receipt", () => {
+    const f = corpusCase("receipt-verify.json", "receipt-claims-unknown-member");
+    assert.deepEqual(verifyReceipt(f.input.compact, f.input.chain), { ok: false, code: "unknown_member" });
+  });
+});
+
+test("T3 every closed nested claims object rejects extra members", async (t) => {
+  const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input.compact;
+  for (const [name, change, code] of [
+    ["verification key", (c: Record<string, any>) => copyWithPath(c, "verification_keys.0.extra", true), "nested_invalid"],
+    ["attestation hint", (c: Record<string, any>) => ({ ...c, attestation_hints: [{ kind: "sample", uri: "https://example.test", extra: true }] }), "nested_invalid"],
+    ["descriptor extensions", (c: Record<string, any>) => copyWithPath(c, "extensions.extra", true), "unknown_member"],
+  ] as const) await t.test(name, () => {
+    assert.deepEqual(verifyDescriptor(replaceClaims(descriptor, change)), { ok: false, code });
+  });
+  const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match");
+  for (const [path, code] of [["grant.extra", "nested_invalid"], ["extensions.extra", "unknown_member"]]) await t.test("receipt " + path.split(".")[1] + " object " + code, () => {
+    assert.deepEqual(verifyReceipt(replaceClaims(receipt.input.compact, (c) => copyWithPath(c, path, true)), receipt.input.chain), { ok: false, code });
+  });
+});

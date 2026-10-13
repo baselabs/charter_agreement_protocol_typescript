@@ -578,18 +578,8 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   const payload = decoded.value.payload;
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
   const descriptorRow = ALG_ROWS.find((one) => one.name === decoded.value.header.alg);
-  const grammar = keyGrammarError(payload);
+  const grammar = descriptorClaimsError(payload);
   if (grammar) return fail(grammar);
-  // The descriptor timestamp floor mirrors the reference SCHEMA-stage
-  // constraint (checked before key resolution and signature work there):
-  // a spelling outside 1..64 BYTES is not a legal member value — the same
-  // floor the seven sibling timestamp members carry. Byte length, not
-  // UTF-16 units.
-  if (typeof payload.effective_from !== "string" ||
-      Buffer.byteLength(payload.effective_from, "utf8") < 1 ||
-      Buffer.byteLength(payload.effective_from, "utf8") > 64) {
-    return fail("constraint_violation");
-  }
   const resolved = Array.isArray(keys) && keys.find((one) =>
     one.key_id === decoded.value.header.kid && keyMatchesRow(one, descriptorRow)
   );
@@ -787,6 +777,60 @@ const REVISION_SCHEMA: FieldRule[] = [
   { name: "supersedes", type: "array", required: false, cardinality: [0, 8] }, field("extensions", "object"),
 ];
 
+const DESCRIPTOR_SCHEMA: FieldRule[] = [
+  field("protocol_revision", "integer", integerRange(1, 3)), digestField("party_id", false),
+  safeIntegerField("descriptor_number"), digestField("prev_descriptor_digest", false),
+  nestedField("verification_keys", "array", [
+    field("key_id", "string", (v) => /^[A-Za-z0-9._~-]{1,128}$/.test(v)),
+    field("algorithm", "string", oneOf("Ed25519", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87")),
+    field("public_key", "string", (v) => /^(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{1750}|[A-Za-z0-9_-]{2603}|[A-Za-z0-9_-]{3456})$/.test(v)),
+    field("status", "string", oneOf("active", "retired")),
+  ], [1, 32]),
+  nestedField("attestation_hints", "array", [field("kind", "string", stringBytes(1, 64)), field("uri", "string", stringBytes(1, 2048))], [0, 16]),
+  field("extensions", "object"), timeField("effective_from"),
+];
+const ACCEPTANCE_SCHEMA: FieldRule[] = [
+  field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
+  safeIntegerField("revision_number"), digestField("revision_digest"), digestField("prev_revision_digest", false),
+  digestField("party_descriptor_digest"), roleField("party_role"), timeField("accepted_at"),
+];
+const TERMINATION_SCHEMA: FieldRule[] = [
+  field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
+  digestField("governing_revision_digest"), digestField("party_descriptor_digest"),
+  roleField("party_role"), roleField("reason_code"), timeField("effective_at"), timeField("issued_at"), digestField("detail_digest", false),
+];
+const RECEIPT_SCHEMA: FieldRule[] = [
+  field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
+  safeIntegerField("revision_number"), digestField("revision_digest"), roleField("issuing_party_role"), roleField("agent_party_role"), digestField("deployment_digest"),
+  nestedField("grant", "object", [field("scheme", "string", oneOf("bap", "host")), field("id", "string", stringBytes(1, 512)), digestField("grant_digest", false)]),
+  field("invocation_id", "string", stringBytes(1, 512)), field("decision", "string", oneOf("accepted", "rejected")),
+  field("outcome", "string", oneOf("effect_committed", "no_effect", "indeterminate")),
+  timeField("occurred_at"), timeField("recorded_at"), field("extensions", "object"),
+];
+
+function extensionError(envelope: unknown, surface: string): string | null {
+  if (!isRecord(envelope)) return "invalid_type";
+  if (!exactKeys(envelope, ["critical", "optional"]) || !isRecord(envelope.critical) || !isRecord(envelope.optional)) return "unknown_member";
+  const names = [...Object.keys(envelope.critical), ...Object.keys(envelope.optional)];
+  if (names.some((namespace) => !stringBytes(1, 512)(namespace) || !/^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9.-]*$/.test(namespace))) return "extension_namespace_invalid";
+  if (new Set(names).size !== names.length) return "extension_duplicate";
+  if (names.length > 32) return "cardinality_violation";
+  for (const position of ["critical", "optional"]) {
+    for (const namespace of Object.keys(envelope[position])) {
+      const entry = EXTENSION_PROFILES.find((profile) => profile.namespace === namespace);
+      if (!entry || entry.state === "reserved" || entry.state === "retired") {
+        if (position === "optional") continue;
+        return entry?.state === "retired" ? "extension_retired" : "extension_unknown_critical";
+      }
+      if (entry.criticality !== position) return "extension_criticality_conflict";
+      if (entry.surface !== surface) return "extension_scope_invalid";
+      if (entry.schema_digest === null) return "extension_schema_unavailable";
+      if (namespace === "com.example/pricing-indexed" && envelope[position][namespace]?.formula !== "index_plus_spread") return "constraint_violation";
+    }
+  }
+  return null;
+}
+
 function validTaggedDigest(value: string): boolean {
   return digestPattern(value) && strictBase64url(value.slice(8)).ok;
 }
@@ -808,28 +852,8 @@ function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buff
   if (reasons.some((v: any) => typeof v !== "string" || !stringBytes(1, 128)(v)) || new Set(reasons).size !== reasons.length) return fail("revision_invalid");
   const supersedes = value.supersedes ?? [];
   if (supersedes.some((v: any) => typeof v !== "string" || !validTaggedDigest(v)) || new Set(supersedes).size !== supersedes.length) return fail("revision_invalid");
-  const critical = value.extensions?.critical || {};
-  const optional = value.extensions?.optional || {};
-  const names = [...Object.keys(critical), ...Object.keys(optional)];
-  if (names.some((namespace) => Buffer.byteLength(namespace) > 512 || !/^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9.-]*$/.test(namespace))) {
-    return fail("extension_namespace_invalid");
-  }
-  if (new Set(names).size !== names.length) return fail("extension_duplicate");
-  for (const namespace of Object.keys(critical)) {
-    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
-    if (!profile || profile.state === "reserved") return fail("extension_unknown_critical");
-    if (profile.state === "retired") return fail("extension_retired");
-    if (profile.criticality !== "critical") return fail("extension_criticality_conflict");
-    if (profile.surface !== "charter_revision") return fail("extension_scope_invalid");
-    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
-    if (namespace === "com.example/pricing-indexed" && critical[namespace]?.formula !== "index_plus_spread") return fail("constraint_violation");
-  }
-  for (const namespace of Object.keys(optional)) {
-    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
-    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
-    if (profile.surface !== "charter_revision") return fail("extension_scope_invalid");
-    if (profile.schema_digest === null) return fail("extension_schema_unavailable");
-  }
+  const extensions = extensionError(value.extensions, "charter_revision");
+  if (extensions) return fail(extensions);
   if (!EXTENSION_PROFILES.some((profile) => profile.namespace === value.receipt_profile && profile.surface === "receipt" && profile.state === "active" && profile.criticality === "optional")) return fail("revision_invalid");
   if (value.revision_number === 1 ? (value.charter_id !== undefined || value.prev_revision_digest !== undefined || supersedes.length !== 0) : (value.charter_id === undefined || value.prev_revision_digest === undefined)) return fail("revision_invalid");
   if (until && compareTimestamps(from, until) >= 0) return fail("revision_invalid");
@@ -858,13 +882,13 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   const decoded = decodeJws(compact);
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
+  const terminationShape = terminationClaimsError(claims);
+  if (terminationShape) return fail(terminationShape);
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   if (!descriptor || !verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
-  const terminationShape = terminationClaimsError(claims);
-  if (terminationShape) return fail(terminationShape);
   return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
@@ -1698,21 +1722,32 @@ export function checkSigningClaims(
 ): { ok: true } | { ok: false; code: string } {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return { ok: false, code: "invalid_type" };
   const error =
-    kind === "descriptor" ? descriptorClaimsError(claims) :
+    kind === "descriptor" ? signingDescriptorError(claims) :
     kind === "acceptance" ? acceptanceClaimsError(claims) :
-    kind === "termination" ? terminationClaimsError(claims) :
+    kind === "termination" ? terminationClaimsError(Object.fromEntries(Object.entries(claims).filter(([name]) => name !== "extensions"))) :
     kind === "receipt" ? (receiptGrantError(claims) ?? receiptTimingError(claims)) :
     "invalid_type";
   return error ? { ok: false, code: error } : { ok: true };
 }
 
+// Preserve the preflight helper's existing local-code precedence.
+function signingDescriptorError(claims: AnyRecord): string | null {
+  if (claims.descriptor_number === 1 && claims.prev_descriptor_digest !== undefined) return "descriptor_invalid";
+  const grammar = keyGrammarError(claims);
+  return grammar ?? descriptorClaimsError(claims);
+}
+
 function acceptanceClaimsError(claims: AnyRecord): string | null {
+  const shape = schemaError(claims, ACCEPTANCE_SCHEMA);
+  if (shape) return shape;
   if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return "acceptance_invalid";
   if (!parseTimestamp(claims.accepted_at)) return "timestamp_invalid";
   return null;
 }
 
 function terminationClaimsError(claims: AnyRecord): string | null {
+  const shape = schemaError(claims, TERMINATION_SCHEMA);
+  if (shape) return shape;
   const issuedAt = parseTimestamp(claims.issued_at);
   const effectiveAt = parseTimestamp(claims.effective_at);
   if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return "termination_invalid";
@@ -1720,21 +1755,22 @@ function terminationClaimsError(claims: AnyRecord): string | null {
 }
 
 function receiptGrantError(claims: AnyRecord): string | null {
-  if (claims.grant?.scheme === "bap" && claims.grant?.grant_digest === undefined) return "receipt_invalid";
-  const optional = claims.extensions?.optional || {};
-  for (const namespace of Object.keys(optional)) {
-    const profile = EXTENSION_PROFILES.find((entry) => entry.namespace === namespace);
-    if (!profile || profile.state === "reserved" || profile.state === "retired") continue;
-    if (profile.surface !== "receipt") return "extension_scope_invalid";
-    if (profile.schema_digest === null) return "extension_schema_unavailable";
-  }
-  return null;
+  const shape = schemaError(claims, RECEIPT_SCHEMA);
+  if (shape) return shape;
+  const allowed = receiptTimingMatrixError(claims);
+  if (allowed) return allowed;
+  if (claims.grant.scheme === "bap" && claims.grant.grant_digest === undefined) return "receipt_invalid";
+  return extensionError(claims.extensions, "receipt");
 }
 
 function receiptTimingError(claims: AnyRecord): string | null {
   const occurredAt = parseTimestamp(claims.occurred_at);
   const recordedAt = parseTimestamp(claims.recorded_at);
   if (!occurredAt || !recordedAt || compareTimestamps(recordedAt, occurredAt) < 0) return "receipt_invalid";
+  return receiptTimingMatrixError(claims);
+}
+
+function receiptTimingMatrixError(claims: AnyRecord): string | null {
   // The closed matrix mirrors the reference decoder: rejected requires
   // no_effect; accepted admits effect_committed, no_effect, or indeterminate.
   const outcomeAllowed = claims.decision === "rejected" ? claims.outcome === "no_effect" :
@@ -1744,10 +1780,15 @@ function receiptTimingError(claims: AnyRecord): string | null {
 }
 
 function descriptorClaimsError(payload: AnyRecord): string | null {
+  const shape = schemaError(payload, DESCRIPTOR_SCHEMA);
+  if (shape) return shape;
   const grammar = keyGrammarError(payload);
   if (grammar) return grammar;
+  const extensions = extensionError(payload.extensions, "party_descriptor");
+  if (extensions) return extensions;
   if (!parseTimestamp(payload.effective_from)) return "timestamp_invalid";
-  if (payload.descriptor_number === 1 && payload.prev_descriptor_digest !== undefined) return "descriptor_invalid";
+  if (payload.descriptor_number === 1 ? (payload.prev_descriptor_digest !== undefined || payload.party_id !== undefined) : (payload.prev_descriptor_digest === undefined || payload.party_id === undefined)) return "descriptor_invalid";
+  if (new Set(payload.verification_keys.map((key: any) => key.key_id)).size !== payload.verification_keys.length || !payload.verification_keys.some((key: any) => key.status === "active")) return "descriptor_invalid";
   return null;
 }
 
