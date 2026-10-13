@@ -569,15 +569,14 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
   const bytes = Buffer.from(key.public_key, "base64url");
   if (decoded.signature.length !== row.signatureBytes || bytes.length !== row.publicKeyBytes) return fail("signature_invalid");
   if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(bytes) || !strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
-  const probe = () => capabilities().algorithms.find((one) => one.name === row.name)?.verifiable === true;
-  if (!probe()) return fail("algorithm_unsupported_on_substrate");
+  if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
   try {
     const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
     const spki = createPublicKey({ key: Buffer.concat([prefix, bytes]), format: "der", type: "spki" });
     const verified = nodeVerifySignature(null, decoded.signingInput, spki, decoded.signature);
     return verified ? ok(null) : fail("signature_invalid");
   } catch (_error) {
-    return fail(probe() ? "signature_invalid" : "algorithm_unsupported_on_substrate");
+    return fail(katVerifies(row.keyAlgorithm) ? "signature_invalid" : "algorithm_unsupported_on_substrate");
   }
 }
 
@@ -1024,6 +1023,22 @@ function katVerifies(keyAlgorithm: string): boolean {
     }
   }
   return mldsa(keyAlgorithm, vector.publicKey, KNOWN_ANSWER_MESSAGE, signature);
+}
+
+// Importing an algorithm-specific SPKI asks the runtime whether it knows
+// that key type without running a signature vector. This works on Node 24.8
+// as well as runtimes that support the ML-DSA key types. A provider failure
+// during the real crypto call is classified by the selected vector only.
+function runtimeSupportsAlgorithm(keyAlgorithm: string): boolean {
+  const vector = KNOWN_ANSWERS[keyAlgorithm];
+  if (!vector) return false;
+  const prefix = keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
+  try {
+    const key = createPublicKey({ key: Buffer.concat([prefix, Buffer.from(vector.publicKey, "base64url")]), format: "der", type: "spki" });
+    return key.asymmetricKeyType === keyAlgorithm.toLowerCase();
+  } catch (_error) {
+    return false;
+  }
 }
 
 export function capabilities(): { linkedCrypto: string; algorithms: Array<{ name: string; keyAlgorithm: string; verifiable: boolean }> } {

@@ -973,7 +973,7 @@ test("T7 crypto exceptions rerun the known-answer probe", () => {
     `);
     assert.deepEqual(result.verdict, { ok: false, code });
     assert.equal(result.calls, 1);
-    assert.ok(result.reruns > 0);
+    assert.equal(result.reruns, 1);
   }
 });
 
@@ -1107,4 +1107,38 @@ test("T5 profile checks follow key resolution in signed artifact context", () =>
   }
   const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
   assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: classicalProfile }), { ok: false, code: "signature_invalid" });
+});
+
+test("S6 normal verification skips signature vectors even when a vector would fail", () => {
+  const result = cryptoScenario(`
+    let vectors = 0;
+    let signatures = 0;
+    mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (...args) => {
+      if (args[1].toString() === "charter-agreement-protocol capability known-answer") { vectors++; return false; }
+      signatures++;
+      return runtimeVerify(...args);
+    } } });
+    const api = await import(entry);
+    const verdict = api.verifyDescriptor(input.compact);
+    console.log(JSON.stringify({ ok: verdict.ok, vectors, signatures }));
+  `);
+  assert.deepEqual(result, { ok: true, vectors: 0, signatures: 1 });
+});
+
+test("S6 repeated chain verification never runs normal-path signature vectors", () => {
+  const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  const result = cryptoScenario(`
+    let vectors = 0;
+    let signatures = 0;
+    mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (...args) => {
+      if (args[1].toString() === "charter-agreement-protocol capability known-answer") vectors++;
+      else signatures++;
+      return runtimeVerify(...args);
+    } } });
+    const api = await import(entry);
+    const view = ${JSON.stringify(view)};
+    const outcomes = [api.verifyChain(view).ok, api.verifyChain(view).ok];
+    console.log(JSON.stringify({ outcomes, vectors, signatures }));
+  `);
+  assert.deepEqual(result, { outcomes: [true, true], vectors: 0, signatures: 8 });
 });
