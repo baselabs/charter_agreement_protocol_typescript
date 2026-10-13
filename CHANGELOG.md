@@ -28,6 +28,36 @@ documented here.
 
 ### Changed
 
+- Browser bundles using the shipped crypto shim now verify valid Ed25519
+  signatures instead of returning `algorithm_unsupported_on_substrate`.
+  ML-DSA still reports that code on this substrate.
+- Standalone acceptance and termination profiles now admit the supplied
+  revision first, then every descriptor in the supplied history, then the
+  signed artifact. Receipt profiles reach the whole reverified chain view.
+  Excluded context now returns `algorithm_outside_profile` or
+  `revision_outside_profile` before artifact decoding, claims or signature
+  errors that previously took precedence, or instead of a successful result.
+- `verifyReceipt(compact, revisionText, options)` now accepts a canonical
+  revision as context. Recognized claims return `governing_match: "undetermined"`
+  and `chain_conflict: "none"`; `not_verified` includes `signature` because this
+  context names no signing key. The receipt envelope is still admitted against
+  the profile. Excluded revisions or envelopes return `revision_outside_profile`
+  or `algorithm_outside_profile`; mismatched claims return
+  `receipt_claims_mismatch`. Previously text context returned `chain_invalid`.
+- Omitted artifact lists now return `invalid_type` through `governingRevision`,
+  `acceptanceRefusal`, `terminationRefusal`, `acceptanceSigningInput` and
+  `terminationSigningInput`, replacing `chain_invalid`. `verifyChain` and
+  `verifyReceipt` also require all four lists, including explicit empty lists.
+- All producer build failures now return `signing_input_invalid`, including
+  malformed claims, extra members, invalid timestamps and unsupported emission
+  algorithms. This replaces leaked schema and artifact codes, including
+  `unknown_member`, `missing_required`, `nested_invalid`, `constraint_violation`,
+  `cardinality_violation`, `descriptor_invalid`, `acceptance_invalid`,
+  `termination_invalid`, `receipt_invalid`, `timestamp_invalid`, `invalid_type`
+  and `algorithm_unsupported`. An explicit null algorithm now rejects with
+  `signing_input_invalid` instead of selecting the default algorithm.
+- `npm run build` removes `dist/` before compiling, so obsolete modules are
+  removed from the compiled package.
 - Year 0000, including February 29, now passes timestamp parsing on every
   artifact, indexed observation and governing query, matching RFC 3339 and
   the reference. The self-check now asserts acceptance of year zero.
@@ -60,7 +90,7 @@ documented here.
   with `descriptor_chain_invalid`; null claims no longer cause a crash.
   Successful descriptor facts include lineage for subsequent calls.
 - Producers reject extra termination members, including `extensions`,
-  with `unknown_member`. Assembly re-decodes the complete artifact; framed
+  with `signing_input_invalid`. Assembly re-decodes the complete artifact; framed
   inputs with invalid claims now return `signing_input_invalid`.
 - Runtime file imports can no longer replace verification or substrate
   checks. The mutable test hook is removed from source and compiled output.
@@ -68,7 +98,11 @@ documented here.
   running signature vectors; only a crypto exception reruns the selected
   vector. A failing signature vector no longer overrides a successful
   normal crypto call.
-- JSON limits count duplicate members and apply after parsing each value.
+- JSON limits count duplicate members after accepting the separator or closer
+  following each value. Malformed containers now report `invalid_syntax` before
+  `limit_exceeded`, `invalid_number` or `number_not_double_expressible` when
+  that separator is missing or invalid. Numeric conversion errors are delayed
+  until a container separator or the end of the root value is accepted.
   An excess duplicate member now reports `limit_exceeded`; an invalid value
   beyond an item or member bound reports its parse error first.
   Nontext revision inputs now report `invalid_type`.
@@ -98,7 +132,7 @@ observations; and artifact lists or byte totals exceeding caller limits.
   separately from invalid signatures, outside corpus verdict reports.
 - JSON projections preserve input member order, including numeric-looking
   names. The float boxing seam used by the differential gate is unchanged.
-- The vendored certified corpus contains 139 cases for verification semantics
+- The vendored certified corpus contains 149 cases for verification semantics
   5 and uses the reference's expanded applicability floor. The registry digest
   and package version remain unchanged.
 
