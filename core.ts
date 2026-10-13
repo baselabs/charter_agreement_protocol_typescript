@@ -240,17 +240,19 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   if (char === "{") {
     const members = new Map<string, unknown>();
     let duplicate = false;
+    let count = 0;
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
     for (;;) {
       if (text[cursor] !== '"') return { status: "syntax" };
       const key = readJsonString(text, cursor);
       if (key.status !== "ok") return key;
-      if (members.size >= limits.max_object_members || Buffer.byteLength(key.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
+      if (Buffer.byteLength(key.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
       cursor = skipWhitespace(text, key.index);
       if (text[cursor] !== ":") return { status: "syntax" };
       const item = readJsonValue(text, skipWhitespace(text, cursor + 1), limits, depth + 1);
       if (item.status !== "ok") return item;
+      if (++count > limits.max_object_members) return { status: "error", code: "limit_exceeded" };
       duplicate ||= members.has(key.value);
       members.set(key.value, item.value);
       cursor = skipWhitespace(text, item.index);
@@ -269,9 +271,9 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
     for (;;) {
-      if (items.length >= limits.max_array_items) return { status: "error", code: "limit_exceeded" };
       const item = readJsonValue(text, cursor, limits, depth + 1);
       if (item.status !== "ok") return item;
+      if (items.length >= limits.max_array_items) return { status: "error", code: "limit_exceeded" };
       items.push(item.value);
       cursor = skipWhitespace(text, item.index);
       if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }

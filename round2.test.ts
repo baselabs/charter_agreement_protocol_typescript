@@ -205,3 +205,17 @@ test("S10 successor links are checked before selecting a key", () => {
   const compact = `${Buffer.from(api.canonical({ ...protectedValue, kid: "unknown-key" })).toString("base64url")}.${payload}.${signature}`;
   assert.deepEqual(api.verifyDescriptor(compact, predecessor), { ok: false, code: "descriptor_chain_invalid" });
 });
+
+test("S11 JSON limits count every parsed member and parse over-limit values first", async (t) => {
+  await t.test("duplicate members count toward the object limit", () => {
+    assert.deepEqual(api.decodeJsonText('{"a":1,"a":2,"b":3}', { max_object_members: 2 }), { ok: false, code: "limit_exceeded" });
+  });
+  await t.test("invalid array value precedes item limit", () => {
+    assert.deepEqual(api.decodeJsonText('[1,2,1e400]', { max_array_items: 2 }), { ok: false, code: "invalid_number" });
+  });
+  await t.test("invalid object value precedes member limit", () => {
+    assert.deepEqual(api.decodeJsonText('{"a":1,"b":2,"c":1e400}', { max_object_members: 2 }), { ok: false, code: "invalid_number" });
+  });
+  assert.deepEqual(api.decodeJsonText('[1,2,3]', { max_array_items: 2 }), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(api.decodeJsonText('{"a":1,"a":2}', { max_object_members: 2 }), { ok: false, code: "duplicate_member" });
+});
