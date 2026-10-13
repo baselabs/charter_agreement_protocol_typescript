@@ -1,4 +1,3 @@
-import { capabilityProbe } from "./internal/capability-probe.ts";
 import { createHash, createPublicKey, verify as nodeVerifySignature } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -570,14 +569,12 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
   const bytes = Buffer.from(key.public_key, "base64url");
   if (decoded.signature.length !== row.signatureBytes || bytes.length !== row.publicKeyBytes) return fail("signature_invalid");
   if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(bytes) || !strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
-  const probe = () => capabilityProbe.run(row.name, () => capabilities().algorithms.find((one) => one.name === row.name)?.verifiable === true);
+  const probe = () => capabilities().algorithms.find((one) => one.name === row.name)?.verifiable === true;
   if (!probe()) return fail("algorithm_unsupported_on_substrate");
   try {
-    const verified = capabilityProbe.verify(() => {
-      const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
-      const spki = createPublicKey({ key: Buffer.concat([prefix, bytes]), format: "der", type: "spki" });
-      return nodeVerifySignature(null, decoded.signingInput, spki, decoded.signature);
-    });
+    const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
+    const spki = createPublicKey({ key: Buffer.concat([prefix, bytes]), format: "der", type: "spki" });
+    const verified = nodeVerifySignature(null, decoded.signingInput, spki, decoded.signature);
     return verified ? ok(null) : fail("signature_invalid");
   } catch (_error) {
     return fail(probe() ? "signature_invalid" : "algorithm_unsupported_on_substrate");

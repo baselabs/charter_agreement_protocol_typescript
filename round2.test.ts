@@ -263,3 +263,33 @@ test("S13 descriptor predecessors are reverified from their signed lineage", asy
     assert.deepEqual(api.verifyDescriptor(child, predecessor), { ok: false, code: "descriptor_chain_invalid" });
   });
 });
+
+test("S5 file imports cannot alter source or built signature verdicts", async (t) => {
+  const input = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+  const [header, payload, signature] = input.compact.split(".");
+  const bytes = Buffer.from(signature, "base64url");
+  bytes[40] ^= 1;
+  const forged = `${header}.${payload}.${bytes.toString("base64url")}`;
+  for (const [entry, seam] of [["./index.ts", "./internal/capability-probe.ts"], ["./dist/index.js", "./dist/internal/capability-probe.js"]]) await t.test(entry, async () => {
+    const verifier = await import(new URL(entry, import.meta.url).href);
+    let probe: any;
+    try { probe = (await import(new URL(seam, import.meta.url).href)).capabilityProbe; }
+    catch (error: any) { assert.equal(error.code, "ERR_MODULE_NOT_FOUND"); }
+    const savedVerify = probe?.verify;
+    const savedRun = probe?.run;
+    try {
+      if (probe) {
+        try { probe.run = () => false; } catch (error) { assert.ok(error instanceof TypeError); }
+      }
+      const genuine = verifier.verifyDescriptor(input.compact);
+      if (probe) {
+        try { probe.run = () => true; probe.verify = () => true; } catch (error) { assert.ok(error instanceof TypeError); }
+      }
+      const changed = verifier.verifyDescriptor(forged);
+      assert.deepEqual([genuine.ok, changed.ok], [true, false]);
+      assert.deepEqual(changed, { ok: false, code: "signature_invalid" });
+    } finally {
+      if (probe && !Object.isFrozen(probe)) { probe.verify = savedVerify; probe.run = savedRun; }
+    }
+  });
+});

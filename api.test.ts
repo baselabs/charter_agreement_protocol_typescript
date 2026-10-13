@@ -5,7 +5,7 @@
 // red on a tampered one.
 import test from "node:test";
 import * as publicApi from "./index.ts";
-import { capabilityProbe } from "./internal/capability-probe.ts";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -909,18 +909,38 @@ test("T6 every artifact list is bounded before any artifact decode", () => {
 });
 
 
+function cryptoScenario(script: string): any {
+  const setup = `
+    import { mock } from "node:test";
+    import { createHash, createPublicKey, verify as runtimeVerify } from "node:crypto";
+    const input = ${JSON.stringify(corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input)};
+    const entry = ${JSON.stringify(new URL("./index.ts", import.meta.url).href)};
+    const corpus = ${JSON.stringify(join(here, "conformance"))};
+  `;
+  return JSON.parse(execFileSync(process.execPath, ["--experimental-test-module-mocks", "--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", setup + script], { encoding: "utf8" }));
+}
+
 test("T7 unavailable substrate has a distinct artifact result after deterministic checks", () => {
-  const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
-  const saved = capabilityProbe.run;
-  capabilityProbe.run = () => false;
-  try {
-    assert.deepEqual(verifyDescriptor(input.compact), { ok: false, code: "algorithm_unsupported_on_substrate" });
-    assert.deepEqual(verifyDescriptor(replaceClaims(input.compact, (c) => ({ ...c, extra: true }))), { ok: false, code: "unknown_member" });
+  const results = cryptoScenario(`
+    mock.module("node:crypto", { namedExports: { createHash, createPublicKey: () => { throw Error("test substrate failure"); }, verify: runtimeVerify } });
+    const api = await import(entry);
     const [header, payload] = input.compact.split(".");
-    assert.deepEqual(verifyDescriptor(`${header}.${payload}.${Buffer.alloc(64).toString("base64url")}`), { ok: false, code: "signature_invalid" });
-    assert.deepEqual(withOptions(verifyDescriptor, [input.compact, null], { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
-    assert.equal("capabilityProbe" in publicApi, false);
-  } finally { capabilityProbe.run = saved; }
+    const claims = JSON.parse(Buffer.from(payload, "base64url"));
+    const malformed = header + "." + Buffer.from(api.canonical({ ...claims, extra: true })).toString("base64url") + "." + input.compact.split(".")[2];
+    console.log(JSON.stringify([
+      api.verifyDescriptor(input.compact),
+      api.verifyDescriptor(malformed),
+      api.verifyDescriptor(header + "." + payload + "." + Buffer.alloc(64).toString("base64url")),
+      api.verifyDescriptor(input.compact, null, { profile: { algorithms: ["Ed25519"] } }),
+    ]));
+  `);
+  assert.deepEqual(results, [
+    { ok: false, code: "algorithm_unsupported_on_substrate" },
+    { ok: false, code: "unknown_member" },
+    { ok: false, code: "signature_invalid" },
+    { ok: false, code: "algorithm_outside_profile" },
+  ]);
+  assert.equal("capabilityProbe" in publicApi, false);
 });
 
 test("T7 a capable substrate still reports bad signatures as signature_invalid", () => {
@@ -933,30 +953,39 @@ test("T7 a capable substrate still reports bad signatures as signature_invalid",
 
 
 test("T7 crypto exceptions rerun the known-answer probe", () => {
-  const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
-  const savedProbe = capabilityProbe.run;
-  const savedVerify = capabilityProbe.verify;
-  capabilityProbe.verify = () => { throw new Error("test substrate failure"); };
-  try {
-    for (const [rerun, code] of [[false, "algorithm_unsupported_on_substrate"], [true, "signature_invalid"]] as const) {
+  for (const [rerun, code] of [[false, "algorithm_unsupported_on_substrate"], [true, "signature_invalid"]] as const) {
+    const result = cryptoScenario(`
       let calls = 0;
-      capabilityProbe.run = () => ++calls === 1 || rerun;
-      assert.deepEqual(verifyDescriptor(input.compact), { ok: false, code });
-      assert.equal(calls, 2);
-    }
-  } finally {
-    capabilityProbe.run = savedProbe;
-    capabilityProbe.verify = savedVerify;
+      let vectorCalls = 0;
+      let before = 0;
+      mock.module("node:crypto", { namedExports: { createHash, createPublicKey, verify: (_alg, message) => {
+        if (message.toString() === "charter-agreement-protocol capability known-answer") {
+          vectorCalls++;
+          return calls === 0 || ${rerun};
+        }
+        calls++;
+        before = vectorCalls;
+        throw Error("test substrate failure");
+      } } });
+      const api = await import(entry);
+      const verdict = api.verifyDescriptor(input.compact);
+      console.log(JSON.stringify({ verdict, calls, reruns: vectorCalls - before }));
+    `);
+    assert.deepEqual(result.verdict, { ok: false, code });
+    assert.equal(result.calls, 1);
+    assert.ok(result.reruns > 0);
   }
 });
 
 
 test("T7 substrate diagnostics stay outside corpus verdict reports", () => {
-  const saved = capabilityProbe.run;
-  capabilityProbe.run = () => false;
-  try {
-    assert.throws(() => reportFor(join(here, "conformance")), /algorithm_unsupported_on_substrate/);
-  } finally { capabilityProbe.run = saved; }
+  const result = cryptoScenario(`
+    mock.module("node:crypto", { namedExports: { createHash, createPublicKey: () => { throw Error("test substrate failure"); }, verify: runtimeVerify } });
+    const api = await import(entry);
+    try { api.reportFor(corpus); console.log(JSON.stringify("no error")); }
+    catch (error) { console.log(JSON.stringify(error.message)); }
+  `);
+  assert.match(result, /algorithm_unsupported_on_substrate/);
 });
 
 const REFERENCE_FLOOR = ["tenancy", "live_policy", "authority", "effect_ownership", "execution", "billing", "evaluation_truth", "legal_validity", "term_satisfaction", "view_completeness", "counterparty_view", "wall_clock"];
