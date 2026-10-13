@@ -117,7 +117,8 @@ test("S3 year 0000 and its leap day pass every timestamp surface", async (t) => 
 test("S4 producers and assembly reject malformed artifact claims", async (t) => {
   const f = fixture("termination-verify", "termination-valid");
   const view = fixture("chain-verify", "chain-dual-acceptance-valid");
-  const claims = { ...claimsOf(f.compact), protocol_revision: 2 };
+  const coordinates = claimsOf(view.acceptances[0]);
+  const claims = { ...claimsOf(f.compact), protocol_revision: 2, charter_id: coordinates.charter_id, governing_revision_digest: coordinates.revision_digest, party_descriptor_digest: coordinates.party_descriptor_digest, party_role: coordinates.party_role };
   for (const extensions of [5, { critical: {}, optional: {} }]) await t.test("termination extra member " + typeof extensions, () => {
     assert.deepEqual(api.terminationSigningInput("k", { ...claims, extensions }, view), { ok: false, code: "unknown_member" });
   });
@@ -146,7 +147,7 @@ test("S7 revision timestamps precede binding digest extraction", () => {
 
 test("revision optional digests and supersession uniqueness stay strict", () => {
   const base = JSON.parse(fixture("charter_revision-decode", "charter-revision-genesis-valid").text);
-  assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, supersedes: [sampleDigest, sampleDigest] })), { ok: false, code: "revision_invalid" });
+  assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, revision_number: 2, charter_id: sampleDigest, prev_revision_digest: sampleDigest, supersedes: [sampleDigest, sampleDigest] })), { ok: false, code: "revision_invalid" });
   assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, attribution_declaration: { ...base.attribution_declaration, detail_digest: badDigest } })), { ok: false, code: "revision_invalid" });
 });
 
@@ -315,4 +316,13 @@ test("signature message limits and null artifact lists retain their public behav
   for (const list of ["acceptances", "terminations"]) {
     assert.deepEqual(api.verifyChain({ ...view, [list]: null }), { ok: false, code: "invalid_type" });
   }
+});
+
+
+test("unsigned revision profile bounds and optional termination digest grammar stay strict", () => {
+  const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+  const revision = { ...JSON.parse(view.revisions[0]), protocol_revision: 2 };
+  assert.deepEqual(api.verifyChain({ ...view, revisions: [api.canonical(revision)], acceptances: [] }, { profile: { revisions: { min: 1, max: 1 } } }), { ok: false, code: "revision_outside_profile" });
+  const f = fixture("termination-verify", "termination-valid");
+  assert.deepEqual(api.verifyTermination(changeClaims(f.compact, (claims) => ({ ...claims, detail_digest: "bad" })), f.revision_text, f.descriptor_compacts), { ok: false, code: "constraint_violation" });
 });
