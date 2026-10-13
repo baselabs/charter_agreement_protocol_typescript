@@ -1009,3 +1009,40 @@ test("T10 facts retain protocol revision and signed algorithm names", () => {
     assert.equal(result.facts.protocol_revision, claims.protocol_revision);
   }
 });
+
+test("T2 revision canonicalization rejects integer magnitudes before schema", () => {
+  const text = corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text;
+  assert.deepEqual(decodeCharterRevision(text.replace('"revision_number":1', '"revision_number":9007199254740992')), { ok: false, code: "integer_magnitude" });
+});
+
+test("T2 revision timestamps support the complete four-digit year range", () => {
+  const base = JSON.parse(corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text);
+  for (const year of ["0000", "0001", "0099", "0100", "9999"]) {
+    const result = decodeCharterRevision(canonical({ ...base, effective_from: year + "-01-01T00:00:00Z" }));
+    assert.ok(result.ok, year + " " + JSON.stringify(result));
+  }
+});
+
+test("T2 revision string rules use byte bounds and exact whole-string matches", () => {
+  const base = JSON.parse(corpusCase("charter_revision-decode.json", "charter-revision-genesis-valid").input.text);
+  for (const [path, max, nested] of [
+    ["parties.0.role", 128, true], ["legal_text.media_type", 255, true], ["legal_text.uri_hint", 2048, true],
+    ["abp_bindings.0.party_role", 128, true], ["effective_from", 64, false], ["effective_until", 64, false],
+    ["abp_bindings.0.blueprint_id", 512, true], ["receipt_profile", 512, false],
+  ] as const) {
+    assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, "é".repeat(Math.floor(max / 2) + 1)))), { ok: false, code: nested ? "nested_invalid" : "constraint_violation" });
+  }
+  for (const [path, value, code] of [
+    ["charter_id", sampleDigest + "\n", "constraint_violation"],
+    ["receipt_profile", base.receipt_profile + "\n", "constraint_violation"],
+    ["abp_bindings.0.blueprint_id", base.abp_bindings[0].blueprint_id + "\n", "nested_invalid"],
+    ["effective_from", base.effective_from + "\n", "timestamp_invalid"],
+  ]) assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, value))), { ok: false, code });
+});
+
+test("T4 an individual successor must retain its predecessor party", () => {
+  const [root, child] = corpusCase("descriptor_chain-verify.json", "descriptor-chain-superseded-position").input.compacts;
+  const previous = decodePartyDescriptor(root);
+  assert.ok(previous.ok);
+  assert.deepEqual(verifyDescriptor(replaceClaims(child, (c) => ({ ...c, party_id: sampleDigest })), { digest: previous.digest, claims: previous.claims }), { ok: false, code: "descriptor_chain_invalid" });
+});

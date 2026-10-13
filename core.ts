@@ -179,7 +179,10 @@ type Domain = keyof typeof SEPARATORS;
 export function canonical(value: CanonicalValue): string {
   if (value instanceof Number) return JSON.stringify(value.valueOf());
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) throw new Error("integer_magnitude");
+    return JSON.stringify(value);
+  }
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
@@ -442,6 +445,14 @@ export function jsonProjection(value: any): Projection {
 
 const PROTECTED_MEMBERS = ["alg", "kid", "typ"];
 
+function canonicalTextError(value: CanonicalValue, text: string): string | null {
+  try {
+    return canonical(value) === text ? null : "non_canonical_bytes";
+  } catch (error) {
+    return error instanceof Error ? error.message : "invalid_type";
+  }
+}
+
 function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTyp?: string): Result<{ header: Record<string, string>; payload: AnyRecord; payloadBytes: Buffer; signature: Buffer; signingInput: Buffer }> {
   if (typeof compact !== "string") return fail("compact_invalid");
   if (Buffer.byteLength(compact) > limits.max_bytes) return fail("limit_exceeded");
@@ -453,13 +464,13 @@ function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTy
   if (!protectedBytes.ok || !payloadBytes.ok) return fail("compact_invalid");
   if (!signatureBytes.ok) return fail("signature_invalid");
   const headerValue = decodeJsonBytes(protectedBytes.value, limits);
-  if (!headerValue.ok || !isRecord(headerValue.value) || canonical(headerValue.value) !== protectedBytes.value.toString()) return fail("protected_header_invalid");
+  if (!headerValue.ok || !isRecord(headerValue.value) || canonicalTextError(headerValue.value, protectedBytes.value.toString())) return fail("protected_header_invalid");
   const header = headerValue.value as Record<string, string>;
   if (!exactKeys(header, PROTECTED_MEMBERS) || typeof header.alg !== "string" || !ALG_ROWS.some((row) => row.name === header.alg) ||
       typeof header.typ !== "string" || (expectedTyp !== undefined && header.typ !== expectedTyp) ||
       typeof header.kid !== "string" || !/^[A-Za-z0-9._~-]{1,128}$/.test(header.kid)) return fail("protected_header_invalid");
   const payloadValue = decodeJsonBytes(payloadBytes.value, limits);
-  if (!payloadValue.ok || canonical(payloadValue.value) !== payloadBytes.value.toString()) return fail("non_canonical_bytes");
+  if (!payloadValue.ok || canonicalTextError(payloadValue.value, payloadBytes.value.toString())) return fail("non_canonical_bytes");
   if (!isRecord(payloadValue.value)) return fail("protected_header_invalid");
   const payload = payloadValue.value as AnyRecord;
   if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
@@ -579,9 +590,9 @@ function parseTimestamp(value: unknown): { ticks: number; fraction: string } | n
   const match = TIMESTAMP_GRAMMAR.exec(value);
   if (!match) return null;
   const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
-  if (year < 1) return null;
-  const utc = Date.UTC(year, month - 1, day);
-  const date = new Date(utc);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  const utc = date.getTime();
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   if (hour > 23 || minute > 59 || second > 60) return null;
   if (second === 60 && !(hour === 23 && minute === 59 && ((month === 6 && day === 30) || (month === 12 && day === 31)))) return null;
@@ -902,7 +913,8 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   if (typeof text !== "string") return fail("revision_invalid");
   const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
-  if (canonical(decoded.value) !== text) return fail("non_canonical_bytes");
+  const encoding = canonicalTextError(decoded.value, text);
+  if (encoding) return fail(encoding);
   const value = decoded.value as AnyRecord;
   const shape = schemaError(value, REVISION_SCHEMA);
   if (shape) return fail(shape);
