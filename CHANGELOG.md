@@ -8,6 +8,51 @@ documented here.
 - Year 0000, including February 29, now passes timestamp parsing on every
   artifact, indexed observation and governing query, matching RFC 3339 and
   the reference. The self-check now asserts acceptance of year zero.
+- Revisions repeating a party descriptor now return `revision_invalid`.
+  Views with both parties in one descriptor history, or a supplied history
+  that no revision names, now return `chain_invalid`. Missing descriptors
+  are skipped when comparing histories, as in the reference.
+- Noncanonical signed digests now return `acceptance_invalid`,
+  `termination_invalid` or `receipt_invalid`, including optional detail and
+  nested receipt digests. A correctly signed receipt with a noncanonical
+  revision digest no longer verifies successfully.
+- Malformed termination and receipt timestamps now return
+  `timestamp_invalid`; reversed valid times keep their artifact-specific
+  errors. Acceptance timestamps precede predecessor-shape checks, and
+  revision timestamps precede binding-digest checks.
+- Descriptor key encodings that fit the schema but fail canonical encoding
+  or the selected algorithm's byte length now return `descriptor_invalid`.
+  Duplicate key IDs and the absence of an active key reject before extension
+  and timestamp checks. Noncanonical descriptor identity digests also
+  return `descriptor_invalid`.
+- Chain routing checks the expected envelope type and both routing
+  coordinates before artifact claims: wrong types now report
+  `protected_header_invalid`, while missing signer coordinates or signer
+  histories report `chain_invalid`. Missing artifact lists now report
+  `invalid_type`; callers must supply empty lists explicitly.
+- Successor descriptor links precede key selection. An incorrect link with
+  an unknown key now reports `descriptor_chain_invalid`.
+  `verifyDescriptor` re-verifies the predecessor's retained `lineage`,
+  ignoring caller key claims. Predecessors without valid lineage reject
+  with `descriptor_chain_invalid`; null claims no longer cause a crash.
+  Successful descriptor facts include lineage for subsequent calls.
+- Producers reject extra termination members, including `extensions`,
+  with `unknown_member`. Assembly re-decodes the complete artifact; framed
+  inputs with invalid claims now return `signing_input_invalid`.
+- Runtime file imports can no longer replace verification or substrate
+  checks. The mutable test hook is removed from source and compiled output.
+  Normal signature verification asks the runtime about key support without
+  running signature vectors; only a crypto exception reruns the selected
+  vector. A failing signature vector no longer overrides a successful
+  normal crypto call.
+- JSON limits count duplicate members and apply after parsing each value.
+  An excess duplicate member now reports `limit_exceeded`; an invalid value
+  beyond an item or member bound reports its parse error first.
+  Nontext revision inputs now report `invalid_type`.
+- `verifySignature` returns false for messages over 1 MiB under default
+  limits. Explicit null artifact lists report `invalid_type`.
+  The exported `Profile` type accepts `algorithms` or `revisions` alone,
+  with the omitted axis using the full supported range.
 
 Several inputs that verified under 0.5.0 now reject: revision JSON with
 whitespace or duplicate members; revisions with invalid member types,
@@ -30,9 +75,9 @@ observations; and artifact lists or byte totals exceeding caller limits.
   separately from invalid signatures, outside corpus verdict reports.
 - JSON projections preserve input member order, including numeric-looking
   names. The float boxing seam used by the differential gate is unchanged.
-- The vendored certified corpus contains 134 cases and uses the reference's
-  expanded applicability floor. The registry digest and package version
-  remain unchanged.
+- The vendored certified corpus contains 138 cases for verification semantics
+  5 and uses the reference's expanded applicability floor. The registry digest
+  and package version remain unchanged.
 
 ## [0.5.0] — 2026-09-24
 

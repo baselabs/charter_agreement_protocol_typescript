@@ -87,6 +87,15 @@ the view. Malformed options return `invalid_limits` or `invalid_profile`;
 excluded artifacts return `algorithm_outside_profile` or
 `revision_outside_profile`.
 
+Profiles may supply either `algorithms` or `revisions`; the omitted axis uses
+the full supported range. A descriptor predecessor must retain its signed
+`lineage`: pass the facts from a successful `verifyDescriptor` call to the
+next call. The verifier rechecks those bytes and uses the resulting keys.
+
+Chain views must supply all four artifact lists, using `[]` for empty lists.
+The revision parties must be distinct descriptors and resolve to different
+histories, and every supplied history must be named by some revision.
+
 Each of the view's four artifact lists is bounded by
 `max_artifact_set_items`; `max_artifact_set_bytes` bounds their combined
 UTF-8 byte lengths before decoding. Corpus chain inputs can also supply
