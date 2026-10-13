@@ -3,6 +3,33 @@
 All notable public changes to `@charter-agreement-protocol/verifier` are
 documented here.
 
+## [Unreleased]
+
+Several inputs that verified under 0.5.0 now reject: revision JSON with
+whitespace or duplicate members; revisions with invalid member types,
+constraints, timestamps or party counts; unknown signed claims or extra
+members in closed nested objects; descriptor histories mixing parties or
+successors with a missing or different party ID; chain views with fewer or
+more than two party histories; malformed indexed pricing terms or receipt
+observations; and artifact lists or byte totals exceeding caller limits.
+
+- Public `verify*` functions gain optional trailing limits and profile
+  arguments. Existing call signatures continue to work. `Limits`,
+  `VerificationOptions`, `DEFAULT_LIMITS` and `MAXIMUM_LIMITS` are exported.
+- Verified terminations close governing views at their effective instant
+  when bound to the revision governing then; later receipts report a
+  governing mismatch.
+- Facts include `not_verified` and artifact metadata (`protocol_revision`
+  and `alg` for signed artifacts). Framing decode adds `signature` to the
+  unverified scope.
+- Unavailable crypto substrates report `algorithm_unsupported_on_substrate`
+  separately from invalid signatures, outside corpus verdict reports.
+- JSON projections preserve input member order, including numeric-looking
+  names. The float boxing seam used by the differential gate is unchanged.
+- The vendored certified corpus contains 134 cases and uses the reference's
+  expanded applicability floor. The registry digest and package version
+  remain unchanged.
+
 ## [0.5.0] — 2026-09-24
 
 The CAP 0.4.0 release-identity act, mirrored: the capability profile, the

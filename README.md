@@ -58,21 +58,47 @@ cannot verify green.
 | `loadCorpus(root)` | Integrity-checked corpus load (canonical index, digests, file set, applicability floor, certified index pin) |
 | `selfChecks()` | The self-check battery: SHA-256 known answers, canonical ordering, strict base64url, timestamp and limit invariants |
 | `canonical(value)` | RFC 8785 canonical JSON serialization |
-| `decodeJsonText(text)` | Strict I-JSON decode (duplicates, noncharacters, lone surrogates, number round-tripping rejected) |
-| `jsonProjection(value)` | The tagged projection used by reports |
+| `decodeJsonText(text, limits?)` | Strict I-JSON decode (duplicates, noncharacters, lone surrogates, number round-tripping rejected) |
+| `jsonProjection(value)` | The tagged projection used by reports; object members retain text order |
+| `Limits`, `DEFAULT_LIMITS`, `MAXIMUM_LIMITS` | Closed limits type, reference defaults and compiled maximum values; overrides must be nonnegative integers within the maximums |
+| `VerificationOptions` | Optional `{ limits?: Partial<Limits>, profile?: { algorithms: string[]; revisions: { min: number; max: number } } }` for public verification |
+| `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
-| `verifyDescriptor(compact, predecessor?)` / `verifyDescriptorChain(compacts)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
-| `verifyAcceptance(compact, revisionText, descriptorCompacts)` / `verifyTermination(compact, revisionText, descriptorCompacts)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
-| `verifyChain(chainInput)` / `verifyReceipt(compact, chainInput)` | Full chain-view verification (facts include the accepted/superseded topology and the verified acceptances); receipt verification against the verified chain |
+| `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
+| `verifyAcceptance(compact, revisionText, descriptorCompacts, options?)` / `verifyTermination(compact, revisionText, descriptorCompacts, options?)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
+| `verifyChain(chainInput, options?)` / `verifyReceipt(compact, chainInput, options?)` | Full chain-view verification (facts include topology, verified acceptances and termination notices); receipt verification against the verified chain |
 | `checkSigningClaims(kind, claims)` | The producer build gate's claims half (the reference `decode_for_signing`): the claims-only schema checks per kind — `descriptor \| acceptance \| termination \| receipt` — shared with the verify paths; holder-side signers run it before any key is used |
-| `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg)` | Framing-level decode (the holder-side provisional check) and the strict wrong-key guard primitive |
+| `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg, options?)` | Framing decode and the strict signature primitive; the latter retains its boolean result with optional limits and algorithm filtering |
 | `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
 | `acceptanceSigningInput(kid, claims, chainInput, alg?)` / `terminationSigningInput(kid, claims, chainInput, alg?)` | The set-aware producers: build first, then the R1–R3 refusal checks at the reference ordering |
 | `assembleCompact(signingInput, signature)` | Assemble a validated signing input and its exact raw signature (registry-row length, framing re-decode, size gate) |
-| `governingRevision(chainInput, at)` | The unique governing revision at one UTC instant — a digest, or `contested`/`none`, over the certified chain semantics |
-| `decodeCharterRevision(text)` / `revisionDigest(text)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
+| `governingRevision(chainInput, at, options?)` | The unique governing revision at one UTC instant — a digest, or `contested`/`none`, including verified termination closing |
+| `decodeCharterRevision(text, options?)` / `revisionDigest(text, options?)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
 | `decodePartyDescriptor(compact)` / `descriptorDigest(compact)` | Decode one Party Descriptor's claims and digest without verifying its signature |
 | `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused` / `chain_invalid` / `signing_input_invalid`. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
+
+Verification options default to the full algorithm registry, revisions 1..3,
+and `DEFAULT_LIMITS`. Profiles apply to each signed artifact after its local
+checks and before crypto; unsigned charter revisions use only the revision
+axis. Public acceptance, termination and receipt calls re-verify their
+supplied context with the full profile, then apply the requested profile to
+the artifact, matching the reference. `verifyChain` applies it throughout
+the view. Malformed options return `invalid_limits` or `invalid_profile`;
+excluded artifacts return `algorithm_outside_profile` or
+`revision_outside_profile`.
+
+Each of the view's four artifact lists is bounded by
+`max_artifact_set_items`; `max_artifact_set_bytes` bounds their combined
+UTF-8 byte lengths before decoding. Corpus chain inputs can also supply
+`limits`; receipt cases supply them inside the nested chain input.
+
+Every facts record includes the reference's `not_verified` floor. Signed
+records include `protocol_revision` and `alg`; unsigned revisions have
+`alg: null`, and aggregate records have `protocol_revision: null`.
+`decodeArtifact` also includes `signature` in `not_verified`. Artifact
+verification can return `algorithm_unsupported_on_substrate` after its
+deterministic checks. Corpus reporting stops with a diagnostic when the
+substrate cannot verify, keeping that local result outside verdict reports.
 
 ## Evidence
 
