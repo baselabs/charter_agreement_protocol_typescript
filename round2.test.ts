@@ -138,7 +138,7 @@ test("S4 producers and assembly reject malformed artifact claims", async (t) => 
   const coordinates = claimsOf(view.acceptances[0]);
   const claims = { ...claimsOf(f.compact), protocol_revision: 2, charter_id: coordinates.charter_id, governing_revision_digest: coordinates.revision_digest, party_descriptor_digest: coordinates.party_descriptor_digest, party_role: coordinates.party_role };
   for (const extensions of [5, { critical: {}, optional: {} }]) await t.test("termination extra member " + typeof extensions, () => {
-    assert.deepEqual(api.terminationSigningInput("k", { ...claims, extensions }, view), { ok: false, code: "unknown_member" });
+    assert.deepEqual(api.terminationSigningInput("k", { ...claims, extensions }, view), { ok: false, code: "signing_input_invalid" });
   });
   for (const [file, id, field, value] of [
     ["party_descriptor-verify", "party-descriptor-genesis-valid", "extra", true],
@@ -152,6 +152,29 @@ test("S4 producers and assembly reject malformed artifact claims", async (t) => 
     const input = { alg: header.alg, protectedSegment, payloadSegment, message: Buffer.from(`${protectedSegment}.${payloadSegment}`) };
     assert.deepEqual(api.assembleCompact(input, Buffer.alloc(64)), { ok: false, code: "signing_input_invalid" });
   });
+});
+
+test("producer build failures always return signing_input_invalid", async (t) => {
+  const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+  const acceptance = { ...claimsOf(view.acceptances[0]), protocol_revision: 2 };
+  const termination = { ...claimsOf(fixture("termination-verify", "termination-valid").compact), protocol_revision: 2, charter_id: acceptance.charter_id, governing_revision_digest: acceptance.revision_digest, party_descriptor_digest: acceptance.party_descriptor_digest, party_role: acceptance.party_role };
+  const descriptor = { ...claimsOf(fixture("party_descriptor-verify", "party-descriptor-genesis-valid").compact), protocol_revision: 2 };
+  const receipt = { ...claimsOf(fixture("receipt-verify", "receipt-signed-governing-match").compact), protocol_revision: 2 };
+  for (const [kind, claims, produce, time] of [
+    ["descriptor", descriptor, (c: any, alg?: any) => api.descriptorSigningInput("k", c, alg), "effective_from"],
+    ["acceptance", acceptance, (c: any, alg?: any) => api.acceptanceSigningInput("k", c, view, alg), "accepted_at"],
+    ["termination", termination, (c: any, alg?: any) => api.terminationSigningInput("k", c, view, alg), "issued_at"],
+    ["receipt", receipt, (c: any, alg?: any) => api.receiptSigningInput("k", c, alg), "occurred_at"],
+  ] as const) {
+    assert.ok(produce(claims).ok, kind);
+    for (const [label, run] of [
+      ["extra member", () => produce({ ...claims, extra: true })],
+      ["timestamp", () => produce({ ...claims, [time]: "bad-time" })],
+      ["claims type", () => produce(null)],
+      ["algorithm", () => produce(claims, "EdDSA")],
+      ["null algorithm", () => produce(claims, null)],
+    ] as const) await t.test(`${kind} ${label}`, () => assert.deepEqual(run(), { ok: false, code: "signing_input_invalid" }));
+  }
 });
 
 test("S7 revision timestamps precede binding digest extraction", () => {

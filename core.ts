@@ -2066,12 +2066,12 @@ function buildSigningInput(
   claims: unknown,
   algorithm: unknown,
 ): ProducerResult {
-  if (typeof algorithm === "undefined" || algorithm === null) algorithm = defaultEmissionName();
+  if (typeof algorithm === "undefined") algorithm = defaultEmissionName();
   if (typeof algorithm !== "string" || !(algorithm in emissions())) {
-    return { ok: false, code: "algorithm_unsupported" };
+    return { ok: false, code: "signing_input_invalid" };
   }
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) {
-    return { ok: false, code: "invalid_type" };
+    return { ok: false, code: "signing_input_invalid" };
   }
   const record = claims as AnyRecord;
   if (jsonValueError(record)) return { ok: false, code: "signing_input_invalid" };
@@ -2083,7 +2083,7 @@ function buildSigningInput(
     return { ok: false, code: "signing_input_invalid" };
   }
   const row = ALG_ROWS.find((one) => one.name === algorithm);
-  if (!row) return { ok: false, code: "algorithm_unsupported" };
+  if (!row) return { ok: false, code: "signing_input_invalid" };
 
   const payloadSegment = encodeBase64url(Buffer.from(canonical(record as never), "utf8"));
   const protectedSegment = encodeBase64url(
@@ -2099,7 +2099,7 @@ function buildSigningInput(
   // the producer, after framing and size - the same precedence as
   // decode_for_signing inside the Elixir build pipeline.
   const claimsGate = checkSigningClaims(kind, record);
-  if (!claimsGate.ok) return { ok: false, code: claimsGate.code };
+  if (!claimsGate.ok) return { ok: false, code: "signing_input_invalid" };
 
   // The provisional check: a zero signature at the row's exact length must
   // frame and bind.

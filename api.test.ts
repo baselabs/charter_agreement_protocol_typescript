@@ -435,9 +435,9 @@ test("producers reject bad input at the reference precedence", () => {
     if (result.ok) throw new Error("expected a producer rejection");
     return result.code;
   };
-  assert.equal(producerCode(descriptorSigningInput(KID, "not-an-object" as never)), "invalid_type");
+  assert.equal(producerCode(descriptorSigningInput(KID, "not-an-object" as never)), "signing_input_invalid");
   assert.equal(producerCode(descriptorSigningInput(KID, { protocol_revision: 3 })), "signing_input_invalid");
-  assert.equal(producerCode(descriptorSigningInput(KID, claims, "EdDSA")), "algorithm_unsupported");
+  assert.equal(producerCode(descriptorSigningInput(KID, claims, "EdDSA")), "signing_input_invalid");
   assert.equal(producerCode(descriptorSigningInput("bad kid!", claims)), "signing_input_invalid");
 });
 
