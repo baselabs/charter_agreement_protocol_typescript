@@ -572,7 +572,6 @@ function strictEd25519Signature(signature: Buffer): boolean {
 
 function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
   try {
-    if (!validPublicKey(rawKey, ALG_ROWS.find((row) => row.name === "Ed25519")!)) return false;
     const key = Buffer.from(rawKey, "base64url");
     if (signature.length !== 64 || key.length !== 32) return false;
     if (!strictEd25519Signature(signature)) return false;
