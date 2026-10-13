@@ -461,6 +461,11 @@ test("standalone profiles reach their reverified context in order", async (t) =>
       const f = fixture(file, `${stem}-profile-context-algorithm-outside`);
       assert.deepEqual(verify("broken", f.revision_text, f.descriptor_compacts, { profile: f.profile }), { ok: false, code: "algorithm_outside_profile" });
     });
+    await t.test(`${stem} history revision is admitted separately`, () => {
+      const f = fixture(file, `${stem}-profile-narrow-valid`);
+      const revisionText = api.canonical({ ...JSON.parse(f.revision_text), protocol_revision: 2 });
+      assert.deepEqual(verify("broken", revisionText, f.descriptor_compacts, { profile: { revisions: { min: 2, max: 3 } } }), { ok: false, code: "revision_outside_profile" });
+    });
   }
   for (const [suffix, code] of [["narrow-valid", null], ["context-algorithm-outside", "algorithm_outside_profile"], ["revision-only-algorithm-outside", "algorithm_outside_profile"], ["revision-only-revision-outside", "revision_outside_profile"]] as const) {
     await t.test(`receipt ${suffix}`, () => {
@@ -479,6 +484,12 @@ test("standalone profiles reach their reverified context in order", async (t) =>
     assert.equal(result.facts.governing_match, "undetermined");
     assert.deepEqual(api.verifyReceipt(compact, f.revision_text, { profile: f.profile }), { ok: false, code: "algorithm_outside_profile" });
     assert.deepEqual(api.verifyReceipt("broken", f.revision_text, { profile: { revisions: { min: 2, max: 3 } } }), { ok: false, code: "revision_outside_profile" });
+    assert.ok(result.facts.not_verified.includes("signature"));
+    const laterEnvelope = changeClaims(compact, (c) => ({ ...c, protocol_revision: 3 }));
+    assert.ok(api.verifyReceipt(laterEnvelope, f.revision_text).ok);
+    assert.deepEqual(api.verifyReceipt(laterEnvelope, f.revision_text, { profile: { revisions: { min: 1, max: 2 } } }), { ok: false, code: "revision_outside_profile" });
+    assert.deepEqual(api.verifyReceipt(changeClaims(compact, (c) => ({ ...c, revision_digest: sampleDigest })), f.revision_text, { profile: f.profile }), { ok: false, code: "receipt_claims_mismatch" });
+    assert.deepEqual(api.verifyReceipt(changeClaims(compact, (c) => ({ ...c, extra: true })), f.revision_text, { profile: f.profile }), { ok: false, code: "unknown_member" });
   });
 });
 
