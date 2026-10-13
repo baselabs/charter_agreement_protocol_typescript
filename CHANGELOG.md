@@ -14,6 +14,11 @@ documented here.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
+- The certified corpus now contains 216 cases in 16 case files, including
+  `signing.prepare`. Its runner calls public `prepareSigning`, and independent
+  tests check all 53 preparation cases and both compiled class floors.
+- `SECURITY.md` ships in the npm package with supported versions, scope,
+  reproduction commands and private reporting through GitHub's Security tab.
 
 ### Changed
 
@@ -30,6 +35,12 @@ documented here.
   `false`). Cyclic signing claims return `signing_input_invalid`.
 - The signature guard requires canonical base64url public keys. Runtime support
   checks cache the declared type and known-answer result once per key algorithm.
+- Acceptance and termination preparation apply the profile to the whole supplied
+  set. Preparation rejects an empty descriptor context with `invalid_type`.
+- The workshop passes only the signing party's descriptor history to acceptance
+  verification. The extracted flow is tested with the site's browser shims and
+  real WebCrypto keys, and the bundle uses this repository's verifier throughout.
+  CI also checks the site's types and build.
 
 ## [0.6.0] — 2026-10-13
 

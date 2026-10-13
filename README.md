@@ -86,9 +86,8 @@ cannot verify green.
 and termination, and a chain view or bare revision text for a receipt. Pass a
 canonical base64url public key. Its options are `algorithm`, `limits`, and
 `profile`. Limits cover every artifact read, including the entire set. For
-acceptance and termination, the profile covers the claimed revision, the signing
-party's descriptor chain, and the new artifact. For a receipt with a chain view,
-the profile covers the whole retained set. A descriptor's profile includes its
+acceptance, termination and a receipt with a chain view, the profile covers
+the whole supplied set and the new artifact. A descriptor's profile includes its
 predecessor history.
 
 Sign `plan.input.message`, then pass the raw `Uint8Array` signature to
