@@ -159,7 +159,7 @@ test("acceptanceRefusal: a malformed chain view keeps the typed code", () => {
   const broken = { ...view.input, acceptances: ["not-a-compact-jws"] };
   const refusal = acceptanceRefusal(acceptanceClaims(view, 0), broken);
   assert.ok(refusal.ok === false);
-  assert.equal(refusal.code, "chain_invalid");
+  assert.equal(refusal.code, "compact_invalid");
 });
 
 test("acceptanceRefusal: malformed consumed fields keep the producer code", () => {
@@ -531,7 +531,7 @@ test("the set-aware producers: build first, then R1-R3 at the reference ordering
 
   // Malformed view alone: the typed chain code.
   const badView = acceptanceSigningInput("producer-key-001", bound, { ...view.input, acceptances: ["not-a-jws"] });
-  assert.ok(badView.ok === false && badView.code === "chain_invalid");
+  assert.ok(badView.ok === false && badView.code === "compact_invalid");
 
   const termination = terminationSigningInput("producer-key-001", {
     protocol_revision: 2,
@@ -1041,4 +1041,3 @@ test("profile checks precede key resolution in signed artifact context", () => {
   const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
   assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "signature_invalid" });
 });
-

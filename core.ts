@@ -1435,6 +1435,7 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
     if (!revision.ok) return revision;
     return receiptFromCompact(compact, { kind: "revision", revision: revision.value }, settings);
   }
+  if (!isRecord(context)) return fail("invalid_type");
   const chain = chainFromInput(context, settings);
   return chain.ok ? receiptFromCompact(compact, { kind: "chain", chain: chain.value }, settings) : chain;
 }
@@ -1815,6 +1816,7 @@ export function decodeArtifact(compact: string): VerifyResult {
 // Strict signature verification over exact bytes with a base64url public
 // key under the registry row for `alg` — the wrong-key guard primitive.
 export function verifySignature(message: Buffer, signature: Buffer, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
+  if (!Buffer.isBuffer(message) || !Buffer.isBuffer(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
   const settings = resolveOptions(options);
   if (!settings.ok || !settings.value.profile.algorithms.includes(alg) || message.length > settings.value.limits.max_bytes) return false;
   const row = ALG_ROWS.find((one) => one.name === alg);
@@ -2250,10 +2252,10 @@ function refusalClaimsShape(claims: AnyRecord, stringFields: string[], integerFi
 // A non-object view mirrors the reference producer's non-ArtifactSet arm
 // (the typed producer code); an object that fails the chain discipline is
 // the caller's invalid set. Neither may throw out of the refusal boundary.
-function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: "signing_input_invalid" | "chain_invalid" | "invalid_type" } {
+function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: string } {
   if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) return { invalidSet: "signing_input_invalid" };
   const chain = chainFromInput(chainInput);
-  return chain.ok ? { chain: chain.value } : { invalidSet: chain.code === "invalid_type" ? "invalid_type" : "chain_invalid" };
+  return chain.ok ? { chain: chain.value } : { invalidSet: chain.code };
 }
 
 function refusalPartyMatches(revision: { value: AnyRecord }, claims: AnyRecord): boolean {
