@@ -935,7 +935,7 @@ function admitView(input: AnyRecord):
   return "ok";
 }
 
-function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
+function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorChain(input.descriptors);
   if (!descriptors.ok) return fail("chain_invalid");
@@ -980,6 +980,7 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
     coordinates.add(coordinate);
     acceptances.push(verified.value);
   }
+  const terminations: any[] = [];
   for (const compact of ((input.terminations as string[]) || [])) {
     const decoded = decodeJws(compact);
     if (!decoded.ok) return fail("chain_invalid");
@@ -987,6 +988,7 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
     if (!revision) return fail("chain_invalid");
     const verified = terminationFromCompact(compact, revision, descriptors.value);
     if (!verified.ok) return fail("chain_invalid");
+    terminations.push(verified.value);
   }
   const accepted = revisions.filter((revision) => {
     const expected = new Set(revision.value.parties.map((party: any) => `${party.party_descriptor_digest}\0${party.role}`));
@@ -1020,7 +1022,7 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
   };
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
-  return ok({ descriptors: descriptors.value, revisions, acceptances, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
+  return ok({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
 }
 
 // Governing mirrors the reference semantics exactly: candidates are accepted,
@@ -1037,6 +1039,15 @@ function effectiveAt(revision: { value: AnyRecord }, at: { ticks: number; fracti
 }
 
 function governing(chain: any, at: { ticks: number; fraction: string }): string {
+  const closed = chain.terminations.some((notice: any) => {
+    const effective = parseTimestamp(notice.claims.effective_at)!;
+    return compareTimestamps(effective, at) <= 0 &&
+      selectGoverning(chain, effective) === notice.claims.governing_revision_digest;
+  });
+  return closed ? "none" : selectGoverning(chain, at);
+}
+
+function selectGoverning(chain: any, at: { ticks: number; fraction: string }): string {
   const applicable = chain.accepted.filter((one: any) => !chain.supersededDigests.includes(one.digest) && effectiveAt(one, at));
   if (applicable.length === 0) return "none";
   const maximum = Math.max(...applicable.map((one: any) => one.value.revision_number));

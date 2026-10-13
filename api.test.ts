@@ -606,3 +606,22 @@ test("algorithmRegistryDigest equals the reference identity", () => {
     "sha-256:bPZY8aw4NCp3kMt4bZAACFZIcBctGGuTSa6avESQlrM",
   );
 });
+
+test("T1 termination closes governing at its instant and later", () => {
+  const fixture = corpusCase("governing_revision.json", "governing-revision-closed-by-termination");
+  for (const [i, query] of fixture.input.queries.entries()) {
+    const actual = governingRevision(fixture.input, query.at);
+    assert.ok(actual.ok);
+    assert.equal(actual.governing, fixture.expect.output.governing_revisions[i]);
+  }
+  const chain = verifyChain(fixture.input);
+  assert.ok(chain.ok);
+  assert.equal(chain.facts.terminations.length, 1);
+});
+
+test("T1 receipt after termination reports a governing mismatch", () => {
+  const fixture = corpusCase("receipt-verify.json", "receipt-after-termination-mismatch");
+  const actual = verifyReceipt(fixture.input.compact, fixture.input.chain);
+  assert.ok(actual.ok);
+  assert.equal(actual.facts.governing_match, "mismatch");
+});
