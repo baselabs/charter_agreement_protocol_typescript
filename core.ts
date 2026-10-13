@@ -499,16 +499,32 @@ function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTy
 
 const ED25519_FIELD_PRIME = 2n ** 255n - 19n;
 const ED25519_SUBGROUP_ORDER = 2n ** 252n + 27742317777372353535851937790883648493n;
-const ED25519_SMALL_ORDER_POINTS = [
-  "0100000000000000000000000000000000000000000000000000000000000000",
-  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
-  "0000000000000000000000000000000000000000000000000000000000000080",
-  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
-  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
-  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
-  "0000000000000000000000000000000000000000000000000000000000000000",
-  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
-].map((hex) => Buffer.from(hex, "hex"));
+const ED25519_D = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
+const ED25519_SQRT_MINUS_ONE = 0x2b8324804fc1df0b2b4d00993dfbd7a72f431806ad2fe478c4ee1b274a0ea0b0n;
+
+function ed25519Field(value: bigint): bigint {
+  const reduced = value % ED25519_FIELD_PRIME;
+  return reduced < 0n ? reduced + ED25519_FIELD_PRIME : reduced;
+}
+
+function ed25519Power(base: bigint, exponent: bigint): bigint {
+  let result = 1n;
+  while (exponent > 0n) {
+    if ((exponent & 1n) !== 0n) result = ed25519Field(result * base);
+    base = ed25519Field(base * base);
+    exponent >>= 1n;
+  }
+  return result;
+}
+
+// Homogeneous Edwards coordinates keep the doublings free of division.
+function doubleEd25519Point([x, y, z]: [bigint, bigint, bigint]): [bigint, bigint, bigint] {
+  const xSquared = ed25519Field(x * x);
+  const ySquared = ed25519Field(y * y);
+  const sum = ed25519Field(ySquared - xSquared);
+  const difference = ed25519Field(sum - 2n * z * z);
+  return [ed25519Field(2n * x * y * difference), ed25519Field(-sum * (xSquared + ySquared)), ed25519Field(sum * difference)];
+}
 
 function decodeLittleEndian(buffer: Buffer): bigint {
   let value = 0n;
@@ -516,17 +532,23 @@ function decodeLittleEndian(buffer: Buffer): bigint {
   return value;
 }
 
-// Strict point check mirroring Signature.strict_point?/1: the y coordinate is
-// canonical, the negative-zero spelling is rejected, and the complete
-// eight-point torsion set is refused before OpenSSL sees the key or R.
+// Decode a canonical curve point, reject negative zero and small order,
+// and admit mixed order. Keys and signature R share this rule.
 function strictEd25519Point(point: Buffer): boolean {
   if (point.length !== 32) return false;
-  if (ED25519_SMALL_ORDER_POINTS.some((one) => one.equals(point))) return false;
-  const prefix = point.subarray(0, 31);
-  const last = point[31];
-  const y = decodeLittleEndian(Buffer.concat([prefix, Buffer.from([last & 0x7f])]));
-  const negativeZero = (last & 0x80) !== 0 && (y === 1n || y === ED25519_FIELD_PRIME - 1n);
-  return y < ED25519_FIELD_PRIME && !negativeZero;
+  const y = decodeLittleEndian(point) & ((1n << 255n) - 1n);
+  const sign = BigInt(point[31] >> 7);
+  if (y >= ED25519_FIELD_PRIME) return false;
+  const ySquared = ed25519Field(y * y);
+  const denominator = ed25519Field(ED25519_D * ySquared + 1n);
+  if (denominator === 0n) return false;
+  const square = ed25519Field((ySquared - 1n) * ed25519Power(denominator, ED25519_FIELD_PRIME - 2n));
+  let root = ed25519Power(square, (ED25519_FIELD_PRIME + 3n) / 8n);
+  if (ed25519Field(root * root) !== square) root = ed25519Field(root * ED25519_SQRT_MINUS_ONE);
+  if (ed25519Field(root * root) !== square || (root === 0n && sign === 1n)) return false;
+  const x = (root & 1n) === sign ? root : ed25519Field(-root);
+  const [x8, y8, z8] = doubleEd25519Point(doubleEd25519Point(doubleEd25519Point([x, y, 1n])));
+  return !(x8 === 0n && ed25519Field(y8 - z8) === 0n);
 }
 
 function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
