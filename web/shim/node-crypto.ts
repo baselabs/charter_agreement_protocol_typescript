@@ -14,6 +14,7 @@ hashes.sha512 = sha512;
 
 export interface ShimKeyObject {
   readonly kind: "shim-ed25519-public";
+  readonly asymmetricKeyType: "ed25519";
   readonly raw: Uint8Array;
 }
 
@@ -29,7 +30,7 @@ export function createPublicKey(opts: {
   if (isUint8(k)) {
     // SPKI DER for Ed25519 is 44 bytes: 12-byte header + 32-byte raw key.
     if (k.length < 32) throw new Error("shim: SPKI too short for Ed25519");
-    return { kind: "shim-ed25519-public", raw: new Uint8Array(k.subarray(k.length - 32)) };
+    return { kind: "shim-ed25519-public", asymmetricKeyType: "ed25519", raw: new Uint8Array(k.subarray(k.length - 32)) };
   }
   if (k.kty !== "OKP" || k.crv !== "Ed25519" || typeof k.x !== "string") {
     throw new Error("shim: only Ed25519 OKP JWK supported");
@@ -37,7 +38,7 @@ export function createPublicKey(opts: {
   const bin = atob(k.x.replace(/-/g, "+").replace(/_/g, "/"));
   const raw = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) raw[i] = bin.charCodeAt(i);
-  return { kind: "shim-ed25519-public", raw };
+  return { kind: "shim-ed25519-public", asymmetricKeyType: "ed25519", raw };
 }
 
 /** The packages always call verify(null, data, ed25519Key, sig). */

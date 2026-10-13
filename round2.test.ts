@@ -1,4 +1,5 @@
 import test from "node:test";
+import { build } from "esbuild";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign } from "node:crypto";
@@ -19,6 +20,23 @@ function changeClaims(compact: string, change: (claims: any) => any): string {
   const [header, , signature] = compact.split(".");
   return `${header}.${Buffer.from(api.canonical(change(claimsOf(compact)))).toString("base64url")}.${signature}`;
 }
+
+test("browser bundle verifies signed descriptors and a dual acceptance chain", async () => {
+  const bundle = await build({
+    entryPoints: ["index.ts"], bundle: true, write: false, format: "esm", platform: "browser", target: "es2022",
+    alias: { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" },
+    inject: ["./web/shim/buffer-global.ts"],
+  });
+  const browser = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
+  const genesis = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+  const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+  assert.equal(browser.verifyDescriptor(genesis.compact).ok, true);
+  assert.equal(browser.verifyChain(view).ok, true);
+  const pq = fixture("party_descriptor-verify", "descriptor-mldsa65-rev3-valid");
+  assert.deepEqual(browser.verifyDescriptor(pq.compact), { ok: false, code: "algorithm_unsupported_on_substrate" });
+  assert.deepEqual(browser.verifyDescriptor(changeClaims(pq.compact, (c) => ({ ...c, extra: true }))), { ok: false, code: "unknown_member" });
+  assert.deepEqual(browser.verifyDescriptor(pq.compact, null, { profile: { algorithms: ["Ed25519"] } }), { ok: false, code: "algorithm_outside_profile" });
+});
 
 const badDigest = "sha-256:" + "A".repeat(42) + "B";
 const sampleDigest = "sha-256:" + "A".repeat(43);
