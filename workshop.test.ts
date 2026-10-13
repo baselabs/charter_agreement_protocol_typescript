@@ -17,12 +17,12 @@ test("workshop signs both acceptances and a receipt with the site's browser shim
       stdin: { contents: 'export { Workshop } from "./web/flow.ts"; export { verifyChain, verifyReceipt } from "./index.ts";', resolveDir: process.cwd() },
     });
     const source = readFileSync(outfile, "utf8");
-    await t.test("WebCrypto non-extractable", async () => {
+    for (const mode of ["WebCrypto non-extractable", "in-page (noble)"]) await t.test(mode, async () => {
       const page = createContext({ TextEncoder, TextDecoder, atob, btoa, crypto: webcrypto });
       runInContext(source, page);
       assert.equal(runInContext("typeof process", page), "undefined");
       await runInContext(`(async () => {
-        const workshop = new WorkshopPage.Workshop();
+        const workshop = new WorkshopPage.Workshop(${mode === "WebCrypto non-extractable"});
         await workshop.reset();
         globalThis.workshop = workshop;
         globalThis.steps = [await workshop.form(), await workshop.accept()];
@@ -30,14 +30,18 @@ test("workshop signs both acceptances and a receipt with the site's browser shim
       })()`, page);
       const steps = JSON.parse(runInContext("JSON.stringify(steps)", page));
       assert.deepEqual(steps, [{ ok: true }, { ok: true }, { ok: true }]);
-      assert.equal(runInContext("workshop.issuer.key.mode", page), "WebCrypto non-extractable");
-      assert.equal(runInContext("workshop.acceptor.key.mode", page), "WebCrypto non-extractable");
+      assert.equal(runInContext("workshop.issuer.key.mode", page), mode);
+      assert.equal(runInContext("workshop.acceptor.key.mode", page), mode);
       assert.equal(runInContext("WorkshopPage.verifyChain(workshop.view()).ok", page), true);
       assert.equal(runInContext("workshop.view().acceptances.length", page), 2);
       assert.equal(runInContext("WorkshopPage.verifyReceipt(workshop.receipt, workshop.view()).ok", page), true);
       for (const kind of ["revision", "descriptor"]) {
         const valid = await runInContext(`workshop.tampered(${JSON.stringify(kind)}).then((view) => WorkshopPage.verifyChain(view).ok)`, page);
         assert.equal(valid, false, kind);
+      }
+      for (const kind of ["receipt", "other", "__proto__"]) {
+        const result = await runInContext(`workshop.tampered(${JSON.stringify(kind)}).then((value) => JSON.stringify(value))`, page);
+        assert.deepEqual(JSON.parse(result), { error: "unknown evidence check" });
       }
     });
   } finally {

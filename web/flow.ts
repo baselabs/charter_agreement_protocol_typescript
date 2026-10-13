@@ -10,23 +10,26 @@ export interface CustodyKey {
   mode: "WebCrypto non-extractable" | "in-page (noble)";
 }
 
-export async function makeKey(): Promise<CustodyKey> {
-  try {
-    const kp = (await crypto.subtle.generateKey({ name: "Ed25519" } as Algorithm, false, ["sign"])) as CryptoKeyPair;
-    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
-    return {
-      publicKeyB64: Buffer.from(raw).toString("base64url"),
-      sign: async (m) => new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, m as BufferSource)),
-      mode: "WebCrypto non-extractable",
-    };
-  } catch {
-    const kp = keygen();
-    return {
-      publicKeyB64: Buffer.from(kp.publicKey).toString("base64url"),
-      sign: async (m) => nobleSign(m, kp.secretKey),
-      mode: "in-page (noble)",
-    };
+export async function makeKey(preferWebCrypto = true): Promise<CustodyKey> {
+  if (preferWebCrypto) {
+    try {
+      const kp = (await crypto.subtle.generateKey({ name: "Ed25519" } as Algorithm, false, ["sign"])) as CryptoKeyPair;
+      const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+      return {
+        publicKeyB64: Buffer.from(raw).toString("base64url"),
+        sign: async (m) => new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, kp.privateKey, m as BufferSource)),
+        mode: "WebCrypto non-extractable",
+      };
+    } catch {
+      // Continue with the noble key path below.
+    }
   }
+  const kp = keygen();
+  return {
+    publicKeyB64: Buffer.from(kp.publicKey).toString("base64url"),
+    sign: async (m) => nobleSign(m, kp.secretKey),
+    mode: "in-page (noble)",
+  };
 }
 
 export interface Party { key: CustodyKey; kid: string; descriptor?: string; pdd?: string; role: "issuer" | "acceptor" }
@@ -43,6 +46,7 @@ const failure = (label: string, r: { error: string; code?: string }): Step =>
   ({ ok: false, message: `${label} → ${r.error}${r.code ? " " + r.code : ""}` });
 
 export class Workshop {
+  private readonly preferWebCrypto: boolean;
   issuer!: Party;
   acceptor!: Party;
   genesisText = "";
@@ -51,8 +55,12 @@ export class Workshop {
   acceptanceAcceptor = "";
   receipt = "";
 
+  constructor(preferWebCrypto = true) {
+    this.preferWebCrypto = preferWebCrypto;
+  }
+
   async reset(): Promise<void> {
-    const [ik, ak] = await Promise.all([makeKey(), makeKey()]);
+    const [ik, ak] = await Promise.all([makeKey(this.preferWebCrypto), makeKey(this.preferWebCrypto)]);
     this.issuer = { key: ik, kid: "issuer-key-001", role: "issuer" };
     this.acceptor = { key: ak, kid: "acceptor-key-001", role: "acceptor" };
     this.genesisText = this.genesisDigest = this.acceptanceIssuer = this.acceptanceAcceptor = this.receipt = "";
@@ -177,17 +185,15 @@ export class Workshop {
 
   // The evidence checks: each returns the world the page verifies.
   async tampered(kind: string): Promise<World | { error: string }> {
+    if (kind !== "revision" && kind !== "descriptor") return { error: "unknown evidence check" };
     const base = this.view();
     if (kind === "revision") {
       // The terms change after both parties accepted.
       const rewritten = this.revisionText({ legal_text: { content_digest: dg("S"), media_type: "text/plain" } });
       return { revisions: [rewritten], acceptances: base.acceptances, descriptors: base.descriptors, terminations: [] };
     }
-    if (kind === "receipt") {
-      return { revisions: [this.genesisText], acceptances: base.acceptances, descriptors: base.descriptors, terminations: [] };
-    }
     // Re-form the issuer descriptor under a fresh key claiming the same seat.
-    const impostor = await makeKey();
+    const impostor = await makeKey(this.preferWebCrypto);
     const r = await signDescriptor(this.descriptorClaims(this.issuer.kid, impostor.publicKeyB64),
       { keyIdentity: () => ({ kid: this.issuer.kid, publicKey: impostor.publicKeyB64 }), sign: (m: Uint8Array) => impostor.sign(m) });
     if (!r.ok) return { error: `impostor descriptor → ${r.error}` };
