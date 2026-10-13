@@ -1060,3 +1060,20 @@ test("T6 explicit null artifact lists reject instead of using omitted defaults",
   const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   for (const name of ["acceptances", "terminations"]) assert.deepEqual(verifyChain({ ...view, [name]: null }), { ok: false, code: "invalid_type" });
 });
+
+function replaceHeader(compact: string, changes: Record<string, unknown>): string {
+  const [header, payload, signature] = compact.split(".");
+  return `${Buffer.from(canonical({ ...JSON.parse(Buffer.from(header, "base64url").toString()), ...changes })).toString("base64url")}.${payload}.${signature}`;
+}
+
+test("T5 profile checks follow key resolution in signed artifact context", () => {
+  for (const [file, id, fn, code] of [
+    ["acceptance-verify.json", "acceptance-valid", verifyAcceptance, "acceptance_invalid"],
+    ["termination-verify.json", "termination-valid", verifyTermination, "termination_invalid"],
+  ] as const) {
+    const input = corpusCase(file, id).input;
+    assert.deepEqual(withOptions(fn, [replaceHeader(input.compact, { kid: "missing-key" }), input.revision_text, input.descriptor_compacts], { profile: classicalProfile }), { ok: false, code });
+  }
+  const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
+  assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: classicalProfile }), { ok: false, code: "signature_invalid" });
+});

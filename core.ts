@@ -558,7 +558,9 @@ function keyMatchesRow(key: AnyRecord | undefined, row: any): boolean {
   return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
 }
 
-function verifyDecodedJws(decoded: { header: Record<string, string>; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[]): Result<null> {
+function verifyDecodedJws(decoded: { header: Record<string, string>; payload: AnyRecord; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[], settings: Settings = DEFAULT_SETTINGS): Result<null> {
+  const admission = profileError(decoded.header.alg, decoded.payload.protocol_revision, settings);
+  if (admission) return fail(admission);
   const row = ALG_ROWS.find((one) => one.name === decoded.header.alg);
   if (!row || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return fail("signature_invalid");
   const key = keys.find((one) => one.key_id === decoded.header.kid && keyMatchesRow(one, row));
@@ -618,11 +620,10 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
-  const descriptorRow = ALG_ROWS.find((one) => one.name === decoded.value.header.alg);
   const grammar = descriptorClaimsError(payload);
   if (grammar) return fail(grammar);
   const resolved = Array.isArray(keys) && keys.find((one) =>
-    one.key_id === decoded.value.header.kid && keyMatchesRow(one, descriptorRow)
+    one.key_id === decoded.value.header.kid && one.status === "active"
   );
   if (!resolved) return fail("descriptor_key_invalid");
   if (!parseTimestamp(payload.effective_from)) {
@@ -634,9 +635,7 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
     return fail("descriptor_chain_invalid");
   }
-  const admission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
-  if (admission) return fail(admission);
-  const signature = verifyDecodedJws(decoded.value, "cap+party", keys);
+  const signature = verifyDecodedJws(decoded.value, "cap+party", keys, settings);
   if (!signature.ok) return signature;
   return ok(factsRecord({ ...decoded.value, digest, compact, protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
 }
@@ -953,9 +952,8 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
   if (!descriptor) return fail("acceptance_claims_mismatch");
-  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
-  if (admission) return fail(admission);
-  const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys);
+  if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("acceptance_invalid");
+  const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys, settings);
   if (!signature.ok) return signature;
   return ok(factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
@@ -971,9 +969,8 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
   if (!descriptor) return fail("termination_claims_mismatch");
-  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
-  if (admission) return fail(admission);
-  const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys);
+  if (!descriptor.payload.verification_keys.some((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")) return fail("termination_invalid");
+  const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys, settings);
   if (!signature.ok) return signature;
   return ok(factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
@@ -1316,7 +1313,7 @@ function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
         return descriptor?.payload.verification_keys || [];
       })
   );
-  return [...new Map(keys.map((key: any) => [canonical(key), key])).values()];
+  return [...new Map<string, AnyRecord>(keys.map((key: any) => [canonical(key), key])).values()];
 }
 
 function receiptFromCompact(compact: string, chain: any, settings: Settings = DEFAULT_SETTINGS) {
@@ -1331,14 +1328,13 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
   const governingDigest = governing(chain, parseTimestamp(claims.occurred_at)!);
   const projection = projectReceipt(claims, chain, governingDigest);
   if (!projection.ok) return projection;
-  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
-  if (admission) return fail(admission);
   const candidates = receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
-    .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key]) }));
+    .filter((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")
+    .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key], settings) }));
   const verifiedPublicKeys = new Set(candidates.filter((one: any) => one.result.ok).map((one: any) => one.key.public_key));
   if (verifiedPublicKeys.size !== 1) {
-    const unavailable = candidates.some((one: any) => !one.result.ok && one.result.code === "algorithm_unsupported_on_substrate");
-    return fail(verifiedPublicKeys.size === 0 && unavailable ? "algorithm_unsupported_on_substrate" : "signature_invalid");
+    const diagnostic = candidates.find((one: any) => !one.result.ok && ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"].includes(one.result.code));
+    return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
   }
   return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
