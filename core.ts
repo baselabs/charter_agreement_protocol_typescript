@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "hndZwJyN8wMI2oEhza8thf6wLSwz3bB2xrzC6dwx2ZM";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "bb5h181EI3WIBPXycxBh36CwIj4R5pQ7T4DC_yXAf9s";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -68,21 +68,21 @@ const CLASSES = [
 ];
 
 const REQUIRED = {
-  "base64url.decode": ["valid", "exact_bound", "invalid_encoding"],
-  "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
-  "canonicalization.encode": ["valid", "invalid_encoding", "invalid_type", "non_canonical_bytes"],
-  "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
-  "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
-  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
-  "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
-  "charter_revision.decode": ["valid", "invalid_encoding", "non_canonical_bytes", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical", "extension_invalid"],
-  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
   "acceptance.equivocation": ["equivocation", "invalid_constraint"],
-  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
+  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
+  "base64url.decode": ["valid", "exact_bound", "invalid_encoding"],
+  "canonicalization.encode": ["valid", "invalid_encoding", "invalid_type", "non_canonical_bytes"],
   "chain.verify": ["valid", "exact_bound", "maximum_plus_one", "chain_fork", "supersession", "chain_invalid"],
   "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
+  "charter_revision.decode": ["valid", "invalid_encoding", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "non_canonical_bytes", "extension_unknown_critical", "extension_invalid"],
+  "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
+  "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "governing_revision": ["precedence_selection", "terminated"],
-  "receipt.verify": ["valid", "unknown_member", "terminated", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
+  "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
+  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
+  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
+  "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
+  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
 };
 
 // ---------------------------------------------------------------------------
@@ -1126,6 +1126,13 @@ function profileError(alg: string | null, revision: number, settings: Settings):
   return null;
 }
 
+function revisionWithProfile(text: unknown, settings: Settings): ReturnType<typeof revisionFromText> {
+  const revision = revisionFromText(text, settings.limits);
+  if (!revision.ok) return revision;
+  const admission = profileError(null, revision.value.value.protocol_revision, settings);
+  return admission ? fail(admission) : revision;
+}
+
 function boundedArtifacts(lists: unknown[], limits: Limits): string | null {
   let bytes = 0;
   for (const list of lists) {
@@ -1341,7 +1348,7 @@ function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
   return [...new Map<string, AnyRecord>(keys.map((key: any) => [canonical(key), key])).values()];
 }
 
-function receiptFromCompact(compact: string, chain: any, settings: Settings = DEFAULT_SETTINGS) {
+function receiptFromCompact(compact: string, chain: any, settings: Settings = DEFAULT_SETTINGS, revisionOnly = false) {
   const decoded = decodeJws(compact, settings.limits, "cap+receipt");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -1350,9 +1357,15 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
   const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
   const receiptTiming = receiptTimingError(claims);
   if (receiptTiming) return fail(receiptTiming);
-  const governingDigest = governing(chain, parseTimestamp(claims.occurred_at)!);
+  const governingDigest = revisionOnly ? "contested" : governing(chain, parseTimestamp(claims.occurred_at)!);
   const projection = projectReceipt(claims, chain, governingDigest);
   if (!projection.ok) return projection;
+  if (revisionOnly) {
+    if (!claimedRevision) return fail("receipt_claims_mismatch");
+    const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+    if (admission) return fail(admission);
+    return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]));
+  }
   const candidates = receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
     .filter((key: AnyRecord) => key.key_id === decoded.value.header.kid && key.status === "active")
     .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key], settings) }));
@@ -1362,6 +1375,17 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
     return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
   }
   return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
+}
+
+function receiptWithContext(compact: string, context: AnyRecord | string, settings: Settings) {
+  if (typeof context === "string") {
+    const revision = revisionWithProfile(context, settings);
+    if (!revision.ok) return revision;
+    const view = { accepted: [revision.value], charterId: revision.value.value.charter_id || revision.value.digest };
+    return receiptFromCompact(compact, view, settings, true);
+  }
+  const chain = chainFromInput(context, settings);
+  return chain.ok ? receiptFromCompact(compact, chain.value, settings) : chain;
 }
 
 function execute(one: ConformanceCase): CaseResult {
@@ -1424,10 +1448,13 @@ function execute(one: ConformanceCase): CaseResult {
     case "charter_revision.decode":
       return project(revisionFromText(input.text), (revision) => ({ revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration, abp_binding: { blueprint_id: revision.value.abp_bindings[0].blueprint_id, release_number: revision.value.abp_bindings[0].release_number, content_digest: revision.value.abp_bindings[0].content_digest, deployment_digest: revision.value.abp_bindings[0].deployment_digest } }));
     case "acceptance.verify": {
-      const revision = revisionFromText(input.revision_text);
-      const chain = descriptorChain(input.descriptor_compacts);
-      if (!revision.ok || !chain.ok) return invalid("acceptance_invalid");
-      return project(acceptanceFromCompact(input.compact, revision.value, chain.value), (facts) => ({ acceptance_digest: facts.digest, revision_digest: facts.claims.revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, descriptor_position: facts.descriptorPosition }));
+      const settings = resolveOptions({ profile: input.profile });
+      if (!settings.ok) return invalid(settings.code);
+      const revision = revisionWithProfile(input.revision_text, settings.value);
+      if (!revision.ok) return invalid(revision.code);
+      const chain = descriptorChain(input.descriptor_compacts, settings.value);
+      if (!chain.ok) return invalid(chain.code);
+      return project(acceptanceFromCompact(input.compact, revision.value, chain.value, settings.value), (facts) => ({ acceptance_digest: facts.digest, revision_digest: facts.claims.revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, descriptor_position: facts.descriptorPosition }));
     }
     case "acceptance.equivocation": {
       const chain = descriptorChain(input.descriptor_compacts);
@@ -1447,10 +1474,13 @@ function execute(one: ConformanceCase): CaseResult {
       return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).value.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.value.claims.revision_digest).sort(), winner: null });
     }
     case "termination.verify": {
-      const revision = revisionFromText(input.revision_text);
-      const chain = descriptorChain(input.descriptor_compacts);
-      if (!revision.ok || !chain.ok) return invalid("termination_invalid");
-      return project(terminationFromCompact(input.compact, revision.value, chain.value), (facts) => ({ termination_digest: facts.digest, governing_revision_digest: facts.claims.governing_revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, reason_code: facts.claims.reason_code, descriptor_position: facts.descriptorPosition }));
+      const settings = resolveOptions({ profile: input.profile });
+      if (!settings.ok) return invalid(settings.code);
+      const revision = revisionWithProfile(input.revision_text, settings.value);
+      if (!revision.ok) return invalid(revision.code);
+      const chain = descriptorChain(input.descriptor_compacts, settings.value);
+      if (!chain.ok) return invalid(chain.code);
+      return project(terminationFromCompact(input.compact, revision.value, chain.value, settings.value), (facts) => ({ termination_digest: facts.digest, governing_revision_digest: facts.claims.governing_revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, reason_code: facts.claims.reason_code, descriptor_position: facts.descriptorPosition }));
     }
     case "chain.verify": {
       const chain = chainWithOptions(input, { limits: input.limits });
@@ -1473,9 +1503,9 @@ function execute(one: ConformanceCase): CaseResult {
       });
     }
     case "receipt.verify": {
-      const chain = chainWithOptions(input.chain, { limits: input.chain.limits });
-      if (!chain.ok) return invalid("receipt_invalid");
-      return project(receiptFromCompact(input.compact, chain.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
+      const settings = resolveOptions({ profile: input.profile });
+      if (!settings.ok) return invalid(settings.code);
+      return project(receiptWithContext(input.compact, input.revision_text ?? input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
     }
     default:
       throw new Error("unsupported surface");
@@ -1794,10 +1824,9 @@ export function verifyDescriptorChain(compacts: string[], options: VerificationO
 export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const contextSettings = { ...DEFAULT_SETTINGS, limits: settings.value.limits };
-  const revision = revisionFromText(revisionText, settings.value.limits);
+  const revision = revisionWithProfile(revisionText, settings.value);
   if (!revision.ok) return revision;
-  const chain = descriptorChain(descriptorCompacts, contextSettings);
+  const chain = descriptorChain(descriptorCompacts, settings.value);
   if (!chain.ok) return chain;
   const verified = acceptanceFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
@@ -1807,10 +1836,9 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const contextSettings = { ...DEFAULT_SETTINGS, limits: settings.value.limits };
-  const revision = revisionFromText(revisionText, settings.value.limits);
+  const revision = revisionWithProfile(revisionText, settings.value);
   if (!revision.ok) return revision;
-  const chain = descriptorChain(descriptorCompacts, contextSettings);
+  const chain = descriptorChain(descriptorCompacts, settings.value);
   if (!chain.ok) return chain;
   const verified = terminationFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
@@ -1823,12 +1851,10 @@ export function verifyChain(chainInput: AnyRecord, options: VerificationOptions 
   return { ok: true, facts: verified.value };
 }
 
-export function verifyReceipt(compact: string, chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
+export function verifyReceipt(compact: string, context: AnyRecord | string, options: VerificationOptions = {}): VerifyResult {
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const chain = chainFromInput(chainInput, { ...DEFAULT_SETTINGS, limits: settings.value.limits });
-  if (!chain.ok) return chain;
-  const verified = receiptFromCompact(compact, chain.value, settings.value);
+  const verified = receiptWithContext(compact, context, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   return {
     ok: true,
@@ -1839,7 +1865,7 @@ export function verifyReceipt(compact: string, chainInput: AnyRecord, options: V
       claims: verified.value.claims,
       governing_match: verified.value.governingMatch,
       chain_conflict: verified.value.chainConflict,
-    }),
+    }, typeof context === "string" ? ["signature"] : []),
   };
 }
 

@@ -323,6 +323,48 @@ test("partial profile types match the public verification behavior", () => {
   assert.ok(api.verifyDescriptor(f.compact, null, revisionsOnly).ok);
 });
 
+test("standalone profiles reach their reverified context in order", async (t) => {
+  for (const [file, stem, verify] of [
+    ["acceptance-verify", "acceptance", api.verifyAcceptance],
+    ["termination-verify", "termination", api.verifyTermination],
+  ] as const) {
+    for (const [suffix, code] of [["narrow-valid", null], ["context-algorithm-outside", "algorithm_outside_profile"], ["context-revision-outside", "revision_outside_profile"]] as const) {
+      await t.test(`${stem} ${suffix}`, () => {
+        const f = fixture(file, `${stem}-profile-${suffix}`);
+        const result = verify(f.compact, f.revision_text, f.descriptor_compacts, { profile: f.profile });
+        if (code) assert.deepEqual(result, { ok: false, code });
+        else assert.ok(result.ok);
+      });
+    }
+    await t.test(`${stem} revision admission precedes history and artifact decoding`, () => {
+      const f = fixture(file, `${stem}-profile-context-revision-outside`);
+      assert.deepEqual(verify("broken", f.revision_text, ["broken"], { profile: f.profile }), { ok: false, code: "revision_outside_profile" });
+    });
+    await t.test(`${stem} history admission precedes artifact decoding`, () => {
+      const f = fixture(file, `${stem}-profile-context-algorithm-outside`);
+      assert.deepEqual(verify("broken", f.revision_text, f.descriptor_compacts, { profile: f.profile }), { ok: false, code: "algorithm_outside_profile" });
+    });
+  }
+  for (const [suffix, code] of [["narrow-valid", null], ["context-algorithm-outside", "algorithm_outside_profile"], ["revision-only-algorithm-outside", "algorithm_outside_profile"], ["revision-only-revision-outside", "revision_outside_profile"]] as const) {
+    await t.test(`receipt ${suffix}`, () => {
+      const f = fixture("receipt-verify", `receipt-profile-${suffix}`);
+      const result = api.verifyReceipt(f.compact, f.revision_text ?? f.chain, { profile: f.profile });
+      if (code) assert.deepEqual(result, { ok: false, code });
+      else assert.ok(result.ok);
+    });
+  }
+  await t.test("receipt revision context leaves signatures unchecked", () => {
+    const f = fixture("receipt-verify", "receipt-profile-revision-only-algorithm-outside");
+    const [header, payload] = f.compact.split(".");
+    const compact = `${header}.${payload}.${Buffer.alloc(64).toString("base64url")}`;
+    const result = api.verifyReceipt(compact, f.revision_text);
+    assert.ok(result.ok);
+    assert.equal(result.facts.governing_match, "undetermined");
+    assert.deepEqual(api.verifyReceipt(compact, f.revision_text, { profile: f.profile }), { ok: false, code: "algorithm_outside_profile" });
+    assert.deepEqual(api.verifyReceipt("broken", f.revision_text, { profile: { revisions: { min: 2, max: 3 } } }), { ok: false, code: "revision_outside_profile" });
+  });
+});
+
 test("signature message limits and null artifact lists retain their public behavior", () => {
   const pair = generateKeyPairSync("ed25519");
   const message = Buffer.alloc(1_048_577, 7);
