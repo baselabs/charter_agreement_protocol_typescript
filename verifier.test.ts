@@ -6,10 +6,10 @@
 //   node --test --experimental-strip-types --no-warnings verifier.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, cpSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, cpSync, readFileSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { canonical, decodeJsonText, jsonProjection, reportFor, selfChecks } from "./core.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -99,5 +99,24 @@ test("check-corpus.mjs accepts the vendored corpus and reports its digest", asyn
     for (const name of ["profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"]) {
       assert.ok(index.applicability[surface][name] >= 1);
     }
+  }
+});
+
+test("package build removes stale modules from its compiled public surface", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const scratch = mkdtempSync(join(tmpdir(), "cap-build-"));
+  try {
+    for (const file of ["package.json", "tsconfig.json", "tsconfig.build.json", "core.ts", "index.ts", "cli.ts"]) cpSync(join(here, file), join(scratch, file));
+    symlinkSync(join(here, "node_modules"), join(scratch, "node_modules"), "dir");
+    mkdirSync(join(scratch, "dist", "internal"), { recursive: true });
+    const stale = join(scratch, "dist", "internal", "obsolete.js");
+    writeFileSync(stale, "export const obsolete = true;\n");
+    const run = spawnSync("npm", ["run", "build"], { cwd: scratch, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const compiled = await import(pathToFileURL(join(scratch, "dist", "index.js")).href);
+    assert.deepEqual(compiled.decodeJsonText("[]"), { ok: true, value: [] });
+    await assert.rejects(import(pathToFileURL(stale).href), { code: "ERR_MODULE_NOT_FOUND" });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
