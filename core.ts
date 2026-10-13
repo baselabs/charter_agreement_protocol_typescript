@@ -1900,15 +1900,21 @@ export function decodeArtifact(compact: string): VerifyResult {
 
 // Strict signature verification over exact bytes with a base64url public
 // key under the registry row for `alg` — the wrong-key guard primitive.
-export function verifySignature(message: Buffer, signature: Buffer, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
-  if (!Buffer.isBuffer(message) || !Buffer.isBuffer(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
+const uint8ArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag)!.get!;
+
+function isUint8Array(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && uint8ArrayTag.call(value) === "Uint8Array";
+}
+
+export function verifySignature(message: Uint8Array, signature: Uint8Array, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
+  if (!isUint8Array(message) || !isUint8Array(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
   const settings = resolveOptions(options);
   if (!settings.ok || !settings.value.profile.algorithms.includes(alg) || message.length > settings.value.limits.max_bytes) return false;
   const row = ALG_ROWS.find((one) => one.name === alg);
   if (!row) return false;
   if (!validPublicKey(publicKeyBase64url, row) || !runtimeSupportsAlgorithm(row.keyAlgorithm)) return false;
-  if (row.keyAlgorithm === "Ed25519") return ed25519(publicKeyBase64url, message, signature);
-  return mldsa(row.keyAlgorithm, publicKeyBase64url, message, signature);
+  if (row.keyAlgorithm === "Ed25519") return ed25519(publicKeyBase64url, Buffer.from(message), Buffer.from(signature));
+  return mldsa(row.keyAlgorithm, publicKeyBase64url, Buffer.from(message), Buffer.from(signature));
 }
 
 export type DescriptorPredecessor = { digest?: string; descriptor_digest?: string; claims?: AnyRecord | null; lineage?: string[] };
@@ -2170,7 +2176,7 @@ export function descriptorDigest(compact: unknown): { ok: true; digest: string }
 
 export type SigningKind = "descriptor" | "acceptance" | "termination" | "receipt";
 export type ChainInput = { revisions: string[]; acceptances: string[]; descriptors: string[]; terminations: string[] };
-type SigningOptions = VerificationOptions & { algorithm?: string };
+export type SigningOptions = VerificationOptions & { algorithm?: string };
 type SigningContext =
   | { kind: "descriptor"; predecessor: DescriptorPredecessor | null }
   | { kind: "acceptance"; revisionText: string; descriptorCompacts: string[] }
@@ -2180,6 +2186,7 @@ type FinishResult = { ok: true; compact: string } | { ok: false; code: string };
 
 let createSigningPlan: (kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) => SigningPlan;
 let finishSigningPlan: (plan: SigningPlan, signature: Uint8Array) => FinishResult;
+const SIGNING_PLAN_TOKEN = Symbol();
 
 /** A prepared input with retained verification context and settings. */
 export class SigningPlan {
@@ -2191,7 +2198,8 @@ export class SigningPlan {
   #limits: Limits;
   #profile: ParsedProfile;
 
-  private constructor(kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) {
+  private constructor(token: symbol, kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) {
+    if (token !== SIGNING_PLAN_TOKEN) throw new TypeError("SigningPlan requires prepareSigning");
     this.kind = kind;
     this.key = key;
     this.#input = { ...input, message: Buffer.from(input.message) };
@@ -2207,9 +2215,9 @@ export class SigningPlan {
   }
 
   static {
-    createSigningPlan = (kind, input, key, publicKey, context, settings) => new SigningPlan(kind, input, key, publicKey, context, settings);
+    createSigningPlan = (kind, input, key, publicKey, context, settings) => new SigningPlan(SIGNING_PLAN_TOKEN, kind, input, key, publicKey, context, settings);
     finishSigningPlan = (plan, signature) => {
-      if (!(#input in plan) || !(signature instanceof Uint8Array)) return fail("invalid_type");
+      if (!(#input in plan) || !isUint8Array(signature)) return fail("invalid_type");
       const assembled = assembleUnderLimits(plan.#input, Buffer.from(signature), plan.#limits);
       if (!assembled.ok) return assembled;
       const options: VerificationOptions = { limits: plan.#limits, profile: { algorithms: plan.#profile.algorithms, revisions: { min: plan.#profile.minRevision, max: plan.#profile.maxRevision } } };

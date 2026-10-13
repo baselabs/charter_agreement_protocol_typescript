@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { runInNewContext } from "node:vm";
 import * as api from "./index.ts";
+import type { SigningOptions } from "./index.ts";
 
 function fixture(file: string, id: string): any {
   const document = JSON.parse(readFileSync(new URL(`./conformance/cases/${file}.json`, import.meta.url), "utf8"));
@@ -91,6 +93,24 @@ test("signature guard requires canonical base64url", () => {
   const bytes = Buffer.from(signature, "base64url");
   assert.equal(api.verifySignature(message, bytes, key, "EdDSA"), true);
   assert.equal(api.verifySignature(message, bytes, key + "=", "EdDSA"), false);
+});
+
+test("signature guard accepts plain and cross-realm Uint8Array bytes", () => {
+  const compact = fixture("party_descriptor-verify", "party-descriptor-genesis-valid").compact;
+  const [header, payload, signature] = compact.split(".");
+  const publicKey = claimsOf(compact).verification_keys[0].public_key;
+  const message = new Uint8Array(Buffer.from(`${header}.${payload}`));
+  const bytes = new Uint8Array(Buffer.from(signature, "base64url"));
+  assert.equal(Buffer.isBuffer(message), false);
+  assert.equal(Buffer.isBuffer(bytes), false);
+  assert.equal(api.verifySignature(message, bytes, publicKey, "EdDSA"), true);
+  const foreign = runInNewContext("({ message: new Uint8Array(message), signature: new Uint8Array(signature) })", { message, signature: bytes });
+  assert.equal(foreign.signature instanceof Uint8Array, false);
+  assert.equal(api.verifySignature(foreign.message, foreign.signature, publicKey, "EdDSA"), true);
+  for (const value of [bytes.buffer, new DataView(bytes.buffer), new Uint8ClampedArray(bytes), new Uint16Array(32)]) {
+    assert.equal(api.verifySignature(message, value as any, publicKey, "EdDSA"), false);
+    assert.equal(api.verifySignature(value as any, bytes, publicKey, "EdDSA"), false);
+  }
 });
 
 test("runtime support checks declared types and known answers once per key algorithm", async () => {
@@ -265,6 +285,30 @@ test("prepare keeps the retained context and signing input private", () => {
   assert.deepEqual(api.finishSigning(prepared.plan, "x" as any), { ok: false, code: "invalid_type" });
   assert.deepEqual(api.finishSigning(prepared.plan, Buffer.alloc(63)), { ok: false, code: "signature_invalid" });
   assert.deepEqual(api.finishSigning(prepared.plan, sign(null, message, set.parties[1].privateKey)), { ok: false, code: "signature_invalid" });
+});
+
+test("SigningPlan construction requires preparation", () => {
+  const set = mintedSet();
+  const input = api.descriptorSigningInput("k", set.parties[0].claims);
+  assert.ok(input.ok);
+  const settings = { limits: api.DEFAULT_LIMITS, profile: { algorithms: ["Ed25519"], minRevision: 1, maxRevision: 3 } };
+  assert.throws(() => Reflect.construct(api.SigningPlan, ["descriptor", input.input, "matched", set.parties[0].publicKey,
+    { kind: "descriptor", predecessor: null }, settings]), { name: "TypeError", message: "SigningPlan requires prepareSigning" });
+});
+
+test("finish accepts a Uint8Array from a real vm context", () => {
+  const set = mintedSet();
+  const options: SigningOptions = { algorithm: "Ed25519" };
+  const prepared = api.prepareSigning("descriptor", "k", set.parties[0].claims, set.parties[0].publicKey, null, options);
+  assert.ok(prepared.ok);
+  const signature = sign(null, prepared.plan.input.message, set.parties[0].privateKey);
+  const foreign = runInNewContext("new Uint8Array(bytes)", { bytes: signature });
+  assert.equal(foreign instanceof Uint8Array, false);
+  assert.ok(api.finishSigning(prepared.plan, foreign).ok);
+  for (const value of [foreign.buffer, runInNewContext("new DataView(bytes.buffer)", { bytes: foreign }),
+    new Uint8ClampedArray(signature), new Uint16Array(32)]) {
+    assert.deepEqual(api.finishSigning(prepared.plan, value as any), { ok: false, code: "invalid_type" });
+  }
 });
 
 test("prepare returns typed results for generated malformed inputs in every position", () => {

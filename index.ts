@@ -69,6 +69,7 @@ export {
   finishSigning,
   SigningPlan,
   type SigningKind,
+  type SigningOptions,
   type ChainInput,
   type SigningInput,
   type ProducerResult,
