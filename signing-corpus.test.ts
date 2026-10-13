@@ -9,7 +9,7 @@ import * as api from "./index.ts";
 
 const cases: api.ConformanceCase[] = JSON.parse(readFileSync(new URL("./conformance/cases/signing-prepare.json", import.meta.url), "utf8")).cases;
 
-test("signing corpus runner matches Elixir kinds contexts and extra option members", async (t) => {
+test("signing corpus runner matches Elixir kinds contexts and closed options", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-"));
   try {
     const modulePath = join(scratch, "core.ts");
@@ -33,11 +33,13 @@ test("signing corpus runner matches Elixir kinds contexts and extra option membe
       ["receipt raw revision", receipt, { context: receipt.input.context.chain.revisions[0] }, invalidType],
       ["acceptance raw set", acceptance, { context: acceptance.input.context.set }, invalidType],
       ["receipt raw set", receipt, { context: receipt.input.context.chain }, invalidType],
-      ["profile extra member", descriptor, { profile: { unknown: 42 } }, descriptor.expect],
-      ["profile extra unrecognized name", descriptor, { profile: { ts_verifier_uninterned_member_12345: 42 } }, descriptor.expect],
-      ["limits extra member", descriptor, { limits: { unknown: 42 } }, descriptor.expect],
-      ["revision bounds extra member", descriptor, { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, descriptor.expect],
-      ["null profile", descriptor, { profile: null }, descriptor.expect],
+      ["profile extra member", descriptor, { profile: { unknown: 42 } }, invalidType],
+      ["profile extra unrecognized name", descriptor, { profile: { ts_verifier_uninterned_member_12345: 42 } }, invalidType],
+      ["limits extra member", descriptor, { limits: { unknown: 42 } }, invalidType],
+      ["revision bounds extra member", descriptor, { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, invalidType],
+      ["null profile", descriptor, { profile: null }, invalidType],
+      ["null limits", descriptor, { limits: null }, invalidType],
+      ["null revision bounds", descriptor, { profile: { revisions: null } }, invalidType],
       ["null algorithms", descriptor, { profile: { algorithms: null } }, { status: "invalid", error_code: "invalid_profile" }],
       ["limits before wrong kind", descriptor, { kind: "descriptor", limits: { max_bytes: -1 } }, { status: "invalid", error_code: "invalid_limits" }],
       ["profile before wrong context", receipt, { context: acceptance.input.context, profile: { algorithms: [] } }, { status: "invalid", error_code: "invalid_profile" }],
@@ -52,9 +54,32 @@ test("signing corpus runner matches Elixir kinds contexts and extra option membe
   }
 });
 
+test("corpus runner rejects unknown options before every surface executes", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-runner-options-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    const index = JSON.parse(readFileSync(new URL("./conformance/index.json", import.meta.url), "utf8"));
+    for (const file of index.files) {
+      const document = JSON.parse(readFileSync(new URL(`./conformance/${file.path}`, import.meta.url), "utf8"));
+      const one = document.cases[0];
+      for (const patch of [{ limits: { unknown: 42 } }, { profile: { unknown: 42 } },
+        { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, { limits: null },
+        { profile: null }, { profile: { revisions: null } }]) {
+        await t.test(`${one.surface} ${JSON.stringify(patch)}`, () => {
+          assert.deepEqual(executeCase({ ...one, input: { ...one.input, ...patch } }), { status: "invalid", error_code: "invalid_type" });
+        });
+      }
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("public signing preparation matches every corpus projection independently", async (t) => {
   assert.equal(cases.length, 69);
-  for (const one of cases) await t.test(one.id, () => {
+  for (const one of cases.filter((one) => !one.id.startsWith("signing-unknown-"))) await t.test(one.id, () => {
     const input = one.input;
     let context: any = input.context;
     if (context && typeof context === "object" && "set" in context) context = context.set;

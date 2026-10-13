@@ -1501,6 +1501,32 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
 
 type SigningCaseContext = { value: DescriptorPredecessor | null | ChainInput | string; kind: "set" | "chain" | "revision" | "descriptor" | "raw" };
 
+const CASE_OPTION_MEMBERS: Record<"limits" | "profile" | "revisions", Record<string, string>> = {
+  limits: Object.fromEntries(Object.keys(DEFAULT_LIMITS).map((name) => [name, name])),
+  profile: { algorithms: "algorithms", revisions: "revisions" },
+  revisions: { min: "min", max: "max" },
+};
+
+function mappedCaseOptions(selected: unknown, kind: keyof typeof CASE_OPTION_MEMBERS): Result<AnyRecord> {
+  if (!isRecord(selected)) return fail("invalid_type");
+  const members = CASE_OPTION_MEMBERS[kind];
+  const mapped: AnyRecord = {};
+  for (const [name, value] of Object.entries(selected)) {
+    if (!Object.hasOwn(members, name)) return fail("invalid_type");
+    mapped[members[name]] = value;
+  }
+  return ok(mapped);
+}
+
+function closedCaseOptions(input: AnyRecord): Result<null> {
+  const limits = mappedCaseOptions(Object.hasOwn(input, "limits") ? input.limits : {}, "limits");
+  if (!limits.ok) return limits;
+  const profile = mappedCaseOptions(Object.hasOwn(input, "profile") ? input.profile : {}, "profile");
+  if (!profile.ok) return profile;
+  const range = mappedCaseOptions(Object.hasOwn(profile.value, "revisions") ? profile.value.revisions : {}, "revisions");
+  return range.ok ? ok(null) : range;
+}
+
 function signingCaseContext(context: any): Result<SigningCaseContext> {
   if (!isRecord(context)) return ok({ value: context, kind: context === null ? "descriptor" : "raw" });
   if ("set" in context) return ok({ value: context.set, kind: "set" });
@@ -1525,8 +1551,7 @@ function signingCaseContext(context: any): Result<SigningCaseContext> {
 }
 
 function signingCaseOptions(input: AnyRecord): SigningOptions {
-  const selectedLimits = input.limits ?? {};
-  const limits = Object.fromEntries(Object.entries(selectedLimits).filter(([name]) => Object.hasOwn(DEFAULT_LIMITS, name)));
+  const limits = input.limits ?? {};
   const selectedProfile = input.profile ?? {};
   const range = selectedProfile.revisions;
   const profile = {
@@ -1590,6 +1615,8 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
 }
 
 function execute(one: ConformanceCase): CaseResult {
+  const options = closedCaseOptions(one.input);
+  if (!options.ok) return invalid(options.code);
   const artifact = executeArtifactCase(one);
   if (artifact) return artifact;
   const input = one.input;
