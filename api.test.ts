@@ -5,6 +5,7 @@
 // red on a tampered one.
 import test from "node:test";
 import * as publicApi from "./index.ts";
+import { capabilityProbe } from "./internal/capability-probe.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -25,6 +26,7 @@ import {
   encodeBase64url,
   governingRevision,
   receiptSigningInput,
+  reportFor,
   revisionDigest,
   terminationRefusal,
   terminationSigningInput,
@@ -902,4 +904,55 @@ test("T6 every artifact list is bounded before any artifact decode", () => {
     assert.deepEqual(withOptions(verifyChain, [view], { limits: { max_artifact_set_items: 1 } }), { ok: false, code: "limit_exceeded" });
   }
   assert.deepEqual(withOptions(verifyChain, [{ revisions: ["é"], acceptances: [], descriptors: [], terminations: [] }], { limits: { max_artifact_set_bytes: 1 } }), { ok: false, code: "limit_exceeded" });
+});
+
+
+test("T7 unavailable substrate has a distinct artifact result after deterministic checks", () => {
+  const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
+  const saved = capabilityProbe.run;
+  capabilityProbe.run = () => false;
+  try {
+    assert.deepEqual(verifyDescriptor(input.compact), { ok: false, code: "algorithm_unsupported_on_substrate" });
+    assert.deepEqual(verifyDescriptor(replaceClaims(input.compact, (c) => ({ ...c, extra: true }))), { ok: false, code: "unknown_member" });
+    const [header, payload] = input.compact.split(".");
+    assert.deepEqual(verifyDescriptor(`${header}.${payload}.${Buffer.alloc(64).toString("base64url")}`), { ok: false, code: "signature_invalid" });
+    assert.deepEqual(withOptions(verifyDescriptor, [input.compact, null], { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
+    assert.equal("capabilityProbe" in publicApi, false);
+  } finally { capabilityProbe.run = saved; }
+});
+
+test("T7 a capable substrate still reports bad signatures as signature_invalid", () => {
+  const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
+  const [header, payload, signature] = input.compact.split(".");
+  const changed = Buffer.from(signature, "base64url");
+  changed[40] ^= 1;
+  assert.deepEqual(verifyDescriptor(`${header}.${payload}.${changed.toString("base64url")}`), { ok: false, code: "signature_invalid" });
+});
+
+
+test("T7 crypto exceptions rerun the known-answer probe", () => {
+  const input = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
+  const savedProbe = capabilityProbe.run;
+  const savedVerify = capabilityProbe.verify;
+  capabilityProbe.verify = () => { throw new Error("test substrate failure"); };
+  try {
+    for (const [rerun, code] of [[false, "algorithm_unsupported_on_substrate"], [true, "signature_invalid"]] as const) {
+      let calls = 0;
+      capabilityProbe.run = () => ++calls === 1 || rerun;
+      assert.deepEqual(verifyDescriptor(input.compact), { ok: false, code });
+      assert.equal(calls, 2);
+    }
+  } finally {
+    capabilityProbe.run = savedProbe;
+    capabilityProbe.verify = savedVerify;
+  }
+});
+
+
+test("T7 substrate diagnostics stay outside corpus verdict reports", () => {
+  const saved = capabilityProbe.run;
+  capabilityProbe.run = () => false;
+  try {
+    assert.throws(() => reportFor(join(here, "conformance")), /algorithm_unsupported_on_substrate/);
+  } finally { capabilityProbe.run = saved; }
 });

@@ -1,3 +1,4 @@
+import { capabilityProbe } from "./internal/capability-probe.ts";
 import { createHash, createPublicKey, verify as nodeVerifySignature } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -539,14 +540,26 @@ function keyMatchesRow(key: AnyRecord | undefined, row: any): boolean {
   return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
 }
 
-function verifyDecodedJws(decoded: { header: Record<string, string>; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[]): boolean {
+function verifyDecodedJws(decoded: { header: Record<string, string>; signingInput: Buffer; signature: Buffer }, typ: string, keys: any[]): Result<null> {
   const row = ALG_ROWS.find((one) => one.name === decoded.header.alg);
-  if (!row || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return false;
+  if (!row || decoded.header.typ !== typ || typeof decoded.header.kid !== "string") return fail("signature_invalid");
   const key = keys.find((one) => one.key_id === decoded.header.kid && keyMatchesRow(one, row));
-  if (!key) return false;
-  return row.keyAlgorithm === "Ed25519" ?
-    ed25519(key.public_key, decoded.signingInput, decoded.signature) :
-    mldsa(row.keyAlgorithm, key.public_key, decoded.signingInput, decoded.signature);
+  if (!key) return fail("signature_invalid");
+  const bytes = Buffer.from(key.public_key, "base64url");
+  if (decoded.signature.length !== row.signatureBytes || bytes.length !== row.publicKeyBytes) return fail("signature_invalid");
+  if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(bytes) || !strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
+  const probe = () => capabilityProbe.run(row.name, () => capabilities().algorithms.find((one) => one.name === row.name)?.verifiable === true);
+  if (!probe()) return fail("algorithm_unsupported_on_substrate");
+  try {
+    const verified = capabilityProbe.verify(() => {
+      const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
+      const spki = createPublicKey({ key: Buffer.concat([prefix, bytes]), format: "der", type: "spki" });
+      return nodeVerifySignature(null, decoded.signingInput, spki, decoded.signature);
+    });
+    return verified ? ok(null) : fail("signature_invalid");
+  } catch (_error) {
+    return fail(probe() ? "signature_invalid" : "algorithm_unsupported_on_substrate");
+  }
 }
 
 const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
@@ -604,7 +617,8 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   }
   const admission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
   if (admission) return fail(admission);
-  if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
+  const signature = verifyDecodedJws(decoded.value, "cap+party", keys);
+  if (!signature.ok) return signature;
   return ok({ ...decoded.value, digest, compact });
 }
 
@@ -919,7 +933,8 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   if (!descriptor) return fail("acceptance_claims_mismatch");
   const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (admission) return fail(admission);
-  if (!verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
+  const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys);
+  if (!signature.ok) return signature;
   return ok({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
@@ -936,7 +951,8 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   if (!descriptor) return fail("termination_claims_mismatch");
   const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (admission) return fail(admission);
-  if (!verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys)) return fail("signature_invalid");
+  const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys);
+  if (!signature.ok) return signature;
   return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
@@ -1295,12 +1311,13 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
   if (!projection.ok) return projection;
   const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (admission) return fail(admission);
-  const verifiedPublicKeys = new Set(
-    receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
-      .filter((key: any) => verifyDecodedJws(decoded.value, "cap+receipt", [key]))
-      .map((key: any) => key.public_key)
-  );
-  if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
+  const candidates = receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
+    .map((key: any) => ({ key, result: verifyDecodedJws(decoded.value, "cap+receipt", [key]) }));
+  const verifiedPublicKeys = new Set(candidates.filter((one: any) => one.result.ok).map((one: any) => one.key.public_key));
+  if (verifiedPublicKeys.size !== 1) {
+    const unavailable = candidates.some((one: any) => !one.result.ok && one.result.code === "algorithm_unsupported_on_substrate");
+    return fail(verifiedPublicKeys.size === 0 && unavailable ? "algorithm_unsupported_on_substrate" : "signature_invalid");
+  }
   return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
 }
 
@@ -1480,6 +1497,7 @@ export function reportFor(root: string): ReportOutput {
   const corpus = loadCorpus(root);
   const results = corpus.cases.map((one) => {
     const actual = execute(one);
+    if (actual.status === "invalid" && actual.error_code === "algorithm_unsupported_on_substrate") throw new Error("algorithm_unsupported_on_substrate: corpus verification unavailable");
     return { id: one.id, surface: one.surface, agree: canonical(actual as unknown as CanonicalValue) === canonical(one.expect as unknown as CanonicalValue), expected: one.expect, actual };
   });
   const agreed = results.filter((one) => one.agree).length;
