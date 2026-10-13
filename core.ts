@@ -808,6 +808,30 @@ const RECEIPT_SCHEMA: FieldRule[] = [
   timeField("occurred_at"), timeField("recorded_at"), field("extensions", "object"),
 ];
 
+const INDEXED_CURRENCIES = new Set("AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD BND BOB BOV BRL BSD BTN BWP BYN BZD CAD CDF CHE CHF CHW CLF CLP CNY COP COU CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MXV MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD USN UYI UYU UYW UZS VED VES VND VUV WST XAD XAF XAG XAU XBA XBB XBC XBD XCD XCG XDR XOF XPD XPF XPT XSU XTS XUA XXX YER ZAR ZMW ZWG".split(" "));
+const INDEXED_TERMS_SCHEMA: FieldRule[] = [
+  field("currency", "string", (v) => INDEXED_CURRENCIES.has(v)),
+  field("base_amount_minor", "integer", integerRange(0, Number.MAX_SAFE_INTEGER)),
+  nestedField("index", "object", [digestField("series_document_digest"), field("series_id", "string", stringBytes(1, 128)), field("observation_lag_days", "integer", integerRange(0, 90))]),
+  field("formula", "string", oneOf("index_plus_spread")),
+  field("spread_bps", "integer", integerRange(-10000, 10000)),
+  field("floor_amount_minor", "integer", integerRange(0, Number.MAX_SAFE_INTEGER), false),
+  field("cap_amount_minor", "integer", integerRange(0, Number.MAX_SAFE_INTEGER), false),
+  field("tolerance_bps", "integer", integerRange(0, 10000)),
+];
+const INDEXED_OBSERVATION_SCHEMA: FieldRule[] = [
+  digestField("observed_index_digest"), field("observation_instant", "string", (v) => parseTimestamp(v) !== null),
+  field("computed_amount_minor", "integer", integerRange(0, Number.MAX_SAFE_INTEGER)),
+];
+
+function indexedBodyError(namespace: string, body: unknown): string | null {
+  const shape = schemaError(body, namespace === "com.example/pricing-indexed" ? INDEXED_TERMS_SCHEMA : INDEXED_OBSERVATION_SCHEMA);
+  if (shape) return shape;
+  const values = body as AnyRecord;
+  if (namespace === "com.example/pricing-indexed" && values.floor_amount_minor !== undefined && values.cap_amount_minor !== undefined && values.floor_amount_minor > values.cap_amount_minor) return "cross_field_invalid";
+  return null;
+}
+
 function extensionError(envelope: unknown, surface: string): string | null {
   if (!isRecord(envelope)) return "invalid_type";
   if (!exactKeys(envelope, ["critical", "optional"]) || !isRecord(envelope.critical) || !isRecord(envelope.optional)) return "unknown_member";
@@ -825,7 +849,8 @@ function extensionError(envelope: unknown, surface: string): string | null {
       if (entry.criticality !== position) return "extension_criticality_conflict";
       if (entry.surface !== surface) return "extension_scope_invalid";
       if (entry.schema_digest === null) return "extension_schema_unavailable";
-      if (namespace === "com.example/pricing-indexed" && envelope[position][namespace]?.formula !== "index_plus_spread") return "constraint_violation";
+      const body = indexedBodyError(namespace, envelope[position][namespace]);
+      if (body) return body;
     }
   }
   return null;

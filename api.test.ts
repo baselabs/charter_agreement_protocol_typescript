@@ -776,3 +776,39 @@ test("T3 every closed nested claims object rejects extra members", async (t) => 
     assert.deepEqual(verifyReceipt(replaceClaims(receipt.input.compact, (c) => copyWithPath(c, path, true)), receipt.input.chain), { ok: false, code });
   });
 });
+
+test("T8 indexed revision terms validate all fields and nested rules", async (t) => {
+  const revision = JSON.parse(corpusCase("charter_revision-decode.json", "revision-indexed-price-valid").input.text);
+  const body = revision.extensions.critical["com.example/pricing-indexed"];
+  const rules: [string, unknown, unknown][] = [
+    ["currency", 1, "ZZZ"], ["base_amount_minor", "1", -1], ["index", 1, undefined],
+    ["formula", 1, "unlisted"], ["spread_bps", "1", 10001],
+    ["floor_amount_minor", "1", -1], ["cap_amount_minor", "1", -1], ["tolerance_bps", "1", 10001],
+    ["index.series_document_digest", 1, "bad"], ["index.series_id", 1, ""], ["index.observation_lag_days", "1", 91],
+  ];
+  const verifyBody = (changed: Record<string, any>) => decodeCharterRevision(canonical({ ...revision, extensions: { critical: { "com.example/pricing-indexed": changed }, optional: {} } }));
+  for (const [path, wrongType, wrongConstraint] of rules) {
+    await t.test(path + " type", () => assert.deepEqual(verifyBody(copyWithPath(body, path, wrongType)), { ok: false, code: path.includes(".") ? "nested_invalid" : "invalid_type" }));
+    if (wrongConstraint !== undefined) await t.test(path + " constraint", () => assert.deepEqual(verifyBody(copyWithPath(body, path, wrongConstraint)), { ok: false, code: path.includes(".") ? "nested_invalid" : "constraint_violation" }));
+    if (!["floor_amount_minor", "cap_amount_minor"].includes(path)) await t.test(path + " required", () => assert.deepEqual(verifyBody(copyWithPath(body, path, undefined, true)), { ok: false, code: path.includes(".") ? "nested_invalid" : "missing_required" }));
+  }
+  await t.test("ordered bounds", () => assert.deepEqual(verifyBody({ ...body, floor_amount_minor: 2, cap_amount_minor: 1 }), { ok: false, code: "cross_field_invalid" }));
+  await t.test("closed terms", () => assert.deepEqual(verifyBody({ ...body, extra: true }), { ok: false, code: "unknown_member" }));
+  await t.test("closed index", () => assert.deepEqual(verifyBody(copyWithPath(body, "index.extra", true)), { ok: false, code: "nested_invalid" }));
+  assert.ok(verifyBody(body).ok);
+});
+
+test("T8 indexed receipt observation validates its full closed body", async (t) => {
+  const fixture = corpusCase("receipt-verify.json", "receipt-indexed-price-observation-quarantine");
+  const claims = JSON.parse(Buffer.from(fixture.input.compact.split(".")[1], "base64url").toString());
+  const body = claims.extensions.optional["com.example/pricing-indexed-observation"];
+  const verifyBody = (changed: Record<string, any>) => verifyReceipt(replaceClaims(fixture.input.compact, (c) => ({ ...c, extensions: { ...c.extensions, optional: { ...c.extensions.optional, "com.example/pricing-indexed-observation": changed } } })), fixture.input.chain);
+  for (const [name, value, code] of [
+    ["observed_index_digest", 1, "invalid_type"], ["observed_index_digest", "bad", "constraint_violation"],
+    ["observation_instant", 1, "invalid_type"], ["observation_instant", "yesterday", "constraint_violation"],
+    ["computed_amount_minor", "1", "invalid_type"], ["computed_amount_minor", -1, "constraint_violation"],
+    ["extra", true, "unknown_member"],
+  ] as const) await t.test(name + " " + code, () => assert.deepEqual(verifyBody({ ...body, [name]: value }), { ok: false, code }));
+  for (const name of ["observed_index_digest", "observation_instant", "computed_amount_minor"]) await t.test(name + " required", () => assert.deepEqual(verifyBody(copyWithPath(body, name, undefined, true)), { ok: false, code: "missing_required" }));
+  assert.ok(verifyReceipt(fixture.input.compact, fixture.input.chain).ok);
+});
