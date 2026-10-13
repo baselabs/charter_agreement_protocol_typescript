@@ -568,8 +568,7 @@ function mldsa(keyAlgorithm: string, rawKey: string, message: Buffer, signature:
 // byte length must equal the row's exact value.
 function keyMatchesRow(key: AnyRecord | undefined, row: any): boolean {
   if (!key || key.algorithm !== row.keyAlgorithm || key.status !== "active") return false;
-  const bytes = Buffer.from(key.public_key, "base64url");
-  return bytes.length === row.publicKeyBytes && bytes.toString("base64url") === key.public_key;
+  return validPublicKey(key.public_key, row);
 }
 
 function validPublicKey(rawKey: unknown, row: AlgRow): boolean {
@@ -586,8 +585,8 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
   const key = keys.find((one) => one.key_id === decoded.header.kid && keyMatchesRow(one, row));
   if (!key) return fail("signature_invalid");
   const bytes = Buffer.from(key.public_key, "base64url");
-  if (decoded.signature.length !== row.signatureBytes || bytes.length !== row.publicKeyBytes) return fail("signature_invalid");
-  if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(bytes) || !strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
+  if (decoded.signature.length !== row.signatureBytes) return fail("signature_invalid");
+  if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
   if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
   try {
     const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];
@@ -595,7 +594,7 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
     const verified = nodeVerifySignature(null, decoded.signingInput, spki, decoded.signature);
     return verified ? ok(null) : fail("signature_invalid");
   } catch (_error) {
-    return fail(katVerifies(row.keyAlgorithm) ? "signature_invalid" : "algorithm_unsupported_on_substrate");
+    return fail(runtimeSupportsAlgorithm(row.keyAlgorithm) ? "signature_invalid" : "algorithm_unsupported_on_substrate");
   }
 }
 
