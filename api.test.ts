@@ -17,6 +17,8 @@ import {
   canonical,
   checkSigningClaims,
   decodeArtifact,
+  decodeCharterRevision,
+  verifyDescriptorChain,
   decodePartyDescriptor,
   descriptorSigningInput,
   encodeBase64url,
@@ -624,4 +626,82 @@ test("T1 receipt after termination reports a governing mismatch", () => {
   const actual = verifyReceipt(fixture.input.compact, fixture.input.chain);
   assert.ok(actual.ok);
   assert.equal(actual.facts.governing_match, "mismatch");
+});
+
+
+function copyWithPath(source: Record<string, any>, path: string, value: unknown, remove = false) {
+  const copy = structuredClone(source);
+  const parts = path.split(".");
+  let parent = copy;
+  for (const part of parts.slice(0, -1)) parent = parent[part];
+  if (remove) delete parent[parts.at(-1)!];
+  else parent[parts.at(-1)!] = value;
+  return copy;
+}
+
+const sampleDigest = "sha-256:" + "A".repeat(43);
+const revisionRules: [string, unknown, unknown][] = [
+  ["protocol_revision", "1", 3], ["charter_id", 1, "bad"],
+  ["revision_number", "1", 0], ["prev_revision_digest", 1, "bad"],
+  ["parties", {}, undefined], ["legal_text", 1, undefined],
+  ["precedence_declaration", 1, "unlisted"], ["attribution_declaration", 1, undefined],
+  ["effective_from", 1, ""], ["effective_until", 1, "x".repeat(65)],
+  ["termination_rules", 1, undefined], ["abp_bindings", {}, undefined],
+  ["receipt_profile", 1, "bad"], ["supersedes", {}, undefined], ["extensions", 1, undefined],
+  ["parties.0.party_descriptor_digest", 1, "bad"], ["parties.0.role", 1, ""],
+  ["legal_text.content_digest", 1, "bad"], ["legal_text.media_type", 1, ""],
+  ["legal_text.uri_hint", 1, "x".repeat(2049)],
+  ["attribution_declaration.basis", 1, "unlisted"], ["attribution_declaration.detail_digest", 1, "bad"],
+  ["termination_rules.reason_codes", {}, undefined],
+  ["abp_bindings.0.party_role", 1, ""], ["abp_bindings.0.blueprint_id", 1, "bad"],
+  ["abp_bindings.0.release_number", "1", 0], ["abp_bindings.0.content_digest", 1, "bad"],
+  ["abp_bindings.0.deployment_digest", 1, "bad"],
+];
+
+test("T2 revision decode uses strict JSON and exact canonical bytes", () => {
+  const text = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input.revisions[0];
+  assert.deepEqual(decodeCharterRevision(" " + text), { ok: false, code: "non_canonical_bytes" });
+  assert.deepEqual(decodeCharterRevision(text.replace('"protocol_revision":1', '"protocol_revision":1,"protocol_revision":1')), { ok: false, code: "duplicate_member" });
+});
+
+test("T2 revision schema covers every declared member rule", async (t) => {
+  const base = JSON.parse(corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input.revisions[0]);
+  for (const [path, wrongType, wrongConstraint] of revisionRules) {
+    const nested = path.includes(".");
+    await t.test(path + " type", () => {
+      assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, wrongType))), { ok: false, code: nested ? "nested_invalid" : "invalid_type" });
+    });
+    if (wrongConstraint !== undefined) await t.test(path + " constraint", () => {
+      assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, wrongConstraint))), { ok: false, code: nested ? "nested_invalid" : "constraint_violation" });
+    });
+  }
+  const required = ["protocol_revision", "revision_number", "parties", "legal_text", "precedence_declaration", "attribution_declaration", "effective_from", "termination_rules", "abp_bindings", "receipt_profile", "extensions", "parties.0.party_descriptor_digest", "parties.0.role", "legal_text.content_digest", "legal_text.media_type", "attribution_declaration.basis", "termination_rules.reason_codes", "abp_bindings.0.party_role", "abp_bindings.0.blueprint_id", "abp_bindings.0.release_number", "abp_bindings.0.content_digest", "abp_bindings.0.deployment_digest"];
+  for (const path of required) await t.test(path + " required", () => {
+    assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, undefined, true))), { ok: false, code: path.includes(".") ? "nested_invalid" : "missing_required" });
+  });
+  const probes: [string, unknown, string][] = [
+    ["parties", base.parties.slice(0, 1), "cardinality_violation"],
+    ["parties", [...base.parties, base.parties[0]], "cardinality_violation"],
+    ["abp_bindings", Array(65).fill(base.abp_bindings[0]), "cardinality_violation"],
+    ["supersedes", Array(9).fill(sampleDigest), "cardinality_violation"],
+    ["termination_rules.reason_codes", [], "nested_invalid"],
+    ["termination_rules.reason_codes", Array(65).fill("x"), "nested_invalid"],
+    ["termination_rules.reason_codes", ["x", "x"], "revision_invalid"],
+    ["termination_rules.reason_codes", [1], "revision_invalid"],
+    ["termination_rules.reason_codes", ["x".repeat(129)], "revision_invalid"],
+    ["effective_from", "2026-02-30T12:00:00Z", "timestamp_invalid"],
+    ["effective_until", base.effective_from, "revision_invalid"],
+    ["parties.1.role", base.parties[0].role, "revision_invalid"],
+    ["abp_bindings.0.party_role", "unlisted", "revision_invalid"],
+    ["receipt_profile", "unlisted/profile", "revision_invalid"],
+    ["supersedes", [1], "revision_invalid"],
+    ["revision_number", 1.5, "invalid_type"],
+  ];
+  for (const [path, value, code] of probes) await t.test(path + " local rule " + code, () => {
+    assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, value))), { ok: false, code });
+  });
+  for (const path of ["extra", "parties.0.extra", "legal_text.extra", "attribution_declaration.extra", "termination_rules.extra", "abp_bindings.0.extra"]) await t.test(path + " closed", () => {
+    assert.deepEqual(decodeCharterRevision(canonical(copyWithPath(base, path, true))), { ok: false, code: path.includes(".") ? "nested_invalid" : "unknown_member" });
+  });
+  assert.ok(decodeCharterRevision(canonical(base)).ok);
 });

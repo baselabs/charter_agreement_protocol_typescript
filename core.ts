@@ -666,7 +666,7 @@ function descriptorChain(compacts: string[]) {
   return ok({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: fork ? [...fork].sort() : [] });
 }
 
-const REVISION_FIELDS = ["abp_bindings", "attribution_declaration", "charter_id", "effective_from", "extensions", "legal_text", "parties", "precedence_declaration", "prev_revision_digest", "protocol_revision", "receipt_profile", "revision_number", "supersedes", "termination_rules"];
+const REVISION_FIELDS = ["abp_bindings", "attribution_declaration", "charter_id", "effective_from", "effective_until", "extensions", "legal_text", "parties", "precedence_declaration", "prev_revision_digest", "protocol_revision", "receipt_profile", "revision_number", "supersedes", "termination_rules"];
 const REVISION_REQUIRED = ["abp_bindings", "attribution_declaration", "effective_from", "extensions", "legal_text", "parties", "precedence_declaration", "protocol_revision", "receipt_profile", "revision_number", "termination_rules"];
 const EXTENSION_PROFILES = [
   { namespace: "com.example/pricing-indexed", owner: "Example Charter Profiles", criticality: "critical", state: "active", schema_digest: "sha-256:W88CU79l5r7YYCv2vuUTELifnM4GDKfbZPULSpDgQ2Y", a2a_uri: "https://example.com/charter-profiles/pricing-indexed", promoted_at_revision: null, surface: "charter_revision" },
@@ -700,19 +700,88 @@ function extensionRegistryDigest(): string {
   return taggedHash("extension_registry", Buffer.from(canonical(document)));
 }
 
+type FieldRule = {
+  name: string;
+  type: "string" | "integer" | "object" | "array";
+  required: boolean;
+  constraint?: (value: any) => boolean;
+  cardinality?: [number, number];
+  nested?: FieldRule[];
+};
+
+function isRecord(value: unknown): value is AnyRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Number);
+}
+
+function field(name: string, type: FieldRule["type"], constraint?: FieldRule["constraint"], required = true): FieldRule {
+  return { name, type, constraint, required };
+}
+const stringBytes = (min: number, max: number) => (value: string) => Buffer.byteLength(value) >= min && Buffer.byteLength(value) <= max;
+const integerRange = (min: number, max: number) => (value: number) => value >= min && value <= max;
+const oneOf = (...values: string[]) => (value: string) => values.includes(value);
+const digestPattern = (value: string) => /^sha-256:[A-Za-z0-9_-]{43}$/.test(value);
+const digestField = (name: string, required = true) => field(name, "string", digestPattern, required);
+const safeIntegerField = (name: string) => field(name, "integer", integerRange(1, Number.MAX_SAFE_INTEGER));
+const roleField = (name: string) => field(name, "string", stringBytes(1, 128));
+const timeField = (name: string, required = true) => field(name, "string", stringBytes(1, 64), required);
+const nestedField = (name: string, type: "object" | "array", nested: FieldRule[], cardinality?: [number, number]): FieldRule => ({ name, type, required: true, nested, cardinality });
+
+function schemaError(value: unknown, fields: FieldRule[]): string | null {
+  if (!isRecord(value)) return "invalid_type";
+  if (Object.keys(value).some((name) => !fields.some((rule) => rule.name === name))) return "unknown_member";
+  if (fields.some((rule) => rule.required && !Object.hasOwn(value, rule.name))) return "missing_required";
+  const present = fields.filter((rule) => Object.hasOwn(value, rule.name));
+  for (const rule of present) {
+    const item = value[rule.name];
+    const typed = rule.type === "object" ? isRecord(item) : rule.type === "array" ? Array.isArray(item) :
+      rule.type === "integer" ? typeof item === "number" && Number.isInteger(item) : typeof item === "string";
+    if (!typed) return "invalid_type";
+  }
+  if (present.some((rule) => rule.constraint && !rule.constraint(value[rule.name]))) return "constraint_violation";
+  if (present.some((rule) => rule.cardinality && (value[rule.name].length < rule.cardinality[0] || value[rule.name].length > rule.cardinality[1]))) return "cardinality_violation";
+  for (const rule of present) {
+    if (!rule.nested) continue;
+    const items = rule.type === "array" ? value[rule.name] : [value[rule.name]];
+    if (items.some((item: unknown) => schemaError(item, rule.nested!) !== null)) return "nested_invalid";
+  }
+  return null;
+}
+
+const REVISION_SCHEMA: FieldRule[] = [
+  field("protocol_revision", "integer", integerRange(1, 2)), digestField("charter_id", false),
+  safeIntegerField("revision_number"), digestField("prev_revision_digest", false),
+  nestedField("parties", "array", [digestField("party_descriptor_digest"), roleField("role")], [2, 2]),
+  nestedField("legal_text", "object", [digestField("content_digest"), field("media_type", "string", stringBytes(1, 255)), field("uri_hint", "string", stringBytes(1, 2048), false)]),
+  field("precedence_declaration", "string", oneOf("legal_text_governs", "machine_terms_govern")),
+  nestedField("attribution_declaration", "object", [field("basis", "string", oneOf("bound_deployments", "legal_text")), digestField("detail_digest", false)]),
+  timeField("effective_from"), timeField("effective_until", false),
+  nestedField("termination_rules", "object", [{ name: "reason_codes", type: "array", required: true, cardinality: [1, 64] }]),
+  nestedField("abp_bindings", "array", [roleField("party_role"), field("blueprint_id", "string", (v) => stringBytes(3, 512)(v) && /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(v)), safeIntegerField("release_number"), digestField("content_digest"), digestField("deployment_digest")], [0, 64]),
+  field("receipt_profile", "string", (v) => stringBytes(3, 512)(v) && /^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9.-]*$/.test(v)),
+  { name: "supersedes", type: "array", required: false, cardinality: [0, 8] }, field("extensions", "object"),
+];
+
+function validTaggedDigest(value: string): boolean {
+  return digestPattern(value) && strictBase64url(value.slice(8)).ok;
+}
+
 function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
   if (typeof text !== "string") return fail("revision_invalid");
-  let value;
-  try { value = JSON.parse(text); } catch (_error) { return fail("invalid_syntax"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("revision_invalid");
-  const unknown = Object.keys(value).find((key) => !REVISION_FIELDS.includes(key));
-  if (unknown) return fail("unknown_member");
-  const missing = REVISION_REQUIRED.find((key) => !(key in value));
-  if (missing) return fail("missing_required");
-  if (!Array.isArray(value.parties) || new Set(value.parties.map((one: any) => one.role)).size !== value.parties.length) return fail("revision_invalid");
-  if (!Array.isArray(value.termination_rules.reason_codes) || value.termination_rules.reason_codes.length === 0) return fail("nested_invalid");
-  if (value.revision_number === 1 && (value.supersedes !== undefined || value.prev_revision_digest !== undefined || value.charter_id !== undefined)) return fail("revision_invalid");
-  if (value.supersedes !== undefined && (!Array.isArray(value.supersedes) || value.supersedes.some((one: any) => typeof one !== "string"))) return fail("revision_invalid");
+  const decoded = decodeJsonText(text);
+  if (!decoded.ok) return decoded;
+  if (canonical(decoded.value) !== text) return fail("non_canonical_bytes");
+  const value = decoded.value as AnyRecord;
+  const shape = schemaError(value, REVISION_SCHEMA);
+  if (shape) return fail(shape);
+  const digests = [value.charter_id, value.prev_revision_digest, value.legal_text.content_digest, value.attribution_declaration.detail_digest, ...value.parties.map((party: any) => party.party_descriptor_digest), ...value.abp_bindings.flatMap((binding: any) => [binding.content_digest, binding.deployment_digest])].filter((v) => v !== undefined);
+  if (digests.some((v) => !validTaggedDigest(v))) return fail("revision_invalid");
+  const from = parseTimestamp(value.effective_from);
+  const until = value.effective_until === undefined ? null : parseTimestamp(value.effective_until);
+  if (!from || (value.effective_until !== undefined && !until)) return fail("timestamp_invalid");
+  const reasons = value.termination_rules.reason_codes;
+  if (reasons.some((v: any) => typeof v !== "string" || !stringBytes(1, 128)(v)) || new Set(reasons).size !== reasons.length) return fail("revision_invalid");
+  const supersedes = value.supersedes ?? [];
+  if (supersedes.some((v: any) => typeof v !== "string" || !validTaggedDigest(v)) || new Set(supersedes).size !== supersedes.length) return fail("revision_invalid");
   const critical = value.extensions?.critical || {};
   const optional = value.extensions?.optional || {};
   const names = [...Object.keys(critical), ...Object.keys(optional)];
@@ -735,6 +804,11 @@ function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buff
     if (profile.surface !== "charter_revision") return fail("extension_scope_invalid");
     if (profile.schema_digest === null) return fail("extension_schema_unavailable");
   }
+  if (!EXTENSION_PROFILES.some((profile) => profile.namespace === value.receipt_profile && profile.surface === "receipt" && profile.state === "active" && profile.criticality === "optional")) return fail("revision_invalid");
+  if (value.revision_number === 1 ? (value.charter_id !== undefined || value.prev_revision_digest !== undefined || supersedes.length !== 0) : (value.charter_id === undefined || value.prev_revision_digest === undefined)) return fail("revision_invalid");
+  if (until && compareTimestamps(from, until) >= 0) return fail("revision_invalid");
+  const roles = value.parties.map((party: any) => party.role);
+  if (new Set(roles).size !== roles.length || value.abp_bindings.some((binding: any) => !roles.includes(binding.party_role))) return fail("revision_invalid");
   const bytes = Buffer.from(text);
   return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
 }
