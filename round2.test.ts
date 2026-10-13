@@ -194,3 +194,14 @@ test("chain artifact lists must be supplied explicitly", () => {
     assert.deepEqual(api.verifyChain(view), { ok: false, code: "invalid_type" });
   }
 });
+
+test("S10 successor links are checked before selecting a key", () => {
+  const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
+  const previous = api.decodePartyDescriptor(root);
+  assert.ok(previous.ok);
+  const predecessor = { digest: previous.digest, claims: previous.claims, lineage: [root] };
+  const [header, payload, signature] = changeClaims(child, (c) => ({ ...c, prev_descriptor_digest: sampleDigest })).split(".");
+  const protectedValue = JSON.parse(Buffer.from(header, "base64url").toString());
+  const compact = `${Buffer.from(api.canonical({ ...protectedValue, kid: "unknown-key" })).toString("base64url")}.${payload}.${signature}`;
+  assert.deepEqual(api.verifyDescriptor(compact, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+});

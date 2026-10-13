@@ -621,18 +621,19 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
   const grammar = descriptorClaimsError(payload);
   if (grammar) return fail(grammar);
+  const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
+  if (payload.descriptor_number === 1) {
+    if (predecessor) return fail("descriptor_chain_invalid");
+    if (payload.prev_descriptor_digest !== undefined) return fail("descriptor_invalid");
+  } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
+    return fail("descriptor_chain_invalid");
+  }
   const resolved = Array.isArray(keys) && keys.find((one) =>
     one.key_id === decoded.value.header.kid && one.status === "active"
   );
   if (!resolved) return fail("descriptor_key_invalid");
   if (!parseTimestamp(payload.effective_from)) {
     return fail("timestamp_invalid");
-  }
-  const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
-  if (payload.descriptor_number === 1) {
-    if (payload.prev_descriptor_digest !== undefined) return fail("descriptor_invalid");
-  } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
-    return fail("descriptor_chain_invalid");
   }
   const signature = verifyDecodedJws(decoded.value, "cap+party", keys, settings);
   if (!signature.ok) return signature;
