@@ -7,14 +7,19 @@ documented here.
 
 ### Added
 
-- `prepareSigning`, `finishSigning`, `SigningPlan`, and `SigningKind` check an
-  artifact before signing and retain its verification context, limits, and profile
+- `prepareSigning`, `finishSigning`, `SigningPlan`, `SigningKind`, and
+  `SigningOptions` support checks before signing and retain the artifact's
+  verification context, limits, and profile
   for completion. The plan exposes the signing input and whether its key is
   `matched` or `unnamed` (a receipt against a bare revision).
   Acceptance and termination profiles cover the revision, the signing party's
   descriptor history, and the new artifact. The full profile checks the rest of
   the set; caller limits cover every artifact read. Receipt profiles cover the
   whole retained set; descriptor profiles cover predecessor history.
+  Plans can only be constructed through preparation. Context arrays are copied
+  before use, and completion accepts `Uint8Array` signatures from any realm.
+  Malformed contexts return `invalid_type`; cyclic signing claims return
+  `signing_input_invalid`.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
@@ -26,6 +31,11 @@ documented here.
 
 ### Changed
 
+- `capabilities().verifiable` requires a declared key type, a passing known-answer
+  vector, and rejection of a tampered vector. Verification and preparation cache
+  that result once per key algorithm.
+- `verifyDescriptor` returns `invalid_type` for a predecessor with missing, null,
+  empty, or non-string lineage, matching the reference.
 - `verifyReceipt` returns `invalid_type` for a context such as `null`, `42`, `[]`,
   or `["x"]`, instead of `chain_invalid`.
 - `acceptanceSigningInput`, `terminationSigningInput`, `acceptanceRefusal`, and
@@ -36,13 +46,15 @@ documented here.
 
 - Malformed verification inputs and contexts return typed results instead of
   throwing, including a null message passed to `verifySignature` (which returns
-  `false`). Cyclic signing claims return `signing_input_invalid`.
-- The signature guard requires canonical base64url public keys. Runtime support
-  checks cache the declared type and known-answer result once per key algorithm.
+  `false`). Throwing getters and Proxies also return typed results after inputs
+  are copied into plain values at the public boundary.
+- The signature guard requires canonical base64url public keys and accepts plain
+  and cross-realm `Uint8Array` messages and signatures.
 - The workshop passes only the signing party's descriptor history to acceptance
   verification. The extracted flow is tested with the site's browser shims and
-  real WebCrypto keys, and the bundle uses this repository's verifier throughout.
-  CI also checks the site's types and build.
+  real WebCrypto and noble keys, and the bundle uses this repository's verifier
+  throughout. Evidence checks reject unknown kinds. CI also checks the site's
+  types and build.
 
 ## [0.6.0] — 2026-10-13
 

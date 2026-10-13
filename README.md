@@ -63,6 +63,7 @@ cannot verify green.
 | `Limits`, `DEFAULT_LIMITS`, `MAXIMUM_LIMITS` | Closed limits type, reference defaults and compiled maximum values; overrides must be nonnegative integers within the maximums |
 | `ChainInput` | A chain view with `revisions`, `acceptances`, `descriptors`, and `terminations` string arrays |
 | `VerificationOptions` | Optional `{ limits?: Partial<Limits>, profile?: { algorithms: string[]; revisions: { min: number; max: number } } }` for public verification |
+| `SigningOptions` | Verification options plus an optional `algorithm` for `prepareSigning` |
 | `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
 | `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
@@ -79,7 +80,7 @@ cannot verify green.
 | `governingRevision(chainInput, at, options?)` | The unique governing revision at one UTC instant — a digest, or `contested`/`none`, including verified termination closing |
 | `decodeCharterRevision(text, options?)` / `revisionDigest(text, options?)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
 | `decodePartyDescriptor(compact)` / `descriptorDigest(compact)` | Decode one Party Descriptor's claims and digest without verifying its signature |
-| `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused`, `signing_input_invalid`, or the set verification error. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
+| `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view return `{ok: true}`, `signing_refused`, `signing_input_invalid`, or the set verification error. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
 
 `prepareSigning` accepts a predecessor or `null` for a descriptor, a chain view
 (`revisions`, `acceptances`, `descriptors`, `terminations` arrays) for acceptance
@@ -89,11 +90,13 @@ canonical base64url public key. Its options are `algorithm`, `limits`, and
 acceptance and termination, the profile covers the revision, the signing party's
 descriptor history, and the new artifact; the full profile checks the rest of
 the set. A receipt's profile covers the whole retained set and the new artifact.
-A descriptor's profile includes its
-predecessor history.
+A descriptor's profile includes its predecessor history.
 
 Sign `plan.input.message`, then pass the raw `Uint8Array` signature to
-`finishSigning`. A bare-revision receipt has `key: "unnamed"`; public receipt
+`finishSigning`. Both signature functions accept plain and cross-realm
+`Uint8Array` bytes, including Node Buffers. `verifySignature` returns `false` for
+`ArrayBuffer` and `DataView` inputs; `finishSigning` returns `invalid_type` for
+them. A bare-revision receipt has `key: "unnamed"`; public receipt
 verification leaves its signature unchecked. `signing_key_invalid` means the
 snapshot key fails the encoding or shape check; `signing_key_mismatch` means it
 matches no active candidate in the holder's own view. The plan retains private
