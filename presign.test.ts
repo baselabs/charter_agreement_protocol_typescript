@@ -287,6 +287,79 @@ test("prepare keeps the retained context and signing input private", () => {
   assert.deepEqual(api.finishSigning(prepared.plan, sign(null, message, set.parties[1].privateKey)), { ok: false, code: "signature_invalid" });
 });
 
+test("receipt preparation copies the view before reading its artifact lists", () => {
+  const set = mintedSet();
+  let reads = 0;
+  const context = { ...set.chain, get descriptors() {
+    reads++;
+    return reads <= 2 ? set.chain.descriptors : ["garbage"];
+  } };
+  const prepared = api.prepareSigning("receipt", "k", set.receipt, set.parties[0].publicKey, context);
+  assert.ok(prepared.ok, JSON.stringify(prepared));
+  const finished = api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, set.parties[0].privateKey));
+  assert.ok(finished.ok, JSON.stringify(finished));
+  assert.equal(reads, 1);
+});
+
+test("receipt preparation retains copies of every artifact list", () => {
+  const set = mintedSet();
+  const prepared = api.prepareSigning("receipt", "k", set.receipt, set.parties[0].publicKey, set.chain);
+  assert.ok(prepared.ok);
+  for (const array of Object.values(set.chain)) array.splice(0);
+  assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, set.parties[0].privateKey)).ok);
+});
+
+test("public verify and preparation return invalid_type for throwing input reads", () => {
+  const set = mintedSet();
+  const receipt = rawCompact("receipt", "k", set.receipt, "Ed25519", set.parties[0].privateKey);
+  const options = {};
+  const calls: Array<[string, (...args: any[]) => any, any[]]> = [
+    ["descriptor", api.verifyDescriptor, [set.parties[0].compact, null, options]],
+    ["descriptor chain", api.verifyDescriptorChain, [[set.parties[0].compact], options]],
+    ["acceptance", api.verifyAcceptance, [set.chain.acceptances[0], set.revisionText, [set.parties[0].compact], options]],
+    ["termination", api.verifyTermination, [rawCompact("termination", "k", set.termination, "Ed25519", set.parties[0].privateKey), set.revisionText, [set.parties[0].compact], options]],
+    ["chain", api.verifyChain, [set.chain, options]],
+    ["receipt", api.verifyReceipt, [receipt, set.chain, options]],
+    ["signature", api.verifySignature, [Buffer.from("message"), Buffer.alloc(64), set.parties[0].publicKey, "Ed25519", options]],
+  ];
+  for (const kind of ["descriptor", "acceptance", "termination", "receipt"] as const) {
+    calls.push([`prepare ${kind}`, api.prepareSigning, [kind, "k", kind === "descriptor" ? set.parties[0].claims : set[kind],
+      set.parties[0].publicKey, kind === "descriptor" ? null : set.chain, options]]);
+  }
+  const throwing = () => { throw new Error("input read failed"); };
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const hostile = [
+    new Proxy({}, { ownKeys: throwing }),
+    new Proxy({ lineage: [] }, { get: throwing }),
+    new Proxy(["x"], { get: throwing }),
+    new Proxy({ lineage: [] }, { getOwnPropertyDescriptor: throwing }),
+    new Proxy({}, { getPrototypeOf: throwing }),
+    Object.defineProperty({}, "profile", { get: throwing }),
+    { get lineage() { return throwing(); } },
+    { limits: { get max_bytes() { return throwing(); } } },
+    { profile: { get algorithms() { return throwing(); } } },
+    { extensions: { optional: { get value() { return throwing(); } } } },
+    revoked.proxy,
+  ];
+  const escaped: string[] = [];
+  const unexpected: string[] = [];
+  let count = 0;
+  for (const [label, call, args] of calls) for (let position = 0; position < args.length; position++) for (const value of hostile) {
+    const input = [...args];
+    input[position] = value;
+    count++;
+    try {
+      const result = call(...input);
+      if (label === "signature" ? result !== false : result.ok || result.code !== "invalid_type") unexpected.push(`${label}[${position}]`);
+    } catch (error) {
+      escaped.push(`${label}[${position}]: ${String(error)}`);
+    }
+  }
+  assert.deepEqual(escaped, [], `${escaped.length} of ${count} calls threw`);
+  assert.deepEqual(unexpected, [], "throwing reads must return invalid_type or false");
+});
+
 test("SigningPlan construction requires preparation", () => {
   const set = mintedSet();
   const input = api.descriptorSigningInput("k", set.parties[0].claims);

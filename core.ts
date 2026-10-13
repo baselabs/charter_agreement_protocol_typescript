@@ -1906,7 +1906,42 @@ function isUint8Array(value: unknown): value is Uint8Array {
   return ArrayBuffer.isView(value) && uint8ArrayTag.call(value) === "Uint8Array";
 }
 
+function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
+  const copies = new Map<object, any>();
+  function copy(value: any): any {
+    if (value === null || typeof value !== "object") return value;
+    if (copies.has(value)) return copies.get(value);
+    if (isUint8Array(value)) {
+      const bytes = Buffer.from(value);
+      copies.set(value, bytes);
+      return bytes;
+    }
+    if (value instanceof Number) return new Number(Number.prototype.valueOf.call(value));
+    if (Array.isArray(value)) {
+      const array: any[] = [];
+      copies.set(value, array);
+      const length = value.length;
+      for (let i = 0; i < length; i++) array.push(copy(value[i]));
+      return array;
+    }
+    const record = Object.create(null);
+    copies.set(value, record);
+    for (const name of Object.getOwnPropertyNames(value)) {
+      if (Object.hasOwn(value, name)) record[name] = copy(value[name]);
+    }
+    return record;
+  }
+  try {
+    return ok(copy(inputs));
+  } catch (_error) {
+    return fail("invalid_type");
+  }
+}
+
 export function verifySignature(message: Uint8Array, signature: Uint8Array, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
+  const plain = plainInputs(message, signature, publicKeyBase64url, alg, options);
+  if (!plain.ok) return false;
+  [message, signature, publicKeyBase64url, alg, options] = plain.value;
   if (!isUint8Array(message) || !isUint8Array(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
   const settings = resolveOptions(options);
   if (!settings.ok || !settings.value.profile.algorithms.includes(alg) || message.length > settings.value.limits.max_bytes) return false;
@@ -1944,6 +1979,9 @@ export function verifyDescriptor(
   predecessor: DescriptorPredecessor | null = null,
   options: VerificationOptions = {},
 ): VerifyResult {
+  const plain = plainInputs(compact, predecessor, options);
+  if (!plain.ok) return plain;
+  [compact, predecessor, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const previous = reverifyPredecessor(predecessor, settings.value);
@@ -1965,6 +2003,9 @@ export function verifyDescriptor(
 }
 
 export function verifyDescriptorChain(compacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const plain = plainInputs(compacts, options);
+  if (!plain.ok) return plain;
+  [compacts, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const verified = descriptorChain(compacts, settings.value);
@@ -1973,6 +2014,9 @@ export function verifyDescriptorChain(compacts: string[], options: VerificationO
 }
 
 export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const plain = plainInputs(compact, revisionText, descriptorCompacts, options);
+  if (!plain.ok) return plain;
+  [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const revision = revisionWithProfile(revisionText, settings.value);
@@ -1985,6 +2029,9 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const plain = plainInputs(compact, revisionText, descriptorCompacts, options);
+  if (!plain.ok) return plain;
+  [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const revision = revisionWithProfile(revisionText, settings.value);
@@ -1997,12 +2044,18 @@ export function verifyTermination(compact: string, revisionText: string, descrip
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
+  const plain = plainInputs(chainInput, options);
+  if (!plain.ok) return plain;
+  [chainInput, options] = plain.value;
   const verified = chainWithOptions(chainInput, options);
   if (!verified.ok) return { ok: false, code: verified.code };
   return { ok: true, facts: verified.value };
 }
 
 export function verifyReceipt(compact: string, context: AnyRecord | string, options: VerificationOptions = {}): VerifyResult {
+  const plain = plainInputs(compact, context, options);
+  if (!plain.ok) return plain;
+  [compact, context, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const verified = receiptWithContext(compact, context, settings.value);
@@ -2237,6 +2290,9 @@ export function prepareSigning(
   context: DescriptorPredecessor | null | ChainInput | string,
   options: SigningOptions = {},
 ): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
+  const plain = plainInputs(kind, kid, claims, publicKey, context, options);
+  if (!plain.ok) return plain;
+  [kind, kid, claims, publicKey, context, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const descriptorContext = context === null || (isRecord(context) && "lineage" in context &&
@@ -2284,8 +2340,7 @@ export function prepareSigning(
     const chain = chainFromInput(context as ChainInput, settings.value);
     if (!chain.ok) return chain;
     prepared = prepareReceipt(provisional, { kind: "chain", chain: chain.value }, settings.value);
-    const view = context as ChainInput;
-    verifyWith = { kind, context: { revisions: [...view.revisions], acceptances: [...view.acceptances], descriptors: [...view.descriptors], terminations: [...view.terminations] } };
+    verifyWith = { kind, context: context as ChainInput };
   }
   if (!prepared.ok) return prepared;
   if (!prepared.value.unnamed && !prepared.value.keys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
