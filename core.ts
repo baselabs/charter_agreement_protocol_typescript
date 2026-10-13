@@ -601,7 +601,7 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
   if (payload.descriptor_number === 1) {
     if (payload.prev_descriptor_digest !== undefined) return fail("descriptor_invalid");
-  } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1) {
+  } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
     return fail("descriptor_chain_invalid");
   }
   return ok({ ...decoded.value, digest, compact });
@@ -656,14 +656,40 @@ function descriptorChain(compacts: string[]) {
     }
     if (!progressed) return fail("descriptor_chain_invalid");
   }
+  if (new Set(descriptors.map((one) => one.digest)).size !== descriptors.length ||
+      descriptors.filter((one) => one.payload.descriptor_number === 1).length !== 1 ||
+      new Set(descriptors.map((one) => one.payload.party_id ?? one.digest)).size !== 1) return fail("descriptor_chain_invalid");
   const children = new Map();
   for (const descriptor of descriptors) {
     const prev = descriptor.payload.prev_descriptor_digest;
     if (prev) children.set(prev, [...(children.get(prev) || []), descriptor.digest]);
   }
-  const fork = [...children.values()].find((values) => values.length > 1);
+  const siblings: string[] = [...children.values()].filter((values) => values.length > 1).flat();
+  const fork = siblings.length > 0;
   const positions = Object.fromEntries(descriptors.map((one) => [one.digest, fork ? "contested" : (children.has(one.digest) ? "superseded" : "head")]));
-  return ok({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: fork ? [...fork].sort() : [] });
+  return ok({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: [...new Set(siblings)].sort() });
+}
+
+function descriptorViews(compacts: string[]) {
+  if (!Array.isArray(compacts)) return fail("chain_invalid");
+  const groups = new Map<string, string[]>();
+  for (const compact of compacts) {
+    const decoded = decodeJws(compact);
+    if (!decoded.ok) return decoded;
+    const id = decoded.value.payload.party_id ?? taggedHash("party_descriptor_content", decoded.value.payloadBytes);
+    groups.set(id, [...(groups.get(id) ?? []), compact]);
+  }
+  if (groups.size !== 2) return fail("chain_invalid");
+  const histories = [];
+  for (const id of [...groups.keys()].sort()) {
+    const chain = descriptorChain(groups.get(id)!);
+    if (!chain.ok) return chain;
+    histories.push(chain.value);
+  }
+  return ok({ histories, descriptors: histories.flatMap((chain) => chain.descriptors),
+    positions: Object.assign({}, ...histories.map((chain) => chain.positions)),
+    siblingDescriptors: histories.flatMap((chain) => chain.siblingDescriptors),
+    topology: histories.some((chain) => chain.topology === "forked") ? "forked" : "linear" });
 }
 
 const REVISION_FIELDS = ["abp_bindings", "attribution_declaration", "charter_id", "effective_from", "effective_until", "extensions", "legal_text", "parties", "precedence_declaration", "prev_revision_digest", "protocol_revision", "receipt_profile", "revision_number", "supersedes", "termination_rules"];
@@ -1011,7 +1037,7 @@ function admitView(input: AnyRecord):
 
 function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
-  const descriptors = descriptorChain(input.descriptors);
+  const descriptors = descriptorViews(input.descriptors);
   if (!descriptors.ok) return fail("chain_invalid");
   const revisions = [];
   for (const text of input.revisions) {

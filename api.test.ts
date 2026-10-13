@@ -705,3 +705,35 @@ test("T2 revision schema covers every declared member rule", async (t) => {
   });
   assert.ok(decodeCharterRevision(canonical(base)).ok);
 });
+
+test("T4 descriptor histories reject mixed parties and unbound successors", () => {
+  for (const id of ["descriptor-chain-two-party-set", "descriptor-chain-successor-without-party"]) {
+    const fixture = corpusCase("descriptor_chain-verify.json", id);
+    assert.deepEqual(verifyDescriptorChain(fixture.input.compacts), { ok: false, code: "descriptor_chain_invalid" });
+  }
+});
+
+test("T4 a descriptor fork only contests its own party", () => {
+  const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  const fork = corpusCase("descriptor_chain-verify.json", "descriptor-chain-signed-sibling-fork").input.compacts;
+  const forkRoot = JSON.parse(Buffer.from(fork[0].split(".")[1], "base64url").toString());
+  const rootDigest = decodePartyDescriptor(fork[0]);
+  assert.ok(rootDigest.ok);
+  const others = base.descriptors.filter((compact: string) => {
+    const descriptor = decodePartyDescriptor(compact);
+    return descriptor.ok && descriptor.digest !== rootDigest.digest;
+  });
+  const view = verifyChain({ ...base, descriptors: [...fork, ...others] });
+  assert.ok(view.ok, JSON.stringify(view));
+  for (const compact of others) {
+    const descriptor = decodePartyDescriptor(compact);
+    assert.ok(descriptor.ok);
+    assert.equal(view.facts.descriptors.positions[descriptor.digest], "head");
+  }
+  assert.equal(forkRoot.descriptor_number, 1);
+});
+
+test("T4 a chain view requires exactly the two revision party histories", () => {
+  const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  assert.deepEqual(verifyChain({ ...base, acceptances: [], descriptors: base.descriptors.slice(0, 1) }), { ok: false, code: "chain_invalid" });
+});
