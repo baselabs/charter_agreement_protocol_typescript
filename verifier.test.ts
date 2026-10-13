@@ -66,3 +66,21 @@ test("a corpus whose index bytes are edited fails the certified pin", () => {
   assert.throws(() => reportFor(scratch), /uncertified index|identity|digest|file hash|shape|non-canonical/i);
   rmSync(scratch, { recursive: true, force: true });
 });
+
+test("T12 duplicate members reject even before a distinct final member", () => {
+  assert.deepEqual(decodeJsonText('{"a":1,"a":2,"b":3}'), { ok: false, code: "duplicate_member" });
+  assert.deepEqual(decodeJsonText('{"outer":{"a":1,"a":2,"b":3}}'), { ok: false, code: "duplicate_member" });
+});
+
+test("T13 integer-like members project in source order", () => {
+  const decoded = decodeJsonText('{"10":1,"9":2,"nested":{"2":3,"1":4}}');
+  assert.ok(decoded.ok);
+  assert.deepEqual(jsonProjection(decoded.value), {
+    tag: "object", members: [
+      ["10", { tag: "integer", value: 1 }],
+      ["9", { tag: "integer", value: 2 }],
+      ["nested", { tag: "object", members: [["2", { tag: "integer", value: 3 }], ["1", { tag: "integer", value: 4 }]] }],
+    ],
+  });
+  assert.equal(canonical(decoded.value), '{"10":1,"9":2,"nested":{"1":4,"2":3}}');
+});

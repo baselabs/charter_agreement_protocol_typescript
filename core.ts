@@ -219,6 +219,9 @@ function strictBase64url(text: unknown): Result<Buffer> {
 // closed codes, in the decoder's own order.
 const MAXIMUM_SAFE_INTEGER = 9007199254740991n;
 const NUMBER_TOKEN = /(?:-?(?:0|[1-9][0-9]*))(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+// Retain text order separately from JavaScript's integer-key enumeration.
+// Plain property access remains compatible with existing artifact consumers.
+const JSON_MEMBER_ORDER = new WeakMap<object, string[]>();
 
 function readJsonValue(text: string, index: number): JsonReader {
   index = skipWhitespace(text, index);
@@ -226,6 +229,7 @@ function readJsonValue(text: string, index: number): JsonReader {
   if (char === undefined) return { status: "need-character" };
   if (char === "{") {
     const members = new Map<string, unknown>();
+    let duplicate = false;
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
     for (;;) {
@@ -236,13 +240,15 @@ function readJsonValue(text: string, index: number): JsonReader {
       if (text[cursor] !== ":") return { status: "syntax" };
       const item = readJsonValue(text, skipWhitespace(text, cursor + 1));
       if (item.status !== "ok") return item;
-      const duplicate = members.has(key.value);
+      duplicate ||= members.has(key.value);
       members.set(key.value, item.value);
       cursor = skipWhitespace(text, item.index);
       if (text[cursor] === ",") { cursor = skipWhitespace(text, cursor + 1); continue; }
       if (text[cursor] === "}") {
         if (duplicate) return { status: "error", code: "duplicate_member" };
-        return { status: "ok", value: Object.fromEntries(members), index: cursor + 1 };
+        const object = Object.fromEntries(members);
+        JSON_MEMBER_ORDER.set(object, [...members.keys()]);
+        return { status: "ok", value: object, index: cursor + 1 };
       }
       return { status: "syntax" };
     }
@@ -406,7 +412,7 @@ export function jsonProjection(value: any): Projection {
   if (value instanceof Number) return { tag: "float", value: value.valueOf() };
   if (Number.isInteger(value)) return { tag: "integer", value };
   if (Array.isArray(value)) return { tag: "array", items: value.map(jsonProjection) };
-  if (value && typeof value === "object") return { tag: "object", members: Object.entries(value).map(([key, item]) => [key, jsonProjection(item)]) };
+  if (value && typeof value === "object") return { tag: "object", members: (JSON_MEMBER_ORDER.get(value) ?? Object.keys(value)).map((key) => [key, jsonProjection(value[key])]) };
   if (typeof value === "string") return { tag: "string", value };
   if (typeof value === "boolean") return { tag: "boolean", value };
   return { tag: "float", value };
