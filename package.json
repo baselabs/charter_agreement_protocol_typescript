@@ -35,6 +35,7 @@
     "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
     "test": "npm run build && node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts parity.test.ts presign.test.ts signing-corpus.test.ts workshop.test.ts ed25519.test.ts",
     "conformance": "node --experimental-strip-types --no-warnings cli.ts",
+    "check:ed25519": "node --experimental-strip-types --no-warnings check-ed25519.ts",
     "prepack": "npm run build",
     "typecheck:web": "tsc -p tsconfig.web.json",
     "build:site": "node web/build.mjs"
