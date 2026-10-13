@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "vkrz0Xrt37EFuRxVI-rIp5R36RSSohCqFnPT98SREFU";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "K8eqhmOnptmiGtB5eiM6NOzx7NpziwMUWuohPTb_YgQ";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -2251,7 +2251,8 @@ export function prepareSigning(
     prepared = prepareDescriptor(provisional, previous.value, settings.value);
     verifyWith = { kind, predecessor: previous.value ? { descriptor_digest: previous.value.digest, lineage: [...previous.value.lineage!] } : null };
   } else if (kind === "acceptance" || kind === "termination") {
-    const chain = chainFromInput(context as ChainInput, settings.value);
+    // Limits cover the whole set; the caller's profile covers the routed view.
+    const chain = chainFromInput(context as ChainInput, { ...settings.value, profile: DEFAULT_SETTINGS.profile });
     if (!chain.ok) return chain;
     const refusal = kind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
     if (!refusal.ok) return refusal;

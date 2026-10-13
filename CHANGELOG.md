@@ -11,12 +11,16 @@ documented here.
   artifact before signing and retain its verification context, limits, and profile
   for completion. The plan exposes the signing input and whether its key is
   `matched` or `unnamed` (a receipt against a bare revision).
+  Acceptance and termination profiles cover the revision, the signing party's
+  descriptor history, and the new artifact. The full profile checks the rest of
+  the set; caller limits cover every artifact read. Receipt profiles cover the
+  whole retained set; descriptor profiles cover predecessor history.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
-- The certified corpus now contains 216 cases in 16 case files, including
+- The certified corpus now contains 221 cases in 16 case files, including
   `signing.prepare`. Its runner calls public `prepareSigning`, and independent
-  tests check all 53 preparation cases and both compiled class floors.
+  tests check all 57 preparation cases and both compiled class floors.
 - `SECURITY.md` ships in the npm package with supported versions, scope,
   reproduction commands and private reporting through GitHub's Security tab.
 
@@ -35,8 +39,6 @@ documented here.
   `false`). Cyclic signing claims return `signing_input_invalid`.
 - The signature guard requires canonical base64url public keys. Runtime support
   checks cache the declared type and known-answer result once per key algorithm.
-- Acceptance and termination preparation apply the profile to the whole supplied
-  set. Preparation rejects an empty descriptor context with `invalid_type`.
 - The workshop passes only the signing party's descriptor history to acceptance
   verification. The extracted flow is tested with the site's browser shims and
   real WebCrypto keys, and the bundle uses this repository's verifier throughout.

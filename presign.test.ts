@@ -317,13 +317,14 @@ test("an unheld successor descriptor reports acceptance_claims_mismatch", () => 
   assert.deepEqual(api.prepareSigning("acceptance", "k", set.acceptance, set.nextKey.publicKey, set.chain), { ok: false, code: "acceptance_claims_mismatch" });
 });
 
-test("acceptance and termination preparation profiles cover the whole set", () => {
+test("acceptance and termination profiles cover the routed context and artifact", () => {
   const set = mintedSet("Ed25519", "EdDSA");
   const options = { profile: { algorithms: ["Ed25519"], revisions: { min: 2, max: 2 } } };
   assert.deepEqual(api.verifyChain(set.chain, options), { ok: false, code: "algorithm_outside_profile" });
   for (const kind of ["acceptance", "termination"] as const) {
     const prepared = api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, options);
-    assert.deepEqual(prepared, { ok: false, code: "algorithm_outside_profile" });
+    assert.ok(prepared.ok, JSON.stringify(prepared));
+    assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, set.parties[0].privateKey)).ok);
     assert.deepEqual(api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "algorithm_outside_profile" });
     assert.deepEqual(api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, { profile: { revisions: { min: 1, max: 1 } } }), { ok: false, code: "revision_outside_profile" });
   }

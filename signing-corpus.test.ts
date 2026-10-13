@@ -7,7 +7,7 @@ import * as api from "./index.ts";
 const cases: api.ConformanceCase[] = JSON.parse(readFileSync(new URL("./conformance/cases/signing-prepare.json", import.meta.url), "utf8")).cases;
 
 test("public signing preparation matches every corpus projection independently", async (t) => {
-  assert.equal(cases.length, 53);
+  assert.equal(cases.length, 57);
   for (const one of cases) await t.test(one.id, () => {
     const input = one.input;
     let context: any = input.context;
