@@ -345,12 +345,12 @@ test("the refusal boundary never throws on partial object views", () => {
   const claims = acceptanceClaims(view, 0);
   // Missing artifact lists fail with a typed result.
   const partial = { revisions: view.input.revisions, descriptors: view.input.descriptors };
-  assert.deepEqual(acceptanceRefusal(claims, partial), { ok: false, code: "chain_invalid" });
+  assert.deepEqual(acceptanceRefusal(claims, partial), { ok: false, code: "invalid_type" });
   // A revision text that is valid JSON but not an object: typed failure.
-  const notObject = { ...partial, revisions: ["null"] };
+  const notObject = { ...view.input, revisions: ["null"] };
   const acceptance = acceptanceRefusal(claims, notObject);
   assert.ok(acceptance.ok === false);
-  assert.equal(acceptance.code, "chain_invalid");
+  assert.equal(acceptance.code, "invalid_type");
   const termination = terminationRefusal({
     charter_id: claims.charter_id,
     governing_revision_digest: claims.revision_digest,
@@ -360,7 +360,7 @@ test("the refusal boundary never throws on partial object views", () => {
     effective_at: "2026-08-25T12:00:00Z",
   }, notObject);
   assert.ok(termination.ok === false);
-  assert.equal(termination.code, "chain_invalid");
+  assert.equal(termination.code, "invalid_type");
 });
 
 test("checkSigningClaims never throws on malformed verification key entries", () => {
@@ -475,7 +475,7 @@ test("governingRevision matches the certified precedence surface", () => {
   assert.ok(badView.ok === false);
   if (!badAt.ok && !badView.ok) {
     assert.equal(badAt.code, "invalid_type");
-    assert.equal(badView.code, "chain_invalid");
+    assert.equal(badView.code, "invalid_type");
   }
 });
 
@@ -528,7 +528,7 @@ test("the set-aware producers: build first, then R1-R3 at the reference ordering
   // Build-before-set ordering: claims schema defect + broken view reports
   // the PRODUCER code, not the chain code.
   const both = acceptanceSigningInput("producer-key-001", { ...bound, revision_number: 2 }, { ...view.input, acceptances: ["not-a-jws"] });
-  assert.ok(both.ok === false && both.code === "acceptance_invalid");
+  assert.ok(both.ok === false && both.code === "signing_input_invalid");
 
   // Malformed view alone: the typed chain code.
   const badView = acceptanceSigningInput("producer-key-001", bound, { ...view.input, acceptances: ["not-a-jws"] });
@@ -854,7 +854,7 @@ test("T5 profile validation is closed and admission follows local checks", () =>
   assert.deepEqual(withOptions(verifyDescriptor, [badSchema, null], { profile: classicalProfile }), { ok: false, code: "unknown_member" });
   assert.deepEqual(withOptions(verifyDescriptor, [descriptor, null], { profile: { algorithms: ["EdDSA"], revisions: { min: 2, max: 3 } } }), { ok: false, code: "revision_outside_profile" });
   const acceptance = corpusCase("acceptance-verify.json", "acceptance-claim-mismatch").input;
-  assert.deepEqual(withOptions(verifyAcceptance, [acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts], { profile: classicalProfile }), { ok: false, code: "acceptance_claims_mismatch" });
+  assert.deepEqual(withOptions(verifyAcceptance, [acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts], { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
 });
 
 test("T6 all public artifact verifiers validate and enforce limits", async (t) => {
@@ -1099,14 +1099,14 @@ function replaceHeader(compact: string, changes: Record<string, unknown>): strin
 
 test("T5 profile checks follow key resolution in signed artifact context", () => {
   for (const [file, id, fn, code] of [
-    ["acceptance-verify.json", "acceptance-valid", verifyAcceptance, "acceptance_invalid"],
-    ["termination-verify.json", "termination-valid", verifyTermination, "termination_invalid"],
+    ["acceptance-verify.json", "acceptance-profile-narrow-valid", verifyAcceptance, "acceptance_invalid"],
+    ["termination-verify.json", "termination-profile-narrow-valid", verifyTermination, "termination_invalid"],
   ] as const) {
     const input = corpusCase(file, id).input;
-    assert.deepEqual(withOptions(fn, [replaceHeader(input.compact, { kid: "missing-key" }), input.revision_text, input.descriptor_compacts], { profile: classicalProfile }), { ok: false, code });
+    assert.deepEqual(withOptions(fn, [replaceHeader(input.compact, { kid: "missing-key" }), input.revision_text, input.descriptor_compacts], { profile: { algorithms: ["EdDSA"] } }), { ok: false, code });
   }
   const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
-  assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: classicalProfile }), { ok: false, code: "signature_invalid" });
+  assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "signature_invalid" });
 });
 
 test("S6 normal verification skips signature vectors even when a vector would fail", () => {

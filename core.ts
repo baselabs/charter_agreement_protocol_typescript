@@ -1778,7 +1778,7 @@ export function verifySignature(message: Buffer, signature: Buffer, publicKeyBas
   return mldsa(row.keyAlgorithm, publicKeyBase64url, message, signature);
 }
 
-type DescriptorPredecessor = { digest?: string; descriptor_digest?: string; claims?: AnyRecord | null; lineage?: string[] };
+export type DescriptorPredecessor = { digest?: string; descriptor_digest?: string; claims?: AnyRecord | null; lineage?: string[] };
 
 function reverifyPredecessor(supplied: DescriptorPredecessor | null, settings: Settings): Result<{ digest: string; payload: AnyRecord; lineage?: string[] } | null> {
   if (supplied === null) return ok(null);

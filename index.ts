@@ -69,5 +69,6 @@ export {
   type ProducerResult,
   type AlgRow,
   type VerifyResult,
+  type DescriptorPredecessor,
   type RefusalResult,
 } from "./core.ts";

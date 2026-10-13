@@ -46,8 +46,18 @@ test("S1 signed claims reject every noncanonical digest", async (t) => {
     ["acceptance-verify", "acceptance-valid", api.verifyAcceptance, ["charter_id", "revision_digest", "prev_revision_digest", "party_descriptor_digest"], "acceptance_invalid"],
     ["termination-verify", "termination-valid", api.verifyTermination, ["charter_id", "governing_revision_digest", "party_descriptor_digest", "detail_digest"], "termination_invalid"],
   ] as const) {
-    const f = fixture(file, id);
     for (const field of fields) await t.test(`${file} ${field}`, () => {
+      const f = fixture(file, id);
+      if (field === "prev_revision_digest") {
+        const first = api.decodeCharterRevision(f.revision_text);
+        assert.ok(first.ok);
+        f.revision_text = api.canonical({ ...JSON.parse(f.revision_text), revision_number: 2, charter_id: first.digest, prev_revision_digest: first.digest });
+        const second = api.decodeCharterRevision(f.revision_text);
+        assert.ok(second.ok);
+        f.compact = changeClaims(f.compact, (c) => ({ ...c, revision_number: 2, charter_id: first.digest, prev_revision_digest: first.digest, revision_digest: second.digest }));
+        assert.deepEqual(api.checkSigningClaims("acceptance", claimsOf(f.compact)), { ok: true });
+        assert.deepEqual(api.verifyAcceptance(f.compact, f.revision_text, f.descriptor_compacts), { ok: false, code: "signature_invalid" });
+      }
       const compact = changeClaims(f.compact, (claims) => ({ ...claims, [field]: badDigest }));
       assert.deepEqual(verify(compact, f.revision_text, f.descriptor_compacts), { ok: false, code });
     });
@@ -83,6 +93,16 @@ test("B1 revision parties and supplied histories are distinct and named", async 
     assert.ok(decoded.ok);
     const next = { ...JSON.parse(base.revisions[0]), revision_number: 2, charter_id: decoded.digest, prev_revision_digest: decoded.digest };
     assert.ok(api.verifyChain({ ...base, revisions: [text, api.canonical(next)], acceptances: [] }).ok);
+  });
+  await t.test("a successor revision cannot use two descriptors from one history", () => {
+    const [root, child] = fixture("descriptor_chain-verify", "descriptor-chain-superseded-position").compacts;
+    const first = api.decodeCharterRevision(base.revisions[0]);
+    const older = api.descriptorDigest(root);
+    const newer = api.descriptorDigest(child);
+    assert.ok(first.ok && older.ok && newer.ok);
+    const next = { ...JSON.parse(base.revisions[0]), revision_number: 2, charter_id: first.digest, prev_revision_digest: first.digest, parties: [{ role: "issuer", party_descriptor_digest: older.digest }, { role: "acceptor", party_descriptor_digest: newer.digest }] };
+    const view = { ...base, descriptors: [...new Set([...base.descriptors, root, child])], revisions: [...base.revisions, api.canonical(next)], acceptances: [] };
+    assert.deepEqual(api.verifyChain(view), { ok: false, code: "chain_invalid" });
   });
 });
 
@@ -332,6 +352,21 @@ test("S13 descriptor predecessors are reverified from their signed lineage", asy
   await t.test("lineage digest must equal the supplied digest", () => {
     const predecessor = { digest: sampleDigest, claims: previous.claims, lineage: [root] };
     assert.deepEqual(api.verifyDescriptor(child, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("lineage digest must equal descriptor_digest too", () => {
+    const predecessor: api.DescriptorPredecessor = { descriptor_digest: sampleDigest, lineage: [root] };
+    assert.deepEqual(api.verifyDescriptor(child, predecessor), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("genesis rejects a verified predecessor", () => {
+    const genesis = api.verifyDescriptor(root);
+    assert.ok(genesis.ok);
+    assert.deepEqual(api.verifyDescriptor(root, genesis.facts), { ok: false, code: "descriptor_chain_invalid" });
+  });
+  await t.test("a lone successor checks identity digests before its missing predecessor", () => {
+    assert.deepEqual(api.verifyDescriptor(child), { ok: false, code: "descriptor_chain_invalid" });
+    for (const name of ["party_id", "prev_descriptor_digest"]) {
+      assert.deepEqual(api.verifyDescriptor(changeClaims(child, (c) => ({ ...c, [name]: badDigest }))), { ok: false, code: "descriptor_invalid" });
+    }
   });
   await t.test("every retained signature is reverified", () => {
     const predecessor = { digest: previous.digest, claims: previous.claims, lineage: [changeClaims(root, (claims) => ({ ...claims, effective_from: "2026-08-25T09:00:00Z" }))] };

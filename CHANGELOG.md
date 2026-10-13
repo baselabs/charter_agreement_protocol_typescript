@@ -5,6 +5,29 @@ documented here.
 
 ## [Unreleased]
 
+### Breaking
+
+- `verifyDescriptor` requires a predecessor with retained signed `lineage`;
+  the former `{ digest, claims }` shape returns `descriptor_chain_invalid`.
+  `DescriptorPredecessor` is now exported. Pass verified facts to the next call:
+
+  ```ts
+  import { verifyDescriptor, type DescriptorPredecessor } from "@charter-agreement-protocol/verifier";
+  const root = verifyDescriptor(genesisCompact);
+  if (root.ok) {
+    const previous: DescriptorPredecessor = root.facts;
+    const next = verifyDescriptor(successorCompact, previous);
+  }
+  ```
+
+  A genesis descriptor given a predecessor now returns
+  `descriptor_chain_invalid` instead of verifying successfully. Both supplied
+  digest aliases must match the reverified lineage. A lone successor with a
+  noncanonical identity digest returns `descriptor_invalid` before the missing
+  predecessor reports `descriptor_chain_invalid`.
+
+### Changed
+
 - Year 0000, including February 29, now passes timestamp parsing on every
   artifact, indexed observation and governing query, matching RFC 3339 and
   the reference. The self-check now asserts acceptance of year zero.
