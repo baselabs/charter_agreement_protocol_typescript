@@ -23,7 +23,8 @@
     "conformance",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "engines": {
     "node": ">=24.8.0"
