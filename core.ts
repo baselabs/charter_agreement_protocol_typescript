@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "RvtImy1rAVyn_rorpyorhktQWWYMUXVPO5fhzTbMSS8";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "fvkjFVS797aqmxs0-2XYi9aLij6ZHxBiuQb9cQyhqS0";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -81,7 +81,7 @@ const REQUIRED = {
   "governing_revision": ["precedence_selection", "terminated"],
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
-  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
+  "receipt.verify": ["maximum_plus_one", "valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],

@@ -53,7 +53,7 @@ test("signing corpus runner matches Elixir kinds contexts and extra option membe
 });
 
 test("public signing preparation matches every corpus projection independently", async (t) => {
-  assert.equal(cases.length, 61);
+  assert.equal(cases.length, 69);
   for (const one of cases) await t.test(one.id, () => {
     const input = one.input;
     let context: any = input.context;
