@@ -1172,8 +1172,8 @@ function parseProfile(spec: AnyRecord | undefined):
     if (!Array.isArray(spec.algorithms)) return { ok: false, code: "invalid_type" };
     const names = spec.algorithms as unknown[];
     if (names.length === 0 || new Set(names).size !== names.length) return { ok: false, code: "invalid_profile" };
-    if (!names.every((name) => typeof name === "string" && registryNames.includes(name))) {
-      return { ok: false, code: "invalid_profile" };
+    for (const name of names) {
+      if (typeof name !== "string" || !registryNames.includes(name)) return { ok: false, code: "invalid_profile" };
     }
     algorithms = names as string[];
   }

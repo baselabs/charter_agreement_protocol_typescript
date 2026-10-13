@@ -899,6 +899,69 @@ test("limits expose the reference defaults and compiled maximums", () => {
   assert.deepEqual(withOptions(verifyDescriptor, [compact, null], { limits: { max_depth: -1 }, profile: { algorithms: [] } }), { ok: false, code: "invalid_limits" });
 });
 
+test("malformed limit and profile values return codes on source and built APIs", async () => {
+  const built = await import("./dist/index.js");
+  const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
+  const acceptance = corpusCase("acceptance-verify.json", "acceptance-valid").input;
+  const termination = corpusCase("termination-verify.json", "termination-valid").input;
+  const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
+  const chain = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  const claims = JSON.parse(Buffer.from(descriptor.compact.split(".")[1], "base64url").toString());
+  const malformedLimits: unknown[] = [null, [], "limits", { extra: 1 }];
+  for (const [field, maximum] of Object.entries(publicApi.MAXIMUM_LIMITS)) {
+    for (const value of [undefined, null, -1, 1.5, NaN, Infinity, "1", {}, [], true, maximum + 1]) {
+      malformedLimits.push({ ...publicApi.DEFAULT_LIMITS, [field]: value });
+    }
+    const missing: Record<string, unknown> = { ...publicApi.DEFAULT_LIMITS, __struct__: "CharterAgreementProtocol.Limits" };
+    delete missing[field];
+    malformedLimits.push(missing);
+  }
+  const malformedProfiles: unknown[] = [
+    null, [], "profile",
+    { algorithms: null }, { algorithms: "EdDSA" }, { algorithms: {} },
+    { algorithms: { 0: "EdDSA", length: 1 } },
+    { algorithms: { head: "EdDSA", tail: "improper" } },
+    { algorithms: new Array(1) }, { algorithms: ["EdDSA", undefined] },
+    { algorithms: [] }, { algorithms: ["EdDSA", "EdDSA"] }, { algorithms: ["unlisted"] },
+    { revisions: null }, { revisions: [] }, { revisions: [1, 3] }, { revisions: {} },
+    { revisions: { min: 1 } }, { revisions: { max: 3 } },
+    { revisions: { min: null, max: 3 } }, { revisions: { min: 1, max: "3" } },
+    { revisions: { min: NaN, max: 3 } }, { revisions: { min: 1, max: Infinity } },
+    { revisions: { min: 1.5, max: 3 } }, { revisions: { min: 3, max: 1 } },
+    { revisions: { min: 0, max: 3 } }, { revisions: { min: 1, max: 4 } },
+    { __struct__: "CharterAgreementProtocol.Capability.Profile", revisions: { min: 1, max: 3 } },
+    { __struct__: "CharterAgreementProtocol.Capability.Profile", algorithms: ["EdDSA"] },
+  ];
+  for (const api of [publicApi, built]) {
+    const calls = (options: any): Array<[string, () => unknown]> => [
+      ["verifyDescriptor", () => api.verifyDescriptor(descriptor.compact, null, options)],
+      ["verifyDescriptorChain", () => api.verifyDescriptorChain([descriptor.compact], options)],
+      ["verifyAcceptance", () => api.verifyAcceptance(acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts, options)],
+      ["verifyTermination", () => api.verifyTermination(termination.compact, termination.revision_text, termination.descriptor_compacts, options)],
+      ["verifyReceipt", () => api.verifyReceipt(receipt.compact, receipt.chain, options)],
+      ["verifyChain", () => api.verifyChain(chain, options)],
+      ["governingRevision", () => api.governingRevision(chain, "2026-08-25T12:00:00Z", options)],
+      ["decodeCharterRevision", () => api.decodeCharterRevision(acceptance.revision_text, options)],
+      ["revisionDigest", () => api.revisionDigest(acceptance.revision_text, options)],
+      ...(["descriptor", "acceptance", "termination", "receipt"] as const).map((kind): [string, () => unknown] =>
+        [`prepareSigning ${kind}`, () => api.prepareSigning(kind, "k", claims, "x", null, options)]),
+    ];
+    for (const [field, values, code] of [
+      ["limits", malformedLimits, "invalid_limits"], ["profile", malformedProfiles, "invalid_profile"],
+    ] as const) for (const value of values) {
+      const options = { [field]: value };
+      for (const [name, call] of calls(options)) assert.deepEqual(call(), { ok: false, code }, `${field} ${name}`);
+      assert.equal(api.verifySignature(Buffer.alloc(1), Buffer.alloc(64), "x", "Ed25519", options), false);
+      if (field === "limits") assert.deepEqual(api.decodeJsonText("{}", value as any), { ok: false, code });
+    }
+    // Omitted fields remain valid on the public API's partial option objects.
+    assert.ok(api.verifyDescriptor(descriptor.compact, null, { limits: {}, profile: {} }).ok);
+    assert.deepEqual(api.verifyDescriptor(descriptor.compact, null, {
+      limits: { max_depth: null }, profile: { algorithms: null },
+    } as any), { ok: false, code: "invalid_limits" });
+  }
+});
+
 test("every artifact list is bounded before any artifact decode", () => {
   for (const name of ["revisions", "acceptances", "descriptors", "terminations"]) {
     const view = { revisions: [], acceptances: [], descriptors: [], terminations: [], [name]: ["broken", "broken"] };
