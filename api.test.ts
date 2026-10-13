@@ -739,6 +739,9 @@ test("T4 a descriptor fork only contests its own party", () => {
 test("T4 a chain view requires exactly the two revision party histories", () => {
   const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
   assert.deepEqual(verifyChain({ ...base, acceptances: [], descriptors: base.descriptors.slice(0, 1) }), { ok: false, code: "chain_invalid" });
+  const revision = JSON.parse(base.revisions[0]);
+  revision.parties[1].party_descriptor_digest = sampleDigest;
+  assert.deepEqual(verifyChain({ ...base, revisions: [canonical(revision)], acceptances: [] }), { ok: false, code: "chain_invalid" });
 });
 
 function replaceClaims(compact: string, change: (claims: Record<string, any>) => Record<string, any>): string {

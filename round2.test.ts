@@ -43,3 +43,27 @@ test("S1 signed claims reject every noncanonical digest", async (t) => {
     assert.deepEqual(api.verifyReceipt(pinned.compact, pinned.chain), { ok: false, code: "receipt_invalid" });
   });
 });
+
+test("B1 revision parties and supplied histories are distinct and named", async (t) => {
+  const repeated = fixture("charter_revision-decode", "charter-revision-shared-descriptor");
+  await t.test("revision repeats a descriptor", () => {
+    assert.deepEqual(api.decodeCharterRevision(repeated.text), { ok: false, code: "revision_invalid" });
+  });
+  const sameHistory = fixture("chain-verify", "chain-one-party-both-roles");
+  await t.test("different descriptors in one history cannot fill both roles", () => {
+    assert.deepEqual(api.verifyChain(sameHistory), { ok: false, code: "chain_invalid" });
+  });
+  const base = fixture("chain-verify", "chain-dual-acceptance-valid");
+  const root = JSON.parse(base.revisions[0]);
+  root.parties[1].party_descriptor_digest = sampleDigest;
+  const text = api.canonical(root);
+  await t.test("an unnamed supplied history cannot replace a missing party", () => {
+    assert.deepEqual(api.verifyChain({ ...base, revisions: [text], acceptances: [] }), { ok: false, code: "chain_invalid" });
+  });
+  await t.test("unresolvable digests are skipped and other revisions can name histories", () => {
+    const decoded = api.decodeCharterRevision(text);
+    assert.ok(decoded.ok);
+    const next = { ...JSON.parse(base.revisions[0]), revision_number: 2, charter_id: decoded.digest, prev_revision_digest: decoded.digest };
+    assert.ok(api.verifyChain({ ...base, revisions: [text, api.canonical(next)], acceptances: [] }).ok);
+  });
+});

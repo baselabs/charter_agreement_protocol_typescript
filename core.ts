@@ -935,6 +935,7 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   if (value.revision_number === 1 ? (value.charter_id !== undefined || value.prev_revision_digest !== undefined || supersedes.length !== 0) : (value.charter_id === undefined || value.prev_revision_digest === undefined)) return fail("revision_invalid");
   if (until && compareTimestamps(from, until) >= 0) return fail("revision_invalid");
   const roles = value.parties.map((party: any) => party.role);
+  if (new Set(value.parties.map((party: any) => party.party_descriptor_digest)).size !== value.parties.length) return fail("revision_invalid");
   if (new Set(roles).size !== roles.length || value.abp_bindings.some((binding: any) => !roles.includes(binding.party_role))) return fail("revision_invalid");
   const bytes = Buffer.from(text);
   return ok(factsRecord({ value, bytes, digest: taggedHash("charter_revision_content", bytes), protocol_revision: value.protocol_revision }));
@@ -1168,6 +1169,14 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
       }
     }
   }
+  const owners = new Map(descriptors.value.descriptors.map((one) => [one.digest, one.payload.party_id ?? one.digest]));
+  const named = new Set<string>();
+  for (const revision of revisions) {
+    const parties = revision.value.parties.map((party: AnyRecord) => owners.get(party.party_descriptor_digest)).filter((id: string | undefined) => id !== undefined);
+    if (new Set(parties).size !== parties.length) return fail("chain_invalid");
+    for (const id of parties) named.add(id);
+  }
+  if (descriptors.value.histories.some((history) => !named.has(history.descriptors[0].payload.party_id ?? history.descriptors[0].digest))) return fail("chain_invalid");
   const acceptances: any[] = [];
   const coordinates = new Set();
   for (const compact of ((input.acceptances as string[]) || [])) {
