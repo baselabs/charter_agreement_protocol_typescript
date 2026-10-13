@@ -32,7 +32,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
-    "test": "node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts",
+    "test": "node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts round2.test.ts",
     "conformance": "node --experimental-strip-types --no-warnings cli.ts",
     "prepack": "npm run build",
     "typecheck:web": "tsc -p tsconfig.web.json",

@@ -1831,6 +1831,7 @@ function signingDescriptorError(claims: AnyRecord): string | null {
 function acceptanceClaimsError(claims: AnyRecord): string | null {
   const shape = schemaError(claims, ACCEPTANCE_SCHEMA);
   if (shape) return shape;
+  if ([claims.charter_id, claims.revision_digest, claims.prev_revision_digest, claims.party_descriptor_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "acceptance_invalid";
   if ((claims.revision_number === 1) !== (claims.prev_revision_digest === undefined)) return "acceptance_invalid";
   if (!parseTimestamp(claims.accepted_at)) return "timestamp_invalid";
   return null;
@@ -1839,6 +1840,7 @@ function acceptanceClaimsError(claims: AnyRecord): string | null {
 function terminationClaimsError(claims: AnyRecord): string | null {
   const shape = schemaError(claims, TERMINATION_SCHEMA);
   if (shape) return shape;
+  if ([claims.charter_id, claims.governing_revision_digest, claims.party_descriptor_digest, claims.detail_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "termination_invalid";
   const issuedAt = parseTimestamp(claims.issued_at);
   const effectiveAt = parseTimestamp(claims.effective_at);
   if (!issuedAt || !effectiveAt || compareTimestamps(issuedAt, effectiveAt) > 0) return "termination_invalid";
@@ -1848,6 +1850,7 @@ function terminationClaimsError(claims: AnyRecord): string | null {
 function receiptGrantError(claims: AnyRecord): string | null {
   const shape = schemaError(claims, RECEIPT_SCHEMA);
   if (shape) return shape;
+  if ([claims.charter_id, claims.revision_digest, claims.deployment_digest, claims.grant.grant_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "receipt_invalid";
   const allowed = receiptTimingMatrixError(claims);
   if (allowed) return allowed;
   if (claims.grant.scheme === "bap" && claims.grant.grant_digest === undefined) return "receipt_invalid";
