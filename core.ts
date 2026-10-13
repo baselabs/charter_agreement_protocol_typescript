@@ -639,11 +639,9 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   return ok(factsRecord({ ...decoded.value, digest, compact, protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
 }
 
-// The key-grammar gate mirrors the reference codec's two stages: an unknown
-// key algorithm or a wrong-length encoding fails the nested schema constraint
-// (nested_invalid), while an ML-DSA key inside a revision-1 or revision-2
-// descriptor passes the schema and rejects at the codec's revision gate
-// (descriptor_invalid) — no honest producer could have minted it.
+// The nested schema admits registry encoding lengths; extraction checks
+// the decoded bytes against the selected algorithm and canonical spelling.
+// Those extraction failures use descriptor_invalid.
 function keyGrammarError(payload: AnyRecord): string | null {
   if (!Array.isArray(payload.verification_keys) || payload.verification_keys.length === 0) {
     return "nested_invalid";
@@ -658,7 +656,7 @@ function keyGrammarError(payload: AnyRecord): string | null {
     if (!row) return "nested_invalid";
     const bytes = Buffer.from(one.public_key, "base64url");
     if (bytes.length !== row.publicKeyBytes || bytes.toString("base64url") !== one.public_key) {
-      return "nested_invalid";
+      return "descriptor_invalid";
     }
     if (one.algorithm !== "Ed25519" &&
         !(Number.isInteger(payload.protocol_revision) && payload.protocol_revision >= 3)) {
@@ -1887,13 +1885,14 @@ function receiptTimingMatrixError(claims: AnyRecord): string | null {
 function descriptorClaimsError(payload: AnyRecord): string | null {
   const shape = schemaError(payload, DESCRIPTOR_SCHEMA);
   if (shape) return shape;
+  if ([payload.party_id, payload.prev_descriptor_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "descriptor_invalid";
   const grammar = keyGrammarError(payload);
   if (grammar) return grammar;
+  if (new Set(payload.verification_keys.map((key: any) => key.key_id)).size !== payload.verification_keys.length || !payload.verification_keys.some((key: any) => key.status === "active")) return "descriptor_invalid";
   const extensions = extensionError(payload.extensions, "party_descriptor");
   if (extensions) return extensions;
   if (!parseTimestamp(payload.effective_from)) return "timestamp_invalid";
   if (payload.descriptor_number === 1 ? (payload.prev_descriptor_digest !== undefined || payload.party_id !== undefined) : (payload.prev_descriptor_digest === undefined || payload.party_id === undefined)) return "descriptor_invalid";
-  if (new Set(payload.verification_keys.map((key: any) => key.key_id)).size !== payload.verification_keys.length || !payload.verification_keys.some((key: any) => key.status === "active")) return "descriptor_invalid";
   return null;
 }
 

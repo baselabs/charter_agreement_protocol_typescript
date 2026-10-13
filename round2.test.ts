@@ -149,3 +149,18 @@ test("revision optional digests and supersession uniqueness stay strict", () => 
   assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, supersedes: [sampleDigest, sampleDigest] })), { ok: false, code: "revision_invalid" });
   assert.deepEqual(api.decodeCharterRevision(api.canonical({ ...base, attribution_declaration: { ...base.attribution_declaration, detail_digest: badDigest } })), { ok: false, code: "revision_invalid" });
 });
+
+test("S8 descriptor key extraction uses codec errors before times and extensions", async (t) => {
+  const f = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+  const base = claimsOf(f.compact);
+  const key = base.verification_keys[0];
+  for (const [label, change] of [
+    ["another algorithm key length", (c: any) => ({ ...c, verification_keys: [{ ...key, public_key: Buffer.alloc(1312).toString("base64url") }] })],
+    ["noncanonical key encoding", (c: any) => ({ ...c, verification_keys: [{ ...key, public_key: key.public_key.slice(0, -1) + "B" }] })],
+    ["duplicate key with bad time", (c: any) => ({ ...c, verification_keys: [key, key], effective_from: "bad-time" })],
+    ["duplicate key with unknown critical extension", (c: any) => ({ ...c, verification_keys: [key, key], extensions: { critical: { "sample/unknown": {} }, optional: {} } })],
+    ["no active key with bad time", (c: any) => ({ ...c, verification_keys: [{ ...key, status: "retired" }], effective_from: "bad-time" })],
+  ] as const) await t.test(label, () => {
+    assert.deepEqual(api.verifyDescriptor(changeClaims(f.compact, change)), { ok: false, code: "descriptor_invalid" });
+  });
+});
