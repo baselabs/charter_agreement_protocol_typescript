@@ -160,6 +160,11 @@ const project = <T,>(result: { ok: true; value: T } | { ok: false; code: string 
 
 type AnyRecord = Record<string, any>;
 
+const NOT_VERIFIED_FLOOR = ["tenancy", "live_policy", "authority", "effect_ownership", "execution", "billing", "evaluation_truth", "legal_validity", "term_satisfaction", "view_completeness", "counterparty_view", "wall_clock"];
+function factsRecord<T extends AnyRecord>(attrs: T, additions: string[] = []): T & { not_verified: string[]; protocol_revision: number | null; alg: string | null } {
+  return { protocol_revision: null, alg: null, ...attrs, not_verified: [...new Set([...NOT_VERIFIED_FLOOR, ...additions])] };
+}
+
 interface JsonReader {
   status: string;
   value?: unknown;
@@ -619,7 +624,7 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   if (admission) return fail(admission);
   const signature = verifyDecodedJws(decoded.value, "cap+party", keys);
   if (!signature.ok) return signature;
-  return ok({ ...decoded.value, digest, compact });
+  return ok(factsRecord({ ...decoded.value, digest, compact, protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg }));
 }
 
 // The key-grammar gate mirrors the reference codec's two stages: an unknown
@@ -682,7 +687,9 @@ function descriptorChain(compacts: string[], settings: Settings = DEFAULT_SETTIN
   const fork = siblings.length > 0;
   descriptors.sort((a, b) => a.payload.descriptor_number - b.payload.descriptor_number || a.digest.localeCompare(b.digest));
   const positions = Object.fromEntries(descriptors.map((one) => [one.digest, fork ? "contested" : (children.has(one.digest) ? "superseded" : "head")]));
-  return ok({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: [...new Set(siblings)].sort() });
+  for (const descriptor of descriptors) Object.assign(descriptor, { descriptor_position: positions[descriptor.digest] });
+  const fork_evidence = fork ? factsRecord({ kind: "sibling_descriptors", sibling_descriptors: [...new Set(siblings)].sort() }) : null;
+  return ok(factsRecord({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: [...new Set(siblings)].sort(), fork_evidence }));
 }
 
 function historyFailure(codes: string[]): Result<never> {
@@ -709,10 +716,10 @@ function descriptorViews(compacts: string[], settings: Settings = DEFAULT_SETTIN
     if (!chain.ok) return chain;
     histories.push(chain.value);
   }
-  return ok({ histories, descriptors: histories.flatMap((chain) => chain.descriptors),
+  return ok(factsRecord({ histories, descriptors: histories.flatMap((chain) => chain.descriptors),
     positions: Object.assign({}, ...histories.map((chain) => chain.positions)),
     siblingDescriptors: histories.flatMap((chain) => chain.siblingDescriptors),
-    topology: histories.some((chain) => chain.topology === "forked") ? "forked" : "linear" });
+    topology: histories.some((chain) => chain.topology === "forked") ? "forked" : "linear" }));
 }
 
 const EXTENSION_PROFILES = [
@@ -916,7 +923,7 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   const roles = value.parties.map((party: any) => party.role);
   if (new Set(roles).size !== roles.length || value.abp_bindings.some((binding: any) => !roles.includes(binding.party_role))) return fail("revision_invalid");
   const bytes = Buffer.from(text);
-  return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
+  return ok(factsRecord({ value, bytes, digest: taggedHash("charter_revision_content", bytes), protocol_revision: value.protocol_revision }));
 }
 
 function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
@@ -935,7 +942,7 @@ function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; di
   if (admission) return fail(admission);
   const signature = verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys);
   if (!signature.ok) return signature;
-  return ok({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
+  return ok(factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
 
 function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
@@ -953,7 +960,7 @@ function terminationFromCompact(compact: string, revision: { value: AnyRecord; d
   if (admission) return fail(admission);
   const signature = verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys);
   if (!signature.ok) return signature;
-  return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
+  return ok(factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
 
 // Chain-level structural checks mirroring Chain.verify: unique revision
@@ -1207,7 +1214,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   };
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
-  return ok({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId });
+  return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId }));
 }
 
 // Governing mirrors the reference semantics exactly: candidates are accepted,
@@ -1318,7 +1325,7 @@ function receiptFromCompact(compact: string, chain: any, settings: Settings = DE
     const unavailable = candidates.some((one: any) => !one.result.ok && one.result.code === "algorithm_unsupported_on_substrate");
     return fail(verifiedPublicKeys.size === 0 && unavailable ? "algorithm_unsupported_on_substrate" : "signature_invalid");
   }
-  return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
+  return ok(factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }));
 }
 
 function execute(one: ConformanceCase): CaseResult {
@@ -1682,7 +1689,7 @@ export function decodeArtifact(compact: string): VerifyResult {
   const decoded = decodeJws(compact);
   if (!decoded.ok) return { ok: false, code: decoded.code };
   const { header, payload } = decoded.value;
-  return { ok: true, facts: { alg: header.alg, kid: header.kid, typ: header.typ, payload } };
+  return { ok: true, facts: factsRecord({ alg: header.alg, kid: header.kid, typ: header.typ, payload, protocol_revision: payload.protocol_revision }, ["signature"]) };
 }
 
 // Strict signature verification over exact bytes with a base64url public
@@ -1710,12 +1717,13 @@ export function verifyDescriptor(
   const one = verified.value;
   return {
     ok: true,
-    facts: {
+    facts: factsRecord({
       descriptor_digest: one.digest,
-      party_id: one.digest,
+      party_id: one.payload.party_id ?? one.digest,
       descriptor_number: one.payload.descriptor_number,
       protocol_revision: one.payload.protocol_revision,
-    },
+      alg: one.header.alg,
+    }),
   };
 }
 
@@ -1737,7 +1745,7 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
   if (!chain.ok) return chain;
   const verified = acceptanceFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  return { ok: true, facts: { acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
+  return { ok: true, facts: factsRecord({ acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg }) };
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
@@ -1750,7 +1758,7 @@ export function verifyTermination(compact: string, revisionText: string, descrip
   if (!chain.ok) return chain;
   const verified = terminationFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  return { ok: true, facts: { termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
+  return { ok: true, facts: factsRecord({ termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg }) };
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
@@ -1768,12 +1776,14 @@ export function verifyReceipt(compact: string, chainInput: AnyRecord, options: V
   if (!verified.ok) return { ok: false, code: verified.code };
   return {
     ok: true,
-    facts: {
+    facts: factsRecord({
+      protocol_revision: verified.value.protocol_revision,
+      alg: verified.value.alg,
       receipt_digest: verified.value.digest,
       claims: verified.value.claims,
       governing_match: verified.value.governingMatch,
       chain_conflict: verified.value.chainConflict,
-    },
+    }),
   };
 }
 

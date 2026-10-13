@@ -956,3 +956,56 @@ test("T7 substrate diagnostics stay outside corpus verdict reports", () => {
     assert.throws(() => reportFor(join(here, "conformance")), /algorithm_unsupported_on_substrate/);
   } finally { capabilityProbe.run = saved; }
 });
+
+const REFERENCE_FLOOR = ["tenancy", "live_policy", "authority", "effect_ownership", "execution", "billing", "evaluation_truth", "legal_validity", "term_satisfaction", "view_completeness", "counterparty_view", "wall_clock"];
+
+function factSamples(): [string, Record<string, any>][] {
+  const samples: [string, Record<string, any>][] = [];
+  for (const [name, fn, args] of optionProbes()) {
+    const result = withOptions(fn, args, {});
+    assert.ok(result.ok);
+    samples.push([name, result.facts]);
+  }
+  const chain = verifyChain(corpusCase("governing_revision.json", "governing-revision-closed-by-termination").input);
+  assert.ok(chain.ok);
+  for (const name of ["revisions", "acceptances", "terminations"]) for (const record of chain.facts[name]) samples.push(["chain " + name, record]);
+  for (const history of chain.facts.descriptors.histories) {
+    samples.push(["nested history", history]);
+    for (const record of history.descriptors) samples.push(["nested descriptor", record]);
+  }
+  return samples;
+}
+
+test("T9 every facts record contains the reference floor", () => {
+  const floor = REFERENCE_FLOOR;
+  for (const [name, facts] of factSamples()) assert.deepEqual(facts.not_verified, floor, name);
+});
+
+test("T9 framing facts accumulate the unverified signature addition", () => {
+  const compact = optionProbes()[0][2][0] as string;
+  const decoded = decodeArtifact(compact);
+  assert.ok(decoded.ok);
+  assert.deepEqual(decoded.facts.not_verified, [...REFERENCE_FLOOR, "signature"]);
+});
+
+test("T10 facts retain protocol revision and signed algorithm names", () => {
+  for (const [name, facts] of factSamples()) {
+    assert.ok(Object.hasOwn(facts, "protocol_revision"), name);
+    if (facts.claims || facts.payload) {
+      assert.equal(facts.protocol_revision, (facts.claims ?? facts.payload).protocol_revision, name);
+      assert.equal(facts.alg, facts.header?.alg ?? "EdDSA", name);
+    }
+  }
+  for (const [file, id, verify] of [
+    ["party_descriptor-verify.json", "party-descriptor-genesis-valid", verifyDescriptor],
+    ["receipt-verify.json", "receipt-mldsa65-rev3-valid", verifyReceipt],
+  ] as const) {
+    const f = corpusCase(file, id).input;
+    const result = verify === verifyDescriptor ? verifyDescriptor(f.compact) : verifyReceipt(f.compact, f.chain);
+    assert.ok(result.ok);
+    const header = JSON.parse(Buffer.from(f.compact.split(".")[0], "base64url").toString());
+    const claims = JSON.parse(Buffer.from(f.compact.split(".")[1], "base64url").toString());
+    assert.equal(result.facts.alg, header.alg);
+    assert.equal(result.facts.protocol_revision, claims.protocol_revision);
+  }
+});
