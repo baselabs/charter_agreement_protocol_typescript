@@ -223,10 +223,11 @@ const NUMBER_TOKEN = /(?:-?(?:0|[1-9][0-9]*))(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y
 // Plain property access remains compatible with existing artifact consumers.
 const JSON_MEMBER_ORDER = new WeakMap<object, string[]>();
 
-function readJsonValue(text: string, index: number): JsonReader {
+function readJsonValue(text: string, index: number, limits: Limits, depth = 0): JsonReader {
   index = skipWhitespace(text, index);
   const char = text[index];
   if (char === undefined) return { status: "need-character" };
+  if ((char === "{" || char === "[") && depth + 1 > limits.max_depth) return { status: "error", code: "limit_exceeded" };
   if (char === "{") {
     const members = new Map<string, unknown>();
     let duplicate = false;
@@ -236,9 +237,10 @@ function readJsonValue(text: string, index: number): JsonReader {
       if (text[cursor] !== '"') return { status: "syntax" };
       const key = readJsonString(text, cursor);
       if (key.status !== "ok") return key;
+      if (members.size >= limits.max_object_members || Buffer.byteLength(key.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
       cursor = skipWhitespace(text, key.index);
       if (text[cursor] !== ":") return { status: "syntax" };
-      const item = readJsonValue(text, skipWhitespace(text, cursor + 1));
+      const item = readJsonValue(text, skipWhitespace(text, cursor + 1), limits, depth + 1);
       if (item.status !== "ok") return item;
       duplicate ||= members.has(key.value);
       members.set(key.value, item.value);
@@ -258,7 +260,8 @@ function readJsonValue(text: string, index: number): JsonReader {
     let cursor = skipWhitespace(text, index + 1);
     if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
     for (;;) {
-      const item = readJsonValue(text, cursor);
+      if (items.length >= limits.max_array_items) return { status: "error", code: "limit_exceeded" };
+      const item = readJsonValue(text, cursor, limits, depth + 1);
       if (item.status !== "ok") return item;
       items.push(item.value);
       cursor = skipWhitespace(text, item.index);
@@ -269,6 +272,7 @@ function readJsonValue(text: string, index: number): JsonReader {
   }
   if (char === '"') {
     const string = readJsonString(text, index);
+    if (string.status === "ok" && Buffer.byteLength(string.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
     return string.status === "ok" ? { status: "ok", value: string.value, index: string.index } : string;
   }
   for (const [literal, value] of [["true", true], ["false", false], ["null", null]] as [string, boolean | null][]) {
@@ -329,23 +333,33 @@ function skipWhitespace(text: any, index: any) {
   return index;
 }
 
-export function decodeJsonText(text: string): Result<CanonicalValue> {
-  const value = readJsonValue(text, 0);
+export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Result<CanonicalValue> {
+  if (!validLimits(selected)) return fail("invalid_limits");
+  if (typeof text !== "string") return fail("invalid_type");
+  const limits = { ...DEFAULT_LIMITS, ...selected };
+  if (Buffer.byteLength(text) > limits.max_bytes) return fail("limit_exceeded");
+  const value = readJsonValue(text, 0, limits);
   if (value.status === "need-character" || value.status === "syntax") return fail("invalid_syntax");
   if (value.status === "error") return fail(value.code as string);
   if (value.index === undefined || skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
   return ok(value.value as CanonicalValue);
 }
 
-function decodeJsonBytes(bytes: Buffer): Result<CanonicalValue> {
+function decodeJsonBytes(bytes: Buffer, limits: Limits = DEFAULT_LIMITS): Result<CanonicalValue> {
   try {
-    return decodeJsonText(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (bytes.length > limits.max_bytes) return fail("limit_exceeded");
+    return decodeJsonText(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), limits);
   } catch (_error) {
     return fail("invalid_encoding");
   }
 }
 
-const JSON_DEFAULT_LIMITS = {
+export type Limits = {
+  max_bytes: number; max_depth: number; max_object_members: number; max_array_items: number; max_string_bytes: number; max_artifact_set_items: number; max_artifact_set_bytes: number;
+};
+export type VerificationOptions = { limits?: Partial<Limits>; profile?: { algorithms: string[]; revisions: { min: number; max: number } } };
+
+export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   max_bytes: 1_048_576,
   max_depth: 64,
   max_object_members: 1_024,
@@ -353,11 +367,12 @@ const JSON_DEFAULT_LIMITS = {
   max_string_bytes: 65_536,
   max_artifact_set_items: 1_024,
   max_artifact_set_bytes: 67_108_864,
-};
+});
+const JSON_DEFAULT_LIMITS = DEFAULT_LIMITS;
 
 // The compiled maximums mirror lib/charter_agreement_protocol/limits.ex: the
 // greatest caller-selectable value per field, not the defaults.
-const LIMIT_MAXIMUMS = {
+export const MAXIMUM_LIMITS: Readonly<Limits> = Object.freeze({
   max_bytes: 16_777_216,
   max_depth: 128,
   max_object_members: 65_536,
@@ -365,13 +380,14 @@ const LIMIT_MAXIMUMS = {
   max_string_bytes: 1_048_576,
   max_artifact_set_items: 4_096,
   max_artifact_set_bytes: 1_073_741_824,
-};
+});
+const LIMIT_MAXIMUMS = MAXIMUM_LIMITS;
 
 function validLimits(selected: AnyRecord): boolean {
-  if (typeof selected !== "object" || selected === null) return false;
+  if (!isRecord(selected)) return false;
   const maximums: Record<string, number> = LIMIT_MAXIMUMS;
   return Object.entries(selected).every(([name, value]) =>
-    name in maximums && Number.isInteger(value) && value >= 0 && value <= maximums[name]
+    Object.hasOwn(maximums, name) && Number.isInteger(value) && value >= 0 && value <= maximums[name]
   );
 }
 
@@ -420,37 +436,30 @@ export function jsonProjection(value: any): Projection {
 
 const PROTECTED_MEMBERS = ["alg", "kid", "typ"];
 
-function decodeJws(compact: unknown): Result<{ header: Record<string, string>; payload: AnyRecord; payloadBytes: Buffer; signature: Buffer; signingInput: Buffer }> {
+function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTyp?: string): Result<{ header: Record<string, string>; payload: AnyRecord; payloadBytes: Buffer; signature: Buffer; signingInput: Buffer }> {
   if (typeof compact !== "string") return fail("compact_invalid");
-  if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return fail("limit_exceeded");
+  if (Buffer.byteLength(compact) > limits.max_bytes) return fail("limit_exceeded");
   const segments = compact.split(".");
   if (segments.length !== 3) return fail("compact_invalid");
-  const decoded = segments.map(strictBase64url);
-  if (decoded.some((one) => !one.ok)) return fail("compact_invalid");
-  const headerBytes = (decoded[0] as { ok: true; value: Buffer }).value;
-  const payloadBytes = (decoded[1] as { ok: true; value: Buffer }).value;
-  // Strict I-JSON decode under the default ceilings — the reference verifier
-  // never hands raw JSON.parse bytes; every header/payload failure maps to the
-  // framing-layer code the reference decoder emits for that segment.
-  const headerValue = decodeJsonBytes(headerBytes);
-  if (!headerValue.ok) return fail("protected_header_invalid");
-  const payloadValue = decodeJsonBytes(payloadBytes);
-  if (!payloadValue.ok) return fail("non_canonical_bytes");
+  const protectedBytes = strictBase64url(segments[0]);
+  const payloadBytes = strictBase64url(segments[1]);
+  const signatureBytes = strictBase64url(segments[2]);
+  if (!protectedBytes.ok || !payloadBytes.ok) return fail("compact_invalid");
+  if (!signatureBytes.ok) return fail("signature_invalid");
+  const headerValue = decodeJsonBytes(protectedBytes.value, limits);
+  if (!headerValue.ok || !isRecord(headerValue.value) || canonical(headerValue.value) !== protectedBytes.value.toString()) return fail("protected_header_invalid");
   const header = headerValue.value as Record<string, string>;
-  const payload = payloadValue.value as Record<string, unknown>;
-  const headerKeys = Object.keys(header);
-  if (headerKeys.length !== 3 || PROTECTED_MEMBERS.some((member) => !headerKeys.includes(member))) {
-    return fail("protected_header_invalid");
-  }
-  if (canonical(header as unknown as CanonicalValue) !== headerBytes.toString() || canonical(payload as unknown as CanonicalValue) !== payloadBytes.toString()) return fail("non_canonical_bytes");
-  const revision: unknown = payload.protocol_revision;
-  if (typeof revision !== "number" || !Number.isInteger(revision) || !algBinds(header.alg, revision)) return fail("protected_header_invalid");
-  // Per-row signature length: checked only after the header names the
-  // algorithm (64 for the classical rows, 2420/3309/4627 for ML-DSA).
-  const row = ALG_ROWS.find((one) => one.name === header.alg);
-  const signature = (decoded[2] as { ok: true; value: Buffer }).value;
-  if (!row || signature.length !== row.signatureBytes) return fail("signature_invalid");
-  return ok({ header, payload, payloadBytes, signature, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
+  if (!exactKeys(header, PROTECTED_MEMBERS) || typeof header.alg !== "string" || !ALG_ROWS.some((row) => row.name === header.alg) ||
+      typeof header.typ !== "string" || (expectedTyp !== undefined && header.typ !== expectedTyp) ||
+      typeof header.kid !== "string" || !/^[A-Za-z0-9._~-]{1,128}$/.test(header.kid)) return fail("protected_header_invalid");
+  const payloadValue = decodeJsonBytes(payloadBytes.value, limits);
+  if (!payloadValue.ok || canonical(payloadValue.value) !== payloadBytes.value.toString()) return fail("non_canonical_bytes");
+  if (!isRecord(payloadValue.value)) return fail("protected_header_invalid");
+  const payload = payloadValue.value as AnyRecord;
+  if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
+  const row = ALG_ROWS.find((one) => one.name === header.alg)!;
+  if (signatureBytes.value.length !== row.signatureBytes) return fail("signature_invalid");
+  return ok({ header, payload, payloadBytes: payloadBytes.value, signature: signatureBytes.value, signingInput: Buffer.from(`${segments[0]}.${segments[1]}`) });
 }
 
 const ED25519_FIELD_PRIME = 2n ** 255n - 19n;
@@ -572,8 +581,8 @@ function compareTimestamps(left: { ticks: number; fraction: string }, right: { t
   return paddedLeft < paddedRight ? -1 : 1;
 }
 
-function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord } | null = null) {
-  const decoded = decodeJws(compact);
+function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord } | null = null, settings: Settings = DEFAULT_SETTINGS) {
+  const decoded = decodeJws(compact, settings.limits, "cap+party");
   if (!decoded.ok) return decoded;
   const payload = decoded.value.payload;
   const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
@@ -584,7 +593,6 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
     one.key_id === decoded.value.header.kid && keyMatchesRow(one, descriptorRow)
   );
   if (!resolved) return fail("descriptor_key_invalid");
-  if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
   if (!parseTimestamp(payload.effective_from)) {
     return fail("timestamp_invalid");
   }
@@ -594,6 +602,9 @@ function descriptorFromCompact(compact: string, predecessor: { digest: string; p
   } else if (!predecessor || payload.prev_descriptor_digest !== predecessor.digest || payload.descriptor_number !== predecessor.payload.descriptor_number + 1 || payload.party_id !== (predecessor.payload.party_id ?? predecessor.digest)) {
     return fail("descriptor_chain_invalid");
   }
+  const admission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
+  if (admission) return fail(admission);
+  if (!verifyDecodedJws(decoded.value, "cap+party", keys)) return fail("signature_invalid");
   return ok({ ...decoded.value, digest, compact });
 }
 
@@ -626,53 +637,61 @@ function keyGrammarError(payload: AnyRecord): string | null {
   return null;
 }
 
-function descriptorChain(compacts: string[]) {
+function descriptorChain(compacts: string[], settings: Settings = DEFAULT_SETTINGS) {
   if (!Array.isArray(compacts) || compacts.length === 0) return fail("descriptor_chain_invalid");
-  const pending = [...compacts];
-  const descriptors = [];
-  while (pending.length > 0) {
-    let progressed = false;
-    for (let index = pending.length - 1; index >= 0; index -= 1) {
-      const decoded = decodeJws(pending[index]);
-      if (!decoded.ok) return fail("descriptor_chain_invalid");
-      const prev = decoded.value.payload.prev_descriptor_digest;
-      const predecessor = prev ? descriptors.find((one) => one.digest === prev) : null;
-      if (prev && !predecessor) continue;
-      const verified = descriptorFromCompact(pending[index], predecessor);
-      if (!verified.ok) return fail("descriptor_chain_invalid");
-      descriptors.push(verified.value);
-      pending.splice(index, 1);
-      progressed = true;
-    }
-    if (!progressed) return fail("descriptor_chain_invalid");
+  if (compacts.length > settings.limits.max_artifact_set_items) return fail("limit_exceeded");
+  const entries = [];
+  for (const compact of compacts) {
+    const decoded = decodeJws(compact, settings.limits, "cap+party");
+    if (!decoded.ok || descriptorClaimsError(decoded.value.payload)) return fail("descriptor_chain_invalid");
+    entries.push({ compact, digest: taggedHash("party_descriptor_content", decoded.value.payloadBytes), payload: decoded.value.payload });
   }
-  if (new Set(descriptors.map((one) => one.digest)).size !== descriptors.length ||
-      descriptors.filter((one) => one.payload.descriptor_number === 1).length !== 1 ||
-      new Set(descriptors.map((one) => one.payload.party_id ?? one.digest)).size !== 1) return fail("descriptor_chain_invalid");
-  const children = new Map();
-  for (const descriptor of descriptors) {
-    const prev = descriptor.payload.prev_descriptor_digest;
-    if (prev) children.set(prev, [...(children.get(prev) || []), descriptor.digest]);
+  const roots = entries.filter((entry) => entry.payload.descriptor_number === 1);
+  if (roots.length !== 1 || new Set(entries.map((entry) => entry.digest)).size !== entries.length) return fail("descriptor_chain_invalid");
+  const root = descriptorFromCompact(roots[0].compact, null, settings);
+  if (!root.ok) return historyFailure([root.code]);
+  const descriptors = [root.value];
+  const children = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const prev = entry.payload.prev_descriptor_digest;
+    if (prev) children.set(prev, [...(children.get(prev) ?? []), entry]);
   }
-  const siblings: string[] = [...children.values()].filter((values) => values.length > 1).flat();
+  for (let i = 0; i < descriptors.length; i++) {
+    const siblings = children.get(descriptors[i].digest) ?? [];
+    const results = siblings.map((entry) => descriptorFromCompact(entry.compact, descriptors[i], settings));
+    const failures = results.filter((result) => !result.ok).map((result) => result.code);
+    if (failures.length > 0) return historyFailure(failures);
+    for (const result of results) if (result.ok) descriptors.push(result.value);
+  }
+  if (descriptors.length !== entries.length) return fail("descriptor_chain_invalid");
+  const siblings = [...children.values()].filter((group) => group.length > 1).flat().map((entry) => entry.digest);
   const fork = siblings.length > 0;
+  descriptors.sort((a, b) => a.payload.descriptor_number - b.payload.descriptor_number || a.digest.localeCompare(b.digest));
   const positions = Object.fromEntries(descriptors.map((one) => [one.digest, fork ? "contested" : (children.has(one.digest) ? "superseded" : "head")]));
   return ok({ descriptors, topology: fork ? "forked" : "linear", positions, siblingDescriptors: [...new Set(siblings)].sort() });
 }
 
-function descriptorViews(compacts: string[]) {
+function historyFailure(codes: string[]): Result<never> {
+  const ordered = ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"];
+  if (codes.some((code) => !ordered.includes(code))) return fail("descriptor_chain_invalid");
+  return fail(ordered.find((code) => codes.includes(code))!);
+}
+
+function descriptorViews(compacts: string[], settings: Settings = DEFAULT_SETTINGS) {
   if (!Array.isArray(compacts)) return fail("chain_invalid");
   const groups = new Map<string, string[]>();
   for (const compact of compacts) {
-    const decoded = decodeJws(compact);
+    const decoded = decodeJws(compact, settings.limits, "cap+party");
     if (!decoded.ok) return decoded;
+    const shape = descriptorClaimsError(decoded.value.payload);
+    if (shape) return fail(shape);
     const id = decoded.value.payload.party_id ?? taggedHash("party_descriptor_content", decoded.value.payloadBytes);
     groups.set(id, [...(groups.get(id) ?? []), compact]);
   }
   if (groups.size !== 2) return fail("chain_invalid");
   const histories = [];
   for (const id of [...groups.keys()].sort()) {
-    const chain = descriptorChain(groups.get(id)!);
+    const chain = descriptorChain(groups.get(id)!, settings);
     if (!chain.ok) return chain;
     histories.push(chain.value);
   }
@@ -682,8 +701,6 @@ function descriptorViews(compacts: string[]) {
     topology: histories.some((chain) => chain.topology === "forked") ? "forked" : "linear" });
 }
 
-const REVISION_FIELDS = ["abp_bindings", "attribution_declaration", "charter_id", "effective_from", "effective_until", "extensions", "legal_text", "parties", "precedence_declaration", "prev_revision_digest", "protocol_revision", "receipt_profile", "revision_number", "supersedes", "termination_rules"];
-const REVISION_REQUIRED = ["abp_bindings", "attribution_declaration", "effective_from", "extensions", "legal_text", "parties", "precedence_declaration", "protocol_revision", "receipt_profile", "revision_number", "termination_rules"];
 const EXTENSION_PROFILES = [
   { namespace: "com.example/pricing-indexed", owner: "Example Charter Profiles", criticality: "critical", state: "active", schema_digest: "sha-256:W88CU79l5r7YYCv2vuUTELifnM4GDKfbZPULSpDgQ2Y", a2a_uri: "https://example.com/charter-profiles/pricing-indexed", promoted_at_revision: null, surface: "charter_revision" },
   { namespace: "com.example/pricing-indexed-observation", owner: "Example Charter Profiles", criticality: "optional", state: "active", schema_digest: "sha-256:6e4emU-CATXhAVFi9XaIIZUzZbCAQBcGkVwJpkZzWk8", a2a_uri: "https://example.com/charter-profiles/pricing-indexed-observation", promoted_at_revision: null, surface: "receipt" },
@@ -860,9 +877,9 @@ function validTaggedDigest(value: string): boolean {
   return digestPattern(value) && strictBase64url(value.slice(8)).ok;
 }
 
-function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
+function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
   if (typeof text !== "string") return fail("revision_invalid");
-  const decoded = decodeJsonText(text);
+  const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
   if (canonical(decoded.value) !== text) return fail("non_canonical_bytes");
   const value = decoded.value as AnyRecord;
@@ -888,32 +905,38 @@ function revisionFromText(text: unknown): Result<{ value: AnyRecord; bytes: Buff
   return ok({ value, bytes, digest: taggedHash("charter_revision_content", bytes) });
 }
 
-function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }) {
-  const decoded = decodeJws(compact);
+function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+  const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
   const acceptanceShape = acceptanceClaimsError(claims);
   if (acceptanceShape) return fail(acceptanceShape);
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
-  if (!descriptor || !verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
+  if (!descriptor) return fail("acceptance_claims_mismatch");
+  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (admission) return fail(admission);
+  if (!verifyDecodedJws(decoded.value, "cap+acceptance", descriptor.payload.verification_keys)) return fail("signature_invalid");
   return ok({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
-function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }) {
-  const decoded = decodeJws(compact);
+function terminationFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+  const decoded = decodeJws(compact, settings.limits, "cap+termination");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
   const terminationShape = terminationClaimsError(claims);
   if (terminationShape) return fail(terminationShape);
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
-  if (!descriptor || !verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys)) return fail("signature_invalid");
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
   if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
+  if (!descriptor) return fail("termination_claims_mismatch");
+  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (admission) return fail(admission);
+  if (!verifyDecodedJws(decoded.value, "cap+termination", descriptor.payload.verification_keys)) return fail("signature_invalid");
   return ok({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest] });
 }
 
@@ -1035,64 +1058,59 @@ function parseProfile(spec: AnyRecord | undefined):
   return { ok: true, algorithms, minRevision, maxRevision };
 }
 
-// "ok" | "algorithm" | "revision" | "invalid_type" | "invalid_profile" |
-// "decode": the admission walk mirrors the reference Chain.verify STAGE
-// order (descriptors, then revisions, then acceptances and terminations),
-// so a view whose defects are in different stages reports the same stage
-// in both implementations. Within one stage, admission defects are
-// decided before signature work here exactly as there. A view with BOTH a
-// structural defect and an admission defect in the SAME stage may differ
-// (this mirror reports the admission code; the reference reports the
-// structural one) — no certified corpus case carries that shape.
-function admitView(input: AnyRecord):
-  "ok" | "algorithm" | "revision" | "invalid_type" | "invalid_profile" | "decode" {
-  const profile = parseProfile(input.profile);
-  if (!profile.ok) return profile.code;
+type ParsedProfile = { algorithms: string[]; minRevision: number; maxRevision: number };
+type Settings = { limits: Limits; profile: ParsedProfile };
+const DEFAULT_SETTINGS: Settings = { limits: DEFAULT_LIMITS, profile: { algorithms: ALG_ROWS.map((row) => row.name), minRevision: 1, maxRevision: 3 } };
 
-  const admitEnvelope = (compact: unknown): "ok" | "algorithm" | "revision" | "decode" => {
-    const decoded = decodeJws(compact);
-    if (!decoded.ok) return "decode";
-    const revision = decoded.value.payload.protocol_revision;
-    if (typeof revision !== "number") return "decode";
-    if (!profile.algorithms.includes(decoded.value.header.alg)) return "algorithm";
-    if (revision < profile.minRevision || revision > profile.maxRevision) return "revision";
-    return "ok";
-  };
-
-  for (const compact of Array.isArray(input.descriptors) ? input.descriptors : []) {
-    const outcome = admitEnvelope(compact);
-    if (outcome !== "ok") return outcome;
-  }
-
-  for (const text of Array.isArray(input.revisions) ? input.revisions : []) {
-    let parsed: unknown;
-    try { parsed = JSON.parse(text as string); } catch (_error) { return "decode"; }
-    if (typeof parsed !== "object" || parsed === null) return "decode";
-    const revision = (parsed as AnyRecord).protocol_revision;
-    if (typeof revision !== "number") return "decode";
-    if (revision < profile.minRevision || revision > profile.maxRevision) return "revision";
-  }
-
-  for (const compact of [
-    ...(Array.isArray(input.acceptances) ? input.acceptances : []),
-    ...(Array.isArray(input.terminations) ? input.terminations : []),
-  ]) {
-    const outcome = admitEnvelope(compact);
-    if (outcome !== "ok") return outcome;
-  }
-
-  return "ok";
+function resolveOptions(options: VerificationOptions = {}): Result<Settings> {
+  if (!isRecord(options) || (options.limits !== undefined && !validLimits(options.limits))) return fail("invalid_limits");
+  if (options.profile !== undefined && (!isRecord(options.profile) || Object.keys(options.profile).some((key) => key !== "algorithms" && key !== "revisions"))) return fail("invalid_profile");
+  const profile = parseProfile(options.profile);
+  if (!profile.ok) return fail("invalid_profile");
+  return ok({ limits: { ...DEFAULT_LIMITS, ...options.limits }, profile });
 }
 
-function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
+function profileError(alg: string | null, revision: number, settings: Settings): string | null {
+  if (alg !== null && !settings.profile.algorithms.includes(alg)) return "algorithm_outside_profile";
+  if (revision < settings.profile.minRevision || revision > settings.profile.maxRevision) return "revision_outside_profile";
+  return null;
+}
+
+function boundedArtifacts(lists: unknown[], limits: Limits): string | null {
+  let bytes = 0;
+  for (const list of lists) {
+    if (!Array.isArray(list)) return "invalid_type";
+    for (let i = 0; i < list.length; i++) {
+      if (i >= limits.max_artifact_set_items) return "limit_exceeded";
+      if (typeof list[i] !== "string") return "invalid_type";
+    }
+    bytes += list.reduce((total, text) => total + Buffer.byteLength(text), 0);
+    if (bytes > limits.max_artifact_set_bytes) return "limit_exceeded";
+  }
+  return null;
+}
+
+function chainWithOptions(input: AnyRecord, options: VerificationOptions = {}): ReturnType<typeof chainFromInput> {
+  const settings = resolveOptions(options);
+  return settings.ok ? chainFromInput(input, settings.value) : settings;
+}
+
+function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
+  if (!isRecord(input)) return fail("chain_invalid");
+  const bounded = boundedArtifacts([input.revisions, input.acceptances ?? [], input.descriptors, input.terminations ?? []], settings.limits);
+  if (bounded) return fail(bounded);
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
-  const descriptors = descriptorViews(input.descriptors);
-  if (!descriptors.ok) return fail("chain_invalid");
+  const descriptors = descriptorViews(input.descriptors, settings);
+  if (!descriptors.ok) return descriptors;
   const revisions = [];
   for (const text of input.revisions) {
-    const revision = revisionFromText(text);
-    if (!revision.ok) return fail("chain_invalid");
+    const revision = revisionFromText(text, settings.limits);
+    if (!revision.ok) return revision;
     revisions.push(revision.value);
+  }
+  for (const revision of revisions) {
+    const admission = profileError(null, revision.value.protocol_revision, settings);
+    if (admission) return fail(admission);
   }
   const byDigest = new Map(revisions.map((one) => [one.digest, one]));
   if (byDigest.size !== revisions.length) return fail("chain_invalid");
@@ -1118,26 +1136,16 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
   const acceptances: any[] = [];
   const coordinates = new Set();
   for (const compact of ((input.acceptances as string[]) || [])) {
-    const decoded = decodeJws(compact);
-    if (!decoded.ok) return fail("chain_invalid");
+    const decoded = decodeJws(compact, settings.limits);
+    if (!decoded.ok) return decoded;
     const revision = byDigest.get(decoded.value.payload.revision_digest);
     if (!revision) return fail("chain_invalid");
-    const verified = acceptanceFromCompact(compact, revision, descriptors.value);
-    if (!verified.ok) return fail("chain_invalid");
+    const verified = acceptanceFromCompact(compact, revision, descriptors.value, settings);
+    if (!verified.ok) return verified;
     const coordinate = `${verified.value.claims.revision_digest}\0${verified.value.claims.party_descriptor_digest}\0${verified.value.claims.party_role}`;
     if (coordinates.has(coordinate)) return fail("chain_invalid");
     coordinates.add(coordinate);
     acceptances.push(verified.value);
-  }
-  const terminations: any[] = [];
-  for (const compact of ((input.terminations as string[]) || [])) {
-    const decoded = decodeJws(compact);
-    if (!decoded.ok) return fail("chain_invalid");
-    const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
-    if (!revision) return fail("chain_invalid");
-    const verified = terminationFromCompact(compact, revision, descriptors.value);
-    if (!verified.ok) return fail("chain_invalid");
-    terminations.push(verified.value);
   }
   const accepted = revisions.filter((revision) => {
     const expected = new Set(revision.value.parties.map((party: any) => `${party.party_descriptor_digest}\0${party.role}`));
@@ -1148,6 +1156,18 @@ function chainFromInput(input: AnyRecord): Result<{ descriptors: any; revisions:
     for (const entry of [...expected] as string[]) if (!actual.has(entry)) return false;
     return true;
   });
+  const acceptedSet = new Set(accepted.map((one) => one.digest));
+  if (accepted.some((one) => (one.value.supersedes ?? []).some((digest: string) => !acceptedSet.has(digest)))) return fail("chain_invalid");
+  const terminations: any[] = [];
+  for (const compact of ((input.terminations as string[]) || [])) {
+    const decoded = decodeJws(compact, settings.limits);
+    if (!decoded.ok) return decoded;
+    const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
+    if (!revision) return fail("chain_invalid");
+    const verified = terminationFromCompact(compact, revision, descriptors.value, settings);
+    if (!verified.ok) return verified;
+    terminations.push(verified.value);
+  }
   const superseded = new Set(accepted.flatMap((one) => one.value.supersedes || []));
   const active = accepted.filter((one) => !superseded.has(one.digest));
   const maximum = Math.max(...active.map((one) => one.value.revision_number));
@@ -1261,24 +1281,26 @@ function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
   return [...new Map(keys.map((key: any) => [canonical(key), key])).values()];
 }
 
-function receiptFromCompact(compact: string, chain: any) {
-  const decoded = decodeJws(compact);
+function receiptFromCompact(compact: string, chain: any, settings: Settings = DEFAULT_SETTINGS) {
+  const decoded = decodeJws(compact, settings.limits, "cap+receipt");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
   const receiptShape = receiptGrantError(claims);
   if (receiptShape) return fail(receiptShape);
   const claimedRevision = chain.accepted.find((one: any) => one.digest === claims.revision_digest);
+  const receiptTiming = receiptTimingError(claims);
+  if (receiptTiming) return fail(receiptTiming);
+  const governingDigest = governing(chain, parseTimestamp(claims.occurred_at)!);
+  const projection = projectReceipt(claims, chain, governingDigest);
+  if (!projection.ok) return projection;
+  const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
+  if (admission) return fail(admission);
   const verifiedPublicKeys = new Set(
     receiptSigningKeys(chain, claimedRevision, claims.issuing_party_role)
       .filter((key: any) => verifyDecodedJws(decoded.value, "cap+receipt", [key]))
       .map((key: any) => key.public_key)
   );
   if (verifiedPublicKeys.size !== 1) return fail("signature_invalid");
-  const receiptTiming = receiptTimingError(claims);
-  if (receiptTiming) return fail(receiptTiming);
-  const governingDigest = governing(chain, parseTimestamp(claims.occurred_at)!);
-  const projection = projectReceipt(claims, chain, governingDigest);
-  if (!projection.ok) return projection;
   return ok({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort() });
 }
 
@@ -1291,7 +1313,7 @@ function execute(one: ConformanceCase): CaseResult {
       if (!("text" in input) && !("bytes_base64url" in input)) return invalid("invalid_type");
       if (input.limits !== undefined && !validLimits(input.limits)) return invalid("invalid_limits");
       const bytes = "text" in input ? Buffer.from(input.text as string) : Buffer.from(input.bytes_base64url as string, "base64url");
-      const decoded = decodeJsonBytes(bytes);
+      const decoded = decodeJsonBytes(bytes, { ...DEFAULT_LIMITS, ...input.limits });
       if (!decoded.ok) return invalid(decoded.code);
       return project(jsonWithinLimits(decoded.value, bytes, input.limits), jsonProjection);
     }
@@ -1371,29 +1393,17 @@ function execute(one: ConformanceCase): CaseResult {
       return project(terminationFromCompact(input.compact, revision.value, chain.value), (facts) => ({ termination_digest: facts.digest, governing_revision_digest: facts.claims.governing_revision_digest, party_descriptor_digest: facts.claims.party_descriptor_digest, reason_code: facts.claims.reason_code, descriptor_position: facts.descriptorPosition }));
     }
     case "chain.verify": {
-      const chain = chainFromInput(input);
+      const chain = chainWithOptions(input, { limits: input.limits });
       return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology, accepted_revision_digests: facts.acceptedDigests, superseded_revision_digests: facts.supersededDigests }));
     }
     case "chain.verify_profile": {
-      // The capability-profile mirror. The admission walk mirrors the
-      // reference Chain.verify STAGE order (descriptors, then revisions,
-      // then acceptances and terminations), so a view whose defects are in
-      // different stages reports the same stage in both implementations.
-      // Within one stage, admission defects are decided before signature
-      // work here exactly as there. A view with BOTH a structural defect
-      // and an admission defect in the SAME stage may differ (this mirror
-      // reports the admission code; the reference reports the structural
-      // one) — no certified corpus case carries that shape.
-      const admission = admitView(input);
-      if (admission === "algorithm") return invalid("algorithm_outside_profile");
-      if (admission === "revision") return invalid("revision_outside_profile");
-      if (admission === "invalid_type") return invalid("invalid_type");
-      if (admission === "invalid_profile") return invalid("invalid_profile");
-      const chain = chainFromInput(input);
+      const profile = parseProfile(input.profile);
+      if (!profile.ok) return invalid(profile.code);
+      const chain = chainWithOptions(input, { profile: input.profile });
       return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology }));
     }
     case "governing_revision": {
-      const chain = chainFromInput(input);
+      const chain = chainWithOptions(input, { limits: input.limits });
       if (!chain.ok) return invalid("governing_invalid");
       return valid({
         governing_revisions: input.queries.map((query: any) => {
@@ -1403,7 +1413,7 @@ function execute(one: ConformanceCase): CaseResult {
       });
     }
     case "receipt.verify": {
-      const chain = chainFromInput(input.chain);
+      const chain = chainWithOptions(input.chain, { limits: input.chain.limits });
       if (!chain.ok) return invalid("receipt_invalid");
       return project(receiptFromCompact(input.compact, chain.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
     }
@@ -1659,7 +1669,9 @@ export function decodeArtifact(compact: string): VerifyResult {
 
 // Strict signature verification over exact bytes with a base64url public
 // key under the registry row for `alg` — the wrong-key guard primitive.
-export function verifySignature(message: Buffer, signature: Buffer, publicKeyBase64url: string, alg: string): boolean {
+export function verifySignature(message: Buffer, signature: Buffer, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
+  const settings = resolveOptions(options);
+  if (!settings.ok || !settings.value.profile.algorithms.includes(alg) || message.length > settings.value.limits.max_bytes) return false;
   const row = ALG_ROWS.find((one) => one.name === alg);
   if (!row) return false;
   const key = Buffer.from(publicKeyBase64url, "base64url");
@@ -1671,8 +1683,11 @@ export function verifySignature(message: Buffer, signature: Buffer, publicKeyBas
 export function verifyDescriptor(
   compact: string,
   predecessor: { digest: string; claims: AnyRecord } | null = null,
+  options: VerificationOptions = {},
 ): VerifyResult {
-  const verified = descriptorFromCompact(compact, predecessor ? { digest: predecessor.digest, payload: predecessor.claims } : null);
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const verified = descriptorFromCompact(compact, predecessor ? { digest: predecessor.digest, payload: predecessor.claims } : null, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   const one = verified.value;
   return {
@@ -1686,40 +1701,52 @@ export function verifyDescriptor(
   };
 }
 
-export function verifyDescriptorChain(compacts: string[]): VerifyResult {
-  const verified = descriptorChain(compacts);
+export function verifyDescriptorChain(compacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const verified = descriptorChain(compacts, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   return { ok: true, facts: verified.value };
 }
 
-export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[]): VerifyResult {
-  const revision = revisionFromText(revisionText);
-  const chain = descriptorChain(descriptorCompacts);
-  if (!revision.ok || !chain.ok) return { ok: false, code: "acceptance_invalid" };
-  const verified = acceptanceFromCompact(compact, revision.value, chain.value);
+export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const contextSettings = { ...DEFAULT_SETTINGS, limits: settings.value.limits };
+  const revision = revisionFromText(revisionText, settings.value.limits);
+  if (!revision.ok) return revision;
+  const chain = descriptorChain(descriptorCompacts, contextSettings);
+  if (!chain.ok) return chain;
+  const verified = acceptanceFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   return { ok: true, facts: { acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
 }
 
-export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[]): VerifyResult {
-  const revision = revisionFromText(revisionText);
-  const chain = descriptorChain(descriptorCompacts);
-  if (!revision.ok || !chain.ok) return { ok: false, code: "termination_invalid" };
-  const verified = terminationFromCompact(compact, revision.value, chain.value);
+export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const contextSettings = { ...DEFAULT_SETTINGS, limits: settings.value.limits };
+  const revision = revisionFromText(revisionText, settings.value.limits);
+  if (!revision.ok) return revision;
+  const chain = descriptorChain(descriptorCompacts, contextSettings);
+  if (!chain.ok) return chain;
+  const verified = terminationFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   return { ok: true, facts: { termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition } };
 }
 
-export function verifyChain(chainInput: AnyRecord): VerifyResult {
-  const verified = chainFromInput(chainInput);
+export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
+  const verified = chainWithOptions(chainInput, options);
   if (!verified.ok) return { ok: false, code: verified.code };
   return { ok: true, facts: verified.value };
 }
 
-export function verifyReceipt(compact: string, chainInput: AnyRecord): VerifyResult {
-  const chain = chainFromInput(chainInput);
-  if (!chain.ok) return { ok: false, code: "receipt_invalid" };
-  const verified = receiptFromCompact(compact, chain.value);
+export function verifyReceipt(compact: string, chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const chain = chainFromInput(chainInput, { ...DEFAULT_SETTINGS, limits: settings.value.limits });
+  if (!chain.ok) return chain;
+  const verified = receiptFromCompact(compact, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
   return {
     ok: true,
@@ -1826,27 +1853,29 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
 
 // The unique governing revision in a verified view at one UTC instant -
 // a digest, or "contested"/"none" (never silently resolved).
-export function governingRevision(chainInput: AnyRecord, at: string): { ok: true; governing: string } | { ok: false; code: string } {
+export function governingRevision(chainInput: AnyRecord, at: string, options: VerificationOptions = {}): { ok: true; governing: string } | { ok: false; code: string } {
   const instant = typeof at === "string" ? parseTimestamp(at) : null;
   if (!instant) return { ok: false, code: "invalid_type" };
   if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) {
     return { ok: false, code: "signing_input_invalid" };
   }
-  const chain = chainFromInput(chainInput);
-  if (!chain.ok) return { ok: false, code: "chain_invalid" };
+  const chain = chainWithOptions(chainInput, options);
+  if (!chain.ok) return chain.code === "invalid_type" ? fail("chain_invalid") : chain;
   return { ok: true, governing: governing(chain.value, instant) };
 }
 
 // Decode one canonical unsigned Charter Revision: the parsed claims plus
 // its content digest, computed over the exact text bytes.
-export function decodeCharterRevision(text: unknown): { ok: true; revision: AnyRecord; digest: string } | { ok: false; code: string } {
-  const revision = revisionFromText(text);
+export function decodeCharterRevision(text: unknown, options: VerificationOptions = {}): { ok: true; revision: AnyRecord; digest: string } | { ok: false; code: string } {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const revision = revisionFromText(text, settings.value.limits);
   if (!revision.ok) return { ok: false, code: revision.code };
   return { ok: true, revision: revision.value.value, digest: revision.value.digest };
 }
 
-export function revisionDigest(text: unknown): { ok: true; digest: string } | { ok: false; code: string } {
-  const revision = decodeCharterRevision(text);
+export function revisionDigest(text: unknown, options: VerificationOptions = {}): { ok: true; digest: string } | { ok: false; code: string } {
+  const revision = decodeCharterRevision(text, options);
   if (!revision.ok) return revision;
   return { ok: true, digest: revision.digest };
 }

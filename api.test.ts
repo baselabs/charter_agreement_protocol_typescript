@@ -4,6 +4,7 @@
 // artifacts; each verify function must go green on the valid fixture and
 // red on a tampered one.
 import test from "node:test";
+import * as publicApi from "./index.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -811,4 +812,94 @@ test("T8 indexed receipt observation validates its full closed body", async (t) 
   ] as const) await t.test(name + " " + code, () => assert.deepEqual(verifyBody({ ...body, [name]: value }), { ok: false, code }));
   for (const name of ["observed_index_digest", "observation_instant", "computed_amount_minor"]) await t.test(name + " required", () => assert.deepEqual(verifyBody(copyWithPath(body, name, undefined, true)), { ok: false, code: "missing_required" }));
   assert.ok(verifyReceipt(fixture.input.compact, fixture.input.chain).ok);
+});
+
+const withOptions = (fn: Function, args: unknown[], options: unknown) => fn(...args, options);
+const classicalProfile = { algorithms: ["Ed25519"], revisions: { min: 1, max: 3 } };
+
+function optionProbes(): [string, Function, unknown[]][] {
+  const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
+  const acceptance = corpusCase("acceptance-verify.json", "acceptance-valid").input;
+  const termination = corpusCase("termination-verify.json", "termination-valid").input;
+  const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
+  const chain = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  return [
+    ["descriptor", verifyDescriptor, [descriptor.compact, null]],
+    ["descriptor history", verifyDescriptorChain, [[descriptor.compact]]],
+    ["acceptance", verifyAcceptance, [acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts]],
+    ["termination", verifyTermination, [termination.compact, termination.revision_text, termination.descriptor_compacts]],
+    ["receipt", verifyReceipt, [receipt.compact, receipt.chain]],
+    ["chain", verifyChain, [chain]],
+  ];
+}
+
+test("T5 all public artifact verifiers apply trailing profiles", async (t) => {
+  for (const [name, fn, args] of optionProbes()) await t.test(name, () => {
+    assert.deepEqual(withOptions(fn, args, { profile: classicalProfile }), { ok: false, code: "algorithm_outside_profile" });
+    assert.deepEqual(withOptions(fn, args, { profile: { algorithms: [], revisions: { min: 1, max: 3 } } }), { ok: false, code: "invalid_profile" });
+    assert.ok(withOptions(fn, args, {}).ok);
+  });
+});
+
+test("T5 profile validation is closed and admission follows local checks", () => {
+  const descriptor = optionProbes()[0][2][0] as string;
+  for (const profile of [null, [], { algorithms: ["EdDSA", "EdDSA"] }, { algorithms: ["unlisted"] }, { algorithms: 1 }, { revisions: { min: 3, max: 1 } }, { revisions: { min: 0, max: 3 } }, { extra: true }]) {
+    assert.deepEqual(withOptions(verifyDescriptor, [descriptor, null], { profile }), { ok: false, code: "invalid_profile" });
+  }
+  const badSchema = replaceClaims(descriptor, (c) => ({ ...c, extra: true }));
+  assert.deepEqual(withOptions(verifyDescriptor, [badSchema, null], { profile: classicalProfile }), { ok: false, code: "unknown_member" });
+  assert.deepEqual(withOptions(verifyDescriptor, [descriptor, null], { profile: { algorithms: ["EdDSA"], revisions: { min: 2, max: 3 } } }), { ok: false, code: "revision_outside_profile" });
+  const acceptance = corpusCase("acceptance-verify.json", "acceptance-claim-mismatch").input;
+  assert.deepEqual(withOptions(verifyAcceptance, [acceptance.compact, acceptance.revision_text, acceptance.descriptor_compacts], { profile: classicalProfile }), { ok: false, code: "acceptance_claims_mismatch" });
+});
+
+test("T6 all public artifact verifiers validate and enforce limits", async (t) => {
+  for (const [name, fn, args] of optionProbes()) await t.test(name, () => {
+    assert.deepEqual(withOptions(fn, args, { limits: { max_bytes: 0 } }), { ok: false, code: name === "descriptor history" ? "descriptor_chain_invalid" : "limit_exceeded" });
+    for (const limits of [null, [], { extra: 1 }, { max_depth: -1 }, { max_depth: 1.5 }, { max_depth: 129 }, { max_bytes: Infinity }]) {
+      assert.deepEqual(withOptions(fn, args, { limits }), { ok: false, code: "invalid_limits" });
+    }
+  });
+});
+
+test("T6 item ceilings apply per list and byte ceilings span the entire view", () => {
+  const base = corpusCase("chain-verify.json", "chain-dual-acceptance-valid").input;
+  const bytes = [base.revisions, base.acceptances, base.descriptors, base.terminations].flat().reduce((sum: number, item: string) => sum + Buffer.byteLength(item), 0);
+  assert.ok(withOptions(verifyChain, [base], { limits: { max_artifact_set_items: 2, max_artifact_set_bytes: bytes } }).ok);
+  assert.deepEqual(withOptions(verifyChain, [base], { limits: { max_artifact_set_items: 1 } }), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(withOptions(verifyChain, [base], { limits: { max_artifact_set_bytes: bytes - 1 } }), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(withOptions(verifyChain, [{ ...base, revisions: ["broken"] }], { limits: { max_artifact_set_items: 0 } }), { ok: false, code: "limit_exceeded" });
+  for (const limits of [{ max_depth: 0 }, { max_object_members: 0 }, { max_array_items: 0 }, { max_string_bytes: 0 }]) {
+    const result = withOptions(verifyChain, [base], { limits });
+    assert.equal(result.ok, false);
+  }
+});
+
+
+test("T5 raw signature primitive accepts options without changing its boolean result", () => {
+  const compact = optionProbes()[0][2][0] as string;
+  const [header, payload, signature] = compact.split(".");
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+  const args = [Buffer.from(`${header}.${payload}`), Buffer.from(signature, "base64url"), claims.verification_keys[0].public_key, "EdDSA"];
+  assert.equal(withOptions(verifySignature, args, { profile: classicalProfile }), false);
+  assert.equal(withOptions(verifySignature, args, { limits: { max_bytes: 0 } }), false);
+  assert.equal(withOptions(verifySignature, args, {}), true);
+});
+
+test("T6 limits expose the reference defaults and compiled maximums", () => {
+  assert.deepEqual(publicApi.DEFAULT_LIMITS, { max_bytes: 1048576, max_depth: 64, max_object_members: 1024, max_array_items: 4096, max_string_bytes: 65536, max_artifact_set_items: 1024, max_artifact_set_bytes: 67108864 });
+  assert.deepEqual(publicApi.MAXIMUM_LIMITS, { max_bytes: 16777216, max_depth: 128, max_object_members: 65536, max_array_items: 65536, max_string_bytes: 1048576, max_artifact_set_items: 4096, max_artifact_set_bytes: 1073741824 });
+  const compact = optionProbes()[0][2][0] as string;
+  for (const [key, max] of Object.entries(publicApi.MAXIMUM_LIMITS)) {
+    assert.deepEqual(withOptions(verifyDescriptor, [compact, null], { limits: { [key]: max + 1 } }), { ok: false, code: "invalid_limits" });
+  }
+  assert.deepEqual(withOptions(verifyDescriptor, [compact, null], { limits: { max_depth: -1 }, profile: { algorithms: [] } }), { ok: false, code: "invalid_limits" });
+});
+
+test("T6 every artifact list is bounded before any artifact decode", () => {
+  for (const name of ["revisions", "acceptances", "descriptors", "terminations"]) {
+    const view = { revisions: [], acceptances: [], descriptors: [], terminations: [], [name]: ["broken", "broken"] };
+    assert.deepEqual(withOptions(verifyChain, [view], { limits: { max_artifact_set_items: 1 } }), { ok: false, code: "limit_exceeded" });
+  }
+  assert.deepEqual(withOptions(verifyChain, [{ revisions: ["é"], acceptances: [], descriptors: [], terminations: [] }], { limits: { max_artifact_set_bytes: 1 } }), { ok: false, code: "limit_exceeded" });
 });

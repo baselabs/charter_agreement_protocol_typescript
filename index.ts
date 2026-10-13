@@ -32,6 +32,10 @@ export {
 } from "./core.ts";
 
 export {
+  DEFAULT_LIMITS,
+  MAXIMUM_LIMITS,
+  type Limits,
+  type VerificationOptions,
   CERTIFIED_INDEX_SHA256_BASE64URL,
   CERTIFIED_REGISTRY_DIGEST,
   algorithmRegistry,
