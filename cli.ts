@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { reportFor } from "./core.ts";
 
-const vendoredCorpus = join(dirname(fileURLToPath(import.meta.url)), "..", "conformance");
+const vendoredCorpus = join(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith("/cli.ts") ? "." : "..", "conformance");
 const argumentsList = process.argv.slice(2);
 
 const corpus =

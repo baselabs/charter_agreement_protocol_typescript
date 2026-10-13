@@ -45,6 +45,26 @@ test("vendored certified corpus verifies green through the public API", () => {
   assert.equal(report.exitStatus, 0);
 });
 
+test("source and built CLIs find the certified corpus from any working directory", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const scratch = mkdtempSync(join(tmpdir(), "cap-cli-"));
+  try {
+    const reports = ["cli.ts", "dist/cli.js"].map((filename) => {
+      const args = filename.endsWith(".ts") ? ["--experimental-strip-types", "--no-warnings"] : [];
+      const run = spawnSync(process.execPath, [...args, join(here, filename)], { cwd: scratch, encoding: "utf8" });
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+      const report = JSON.parse(run.stdout);
+      assert.equal(report.total, 243);
+      assert.equal(report.agreed, 243);
+      assert.equal(report.disagreed, 0);
+      return run.stdout;
+    });
+    assert.equal(reports[0], reports[1]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("a tampered corpus case cannot verify green", () => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-verifier-tamper-"));
   cpSync(join(here, "conformance"), scratch, { recursive: true });
