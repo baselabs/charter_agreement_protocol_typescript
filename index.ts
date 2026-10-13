@@ -36,6 +36,7 @@ export {
   MAXIMUM_LIMITS,
   type Limits,
   type VerificationOptions,
+  type Profile,
   CERTIFIED_INDEX_SHA256_BASE64URL,
   CERTIFIED_REGISTRY_DIGEST,
   algorithmRegistry,

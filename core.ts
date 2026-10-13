@@ -369,7 +369,8 @@ function decodeJsonBytes(bytes: Buffer, limits: Limits = DEFAULT_LIMITS): Result
 export type Limits = {
   max_bytes: number; max_depth: number; max_object_members: number; max_array_items: number; max_string_bytes: number; max_artifact_set_items: number; max_artifact_set_bytes: number;
 };
-export type VerificationOptions = { limits?: Partial<Limits>; profile?: { algorithms: string[]; revisions: { min: number; max: number } } };
+export type Profile = { algorithms?: string[]; revisions?: { min: number; max: number } };
+export type VerificationOptions = { limits?: Partial<Limits>; profile?: Profile };
 
 export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   max_bytes: 1_048_576,

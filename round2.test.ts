@@ -293,3 +293,26 @@ test("S5 file imports cannot alter source or built signature verdicts", async (t
     }
   });
 });
+
+test("partial profile types match the public verification behavior", () => {
+  const algorithms: api.Profile = { algorithms: ["EdDSA"] };
+  const algorithmsOnly: api.VerificationOptions = { profile: algorithms };
+  const revisions: api.Profile = { revisions: { min: 1, max: 1 } };
+  const revisionsOnly: api.VerificationOptions = { profile: revisions };
+  const f = fixture("party_descriptor-verify", "party-descriptor-genesis-valid");
+  assert.ok(api.verifyDescriptor(f.compact, null, algorithmsOnly).ok);
+  assert.ok(api.verifyDescriptor(f.compact, null, revisionsOnly).ok);
+});
+
+test("signature message limits and null artifact lists retain their public behavior", () => {
+  const pair = generateKeyPairSync("ed25519");
+  const message = Buffer.alloc(1_048_577, 7);
+  const signature = sign(null, message, pair.privateKey);
+  const publicKey = pair.publicKey.export({ format: "jwk" }).x!;
+  assert.equal(api.verifySignature(message, signature, publicKey, "EdDSA"), false);
+  assert.equal(api.verifySignature(message, signature, publicKey, "EdDSA", { limits: { max_bytes: message.length } }), true);
+  const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+  for (const list of ["acceptances", "terminations"]) {
+    assert.deepEqual(api.verifyChain({ ...view, [list]: null }), { ok: false, code: "invalid_type" });
+  }
+});
