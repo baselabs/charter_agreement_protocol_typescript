@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "f--8DXp39J4wJkrpkD8ZTQpHkMlduX43Xvnz0HeObeA";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "LbIos00Tp6kFz-HdlMG3NLl6ykGoTZZiAmNYRLK13hg";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -63,7 +63,7 @@ const CLASSES = [
   "missing_required", "non_canonical_bytes", "digest_mismatch", "signature_invalid",
   "chain_invalid", "descriptor_superseded", "descriptor_fork", "equivocation",
   "chain_fork", "profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid",
-  "supersession", "precedence_selection", "outcome_indeterminate",
+  "supersession", "precedence_selection", "terminated", "outcome_indeterminate",
   "extension_unknown_critical", "extension_optional_roundtrip", "extension_invalid",
 ];
 
@@ -75,14 +75,14 @@ const REQUIRED = {
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
-  "charter_revision.decode": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical", "extension_invalid"],
-  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid"],
+  "charter_revision.decode": ["valid", "invalid_encoding", "non_canonical_bytes", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "extension_unknown_critical", "extension_invalid"],
+  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
   "acceptance.equivocation": ["equivocation", "invalid_constraint"],
-  "termination.verify": ["valid", "invalid_constraint", "signature_invalid"],
-  "chain.verify": ["valid", "chain_fork", "supersession", "chain_invalid"],
+  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member"],
+  "chain.verify": ["valid", "exact_bound", "maximum_plus_one", "chain_fork", "supersession", "chain_invalid"],
   "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
-  "governing_revision": ["precedence_selection"],
-  "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
+  "governing_revision": ["precedence_selection", "terminated"],
+  "receipt.verify": ["valid", "unknown_member", "terminated", "invalid_constraint", "signature_invalid", "chain_fork", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid"],
 };
 
 // ---------------------------------------------------------------------------
