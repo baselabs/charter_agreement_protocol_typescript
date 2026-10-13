@@ -232,7 +232,7 @@ test("prepare orders limits profile context build key shape context claims membe
   }
 });
 
-test("small-order descriptor key is refused by prepare", () => {
+test("a rejected descriptor key is refused by prepare", () => {
   const set = mintedSet();
   const publicKey = Buffer.from("01" + "00".repeat(31), "hex").toString("base64url");
   const claims = { ...set.parties[0].claims, verification_keys: [{ ...set.parties[0].claims.verification_keys[0], public_key: publicKey }] };
@@ -471,6 +471,25 @@ test("limits cover the whole set including the counterparty descriptor", () => {
   }
 });
 
+test("receipt preparation reads the retained set under strict caller limits", () => {
+  const set = mintedSet("Ed25519", "Ed25519", "x".repeat(5000));
+  const options = { limits: { max_bytes: 4000 } };
+  const compact = rawCompact("receipt", "k", set.receipt, "Ed25519", set.parties[0].privateKey);
+  assert.ok(Buffer.byteLength(compact) < options.limits.max_bytes);
+  assert.ok(api.prepareSigning("receipt", "k", set.receipt, set.parties[0].publicKey, set.chain).ok);
+  assert.deepEqual(api.verifyReceipt(compact, set.chain, options), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(api.prepareSigning("receipt", "k", set.receipt, set.parties[0].publicKey, set.chain, options), { ok: false, code: "limit_exceeded" });
+});
+
+test("bare-revision receipt preparation checks the revision profile first", () => {
+  const set = mintedSet("ML-DSA-65");
+  const options = { algorithm: "ML-DSA-65", profile: { revisions: { min: 3, max: 3 } } };
+  assert.equal(set.receipt.protocol_revision, 3);
+  assert.equal(set.revision.protocol_revision, 2);
+  assert.deepEqual(api.prepareSigning("receipt", "k", set.receipt, set.parties[0].publicKey, set.revisionText, options),
+    { ok: false, code: "revision_outside_profile" });
+});
+
 test("raised limits build and finish a 1601202-byte receipt", () => {
   const set = mintedSet();
   const claims = { ...set.receipt, extensions: { critical: {}, optional: { "com.example/pad": "" } } };
@@ -534,6 +553,10 @@ test("browser shim refuses ML-DSA prepare including a bare-revision receipt", as
     await build({ entryPoints: ["index.ts"], bundle: true, outfile, format: "esm", platform: "browser", target: "es2022",
       alias: { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" }, inject: ["./web/shim/buffer-global.ts"] });
     const browser = await import(pathToFileURL(outfile).href);
+    for (const [kid, publicKey] of [["k", keyPair("ML-DSA-65").publicKey], ["missing", set.parties[0].publicKey]]) {
+      assert.deepEqual(browser.prepareSigning("descriptor", kid, set.parties[0].claims, publicKey, null, { algorithm: "ML-DSA-65" }),
+        { ok: false, code: "signing_key_mismatch" });
+    }
     for (const [kind, claims, context] of [["descriptor", set.parties[0].claims, null], ["receipt", set.receipt, set.revisionText],
       ["acceptance", set.acceptance, set.chain], ["termination", set.termination, set.chain], ["receipt", set.receipt, set.chain]]) {
       assert.deepEqual(browser.prepareSigning(kind, "k", claims, set.parties[0].publicKey, context, { algorithm: "ML-DSA-65" }), { ok: false, code: "algorithm_unsupported_on_substrate" });
@@ -585,6 +608,8 @@ test("snapshot key algorithm and bytes must match an active descriptor key", () 
   assert.deepEqual(api.prepareSigning("descriptor", "k", claims, publicKey, null, { algorithm: "ML-DSA-65" }), { ok: false, code: "signing_key_mismatch" });
   const retired = { ...set.parties[0].claims, verification_keys: [{ ...set.parties[0].claims.verification_keys[0], status: "retired" },
     { ...set.parties[0].claims.verification_keys[0], key_id: "other" }] };
+  const compact = rawCompact("descriptor", "k", retired, "Ed25519", set.parties[0].privateKey);
+  assert.deepEqual(api.verifyDescriptor(compact), { ok: false, code: "descriptor_key_invalid" });
   assert.deepEqual(api.prepareSigning("descriptor", "k", retired, set.parties[0].publicKey, null), { ok: false, code: "signing_key_mismatch" });
 });
 
