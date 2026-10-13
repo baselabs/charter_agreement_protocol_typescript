@@ -53,7 +53,7 @@ test("signing corpus runner matches Elixir kinds contexts and extra option membe
 });
 
 test("public signing preparation matches every corpus projection independently", async (t) => {
-  assert.equal(cases.length, 57);
+  assert.equal(cases.length, 61);
   for (const one of cases) await t.test(one.id, () => {
     const input = one.input;
     let context: any = input.context;
@@ -83,12 +83,15 @@ test("public signing preparation matches every corpus projection independently",
     } } : { status: "invalid", error_code: prepared.code };
     assert.deepEqual(actual, one.expect);
     if (prepared.ok && prepared.plan.input.alg === "Ed25519") {
-      const privateKey = Array.from({ length: 9 }, (_, i) => createPrivateKey({
-        key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, i + 1)]),
-        format: "der", type: "pkcs8",
-      })).find((key) => createPublicKey(key).export({ format: "jwk" }).x === input.public_key);
-      assert.ok(privateKey, one.id);
-      assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, privateKey)).ok);
+      // The mixed-order fixture supplies public bytes without a signing seed.
+      if (one.id !== "signing-ed25519-mixed-order") {
+        const privateKey = Array.from({ length: 9 }, (_, i) => createPrivateKey({
+          key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, i + 1)]),
+          format: "der", type: "pkcs8",
+        })).find((key) => createPublicKey(key).export({ format: "jwk" }).x === input.public_key);
+        assert.ok(privateKey, one.id);
+        assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, privateKey)).ok);
+      }
       if (prepared.plan.key === "matched") {
         assert.deepEqual(api.finishSigning(prepared.plan, Buffer.alloc(64)), { ok: false, code: "signature_invalid" });
       }
