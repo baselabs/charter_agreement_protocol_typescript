@@ -193,7 +193,9 @@ test("prepare orders limits profile context build key shape context claims membe
     [{ context: 42, claims: {}, publicKey: "x", options: { limits: { max_bytes: -1 }, profile: null } }, "invalid_limits"],
     [{ context: 42, claims: {}, publicKey: "x", options: { profile: null } }, "invalid_profile"],
     [{ context: 42, claims: {}, publicKey: "x" }, "invalid_type"], [{ claims: {}, publicKey: "x" }, "signing_input_invalid"],
-    [{ publicKey: "x", context: {} }, "signing_key_invalid"], [{ publicKey: set.parties[0].publicKey + "=" }, "signing_key_invalid"],
+    [{ publicKey: "x", context: {} }, "invalid_type"],
+    [{ publicKey: "x", context: { descriptor_digest: set.parties[0].digest, lineage: ["garbage"] } }, "signing_key_invalid"],
+    [{ publicKey: set.parties[0].publicKey + "=" }, "signing_key_invalid"],
     [{ publicKey: keyPair().publicKey }, "signing_key_mismatch"], [{ kid: "missing" }, "signing_key_mismatch"],
     [{ options: { profile: { algorithms: ["EdDSA"] } }, kid: "missing" }, "algorithm_outside_profile"],
     [{ kind: "acceptance", claims: set.acceptance, context: { ...set.chain, descriptors: ["garbage"] } }, "compact_invalid"],
@@ -315,14 +317,13 @@ test("an unheld successor descriptor reports acceptance_claims_mismatch", () => 
   assert.deepEqual(api.prepareSigning("acceptance", "k", set.acceptance, set.nextKey.publicKey, set.chain), { ok: false, code: "acceptance_claims_mismatch" });
 });
 
-test("acceptance and termination profiles cover the revision and signing party chain", () => {
+test("acceptance and termination preparation profiles cover the whole set", () => {
   const set = mintedSet("Ed25519", "EdDSA");
   const options = { profile: { algorithms: ["Ed25519"], revisions: { min: 2, max: 2 } } };
   assert.deepEqual(api.verifyChain(set.chain, options), { ok: false, code: "algorithm_outside_profile" });
   for (const kind of ["acceptance", "termination"] as const) {
     const prepared = api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, options);
-    assert.ok(prepared.ok, JSON.stringify(prepared));
-    assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, set.parties[0].privateKey)).ok);
+    assert.deepEqual(prepared, { ok: false, code: "algorithm_outside_profile" });
     assert.deepEqual(api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "algorithm_outside_profile" });
     assert.deepEqual(api.prepareSigning(kind, "k", set[kind], set.parties[0].publicKey, set.chain, { profile: { revisions: { min: 1, max: 1 } } }), { ok: false, code: "revision_outside_profile" });
   }

@@ -7,7 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "n2Se2on9kG3cdeFMiy9OW9lKalvM_02Fmdw-XbYe-A4";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "vkrz0Xrt37EFuRxVI-rIp5R36RSSohCqFnPT98SREFU";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -55,6 +55,7 @@ const SURFACES = [
   "schema.validate", "party_descriptor.verify", "descriptor_chain.verify",
   "charter_revision.decode", "acceptance.verify", "acceptance.equivocation",
   "termination.verify", "chain.verify", "chain.verify_profile", "governing_revision", "receipt.verify",
+  "signing.prepare",
 ];
 
 const CLASSES = [
@@ -82,6 +83,7 @@ const REQUIRED = {
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
   "receipt.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
+  "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
 };
 
@@ -1475,9 +1477,43 @@ function receiptWithContext(compact: string, context: AnyRecord | string, settin
   return chain.ok ? receiptFromCompact(compact, { kind: "chain", chain: chain.value }, settings) : chain;
 }
 
+function signingCaseContext(context: any): Result<DescriptorPredecessor | null | ChainInput | string> {
+  if (!isRecord(context)) return ok(context);
+  if ("set" in context) return ok(context.set);
+  if ("chain" in context) {
+    const verified = verifyChain(context.chain, { limits: context.chain.limits });
+    return verified.ok ? ok(context.chain) : fail(verified.code);
+  }
+  if ("revision_text" in context) {
+    const decoded = decodeCharterRevision(context.revision_text);
+    return decoded.ok ? ok(context.revision_text) : fail(decoded.code);
+  }
+  if ("predecessor_compacts" in context) {
+    let previous: DescriptorPredecessor | null = null;
+    for (const compact of context.predecessor_compacts) {
+      const verified = verifyDescriptor(compact, previous);
+      if (!verified.ok) return fail(verified.code);
+      previous = verified.facts as DescriptorPredecessor;
+    }
+    return ok(previous);
+  }
+  return ok(context);
+}
+
 function executeArtifactCase(one: ConformanceCase): CaseResult | null {
   const input = one.input;
   switch (one.surface) {
+    case "signing.prepare": {
+      const context = signingCaseContext(input.context);
+      if (!context.ok) return invalid(context.code);
+      const key = strictBase64url(input.public_key);
+      if (!key.ok) return invalid(key.code);
+      const kind = input.kind === "party_descriptor" ? "descriptor" : input.kind as SigningKind;
+      const prepared = prepareSigning(kind, input.kid, input.claims, encodeBase64url(key.value), context.value,
+        { algorithm: input.algorithm, limits: input.limits ?? undefined, profile: input.profile ?? undefined });
+      if (!prepared.ok) return invalid(prepared.code);
+      return valid({ protected_segment: prepared.plan.input.protectedSegment, payload_segment: prepared.plan.input.payloadSegment, key: prepared.plan.key });
+    }
     case "party_descriptor.verify": {
       // A case may name its predecessor history, genesis first; each entry
       // verifies under the full profile against the one before it.
@@ -2195,9 +2231,12 @@ export function prepareSigning(
 ): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const validContext = kind === "descriptor" ? context === null || isRecord(context) :
-    kind === "acceptance" || kind === "termination" ? isRecord(context) :
-    kind === "receipt" ? typeof context === "string" || isRecord(context) : false;
+  const descriptorContext = context === null || (isRecord(context) && "lineage" in context &&
+    ("descriptor_digest" in context || "digest" in context));
+  const setContext = isRecord(context) && ["revisions", "acceptances", "descriptors", "terminations"].every((name) => name in context);
+  const validContext = kind === "descriptor" ? descriptorContext :
+    kind === "acceptance" || kind === "termination" ? setContext :
+    kind === "receipt" ? typeof context === "string" || setContext : false;
   if (!validContext) return fail("invalid_type");
   const built = buildSigningInput(kind, kid, claims, options.algorithm, settings.value.limits);
   if (!built.ok) return built;
@@ -2212,8 +2251,7 @@ export function prepareSigning(
     prepared = prepareDescriptor(provisional, previous.value, settings.value);
     verifyWith = { kind, predecessor: previous.value ? { descriptor_digest: previous.value.digest, lineage: [...previous.value.lineage!] } : null };
   } else if (kind === "acceptance" || kind === "termination") {
-    // Limits cover the whole set; the caller's profile covers the routed view.
-    const chain = chainFromInput(context as ChainInput, { limits: settings.value.limits, profile: DEFAULT_SETTINGS.profile });
+    const chain = chainFromInput(context as ChainInput, settings.value);
     if (!chain.ok) return chain;
     const refusal = kind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
     if (!refusal.ok) return refusal;

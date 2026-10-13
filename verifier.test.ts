@@ -87,13 +87,28 @@ test("integer-like members project in source order", () => {
 
 // The standalone integrity checker keeps its own copy of the case-class list
 // and the required-cell floor, so it must accept the vendored corpus too.
+test("compiled corpus floors match every required class in the certified index", () => {
+  const index = JSON.parse(readFileSync(join(here, "conformance", "index.json"), "utf8"));
+  const expected = Object.fromEntries(Object.entries(index.applicability).map(([surface, cells]) =>
+    [surface, Object.entries(cells as Record<string, unknown>).filter(([, count]) => typeof count === "number").map(([name]) => name).sort()]));
+  assert.deepEqual(expected["signing.prepare"], ["chain_invalid", "exact_bound", "invalid_constraint", "invalid_type", "maximum_plus_one", "profile_algorithm_outside", "profile_revision_outside", "valid"]);
+  for (const [file, constant] of [["core.ts", "REQUIRED"], ["check-corpus.mjs", "required"]]) {
+    const source = readFileSync(join(here, file), "utf8");
+    const match = source.match(new RegExp(`const ${constant} = (\\{[\\s\\S]*?\\n\\});`));
+    assert.ok(match, file);
+    const floor = JSON.parse(match[1].replace(/,\s*([}\]])/g, "$1"));
+    for (const classes of Object.values(floor)) (classes as string[]).sort();
+    assert.deepEqual(floor, expected, file);
+  }
+});
+
 test("check-corpus.mjs accepts the vendored corpus and reports its digest", async () => {
   const { spawnSync } = await import("node:child_process");
   const here = dirname(fileURLToPath(import.meta.url));
   const run = spawnSync(process.execPath, [join(here, "check-corpus.mjs"), join(here, "conformance")], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr || run.stdout);
   const index = JSON.parse(readFileSync(join(here, "conformance", "index.json"), "utf8"));
-  assert.equal(index.total_cases, 163);
+  assert.equal(index.total_cases, 216);
   assert.equal(run.stdout.trim(), index.corpus_digest);
   for (const surface of ["acceptance.verify", "termination.verify", "receipt.verify"]) {
     for (const name of ["profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"]) {
