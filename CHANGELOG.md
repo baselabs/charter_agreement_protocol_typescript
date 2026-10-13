@@ -5,6 +5,32 @@ documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `prepareSigning`, `finishSigning`, `SigningPlan`, and `SigningKind` check an
+  artifact before signing and retain its verification context, limits, and profile
+  for completion. The plan exposes the signing input and whether its key is
+  `matched` or `unnamed` (a receipt against a bare revision).
+- `signing_key_invalid` reports an invalid snapshot key encoding or shape.
+  `signing_key_mismatch` reports a snapshot that does not match an active candidate
+  in the holder's own view.
+
+### Changed
+
+- `verifyReceipt` returns `invalid_type` for a context such as `null`, `42`, `[]`,
+  or `["x"]`, instead of `chain_invalid`.
+- `acceptanceSigningInput`, `terminationSigningInput`, `acceptanceRefusal`, and
+  `terminationRefusal` preserve `verifyChain`'s error for a bad set. For example, a
+  malformed descriptor now returns `compact_invalid` instead of `chain_invalid`.
+
+### Fixed
+
+- Malformed verification inputs and contexts return typed results instead of
+  throwing, including a null message passed to `verifySignature` (which returns
+  `false`). Cyclic signing claims return `signing_input_invalid`.
+- The signature guard requires canonical base64url public keys. Runtime support
+  checks cache the declared type and known-answer result once per key algorithm.
+
 ## [0.6.0] — 2026-10-13
 
 ### Breaking

@@ -61,6 +61,7 @@ cannot verify green.
 | `decodeJsonText(text, limits?)` | Strict I-JSON decode (duplicates, noncharacters, lone surrogates, number round-tripping rejected) |
 | `jsonProjection(value)` | The tagged projection used by reports; object members retain text order |
 | `Limits`, `DEFAULT_LIMITS`, `MAXIMUM_LIMITS` | Closed limits type, reference defaults and compiled maximum values; overrides must be nonnegative integers within the maximums |
+| `ChainInput` | A chain view with `revisions`, `acceptances`, `descriptors`, and `terminations` string arrays |
 | `VerificationOptions` | Optional `{ limits?: Partial<Limits>, profile?: { algorithms: string[]; revisions: { min: number; max: number } } }` for public verification |
 | `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
@@ -71,18 +72,40 @@ cannot verify green.
 | `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg, options?)` | Framing decode and the strict signature primitive; the latter retains its boolean result with optional limits and algorithm filtering |
 | `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
 | `acceptanceSigningInput(kid, claims, chainInput, alg?)` / `terminationSigningInput(kid, claims, chainInput, alg?)` | The set-aware producers: build first, then the R1–R3 refusal checks at the reference ordering |
+| `prepareSigning(kind, kid, claims, publicKey, context, options?)` | Check framing, claims, context, profile, limits, and the holder's own signing key before signing; return a `SigningPlan` |
+| `finishSigning(plan, signature)` | Assemble under the plan's limits and run public verification with its retained context |
+| `SigningPlan` / `SigningKind` | The plan class exposes `kind`, `input`, and `key` (`matched` or `unnamed`); kinds are `descriptor`, `acceptance`, `termination`, and `receipt` |
 | `assembleCompact(signingInput, signature)` | Assemble a validated signing input and its exact raw signature (registry-row length, framing re-decode, size gate) |
 | `governingRevision(chainInput, at, options?)` | The unique governing revision at one UTC instant — a digest, or `contested`/`none`, including verified termination closing |
 | `decodeCharterRevision(text, options?)` / `revisionDigest(text, options?)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
 | `decodePartyDescriptor(compact)` / `descriptorDigest(compact)` | Decode one Party Descriptor's claims and digest without verifying its signature |
-| `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused` / `chain_invalid` / `signing_input_invalid`. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
+| `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view — `{ok: true}`, or `signing_refused`, `signing_input_invalid`, or the set verification error. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
+
+`prepareSigning` accepts a predecessor or `null` for a descriptor, a chain view
+(`revisions`, `acceptances`, `descriptors`, `terminations` arrays) for acceptance
+and termination, and a chain view or bare revision text for a receipt. Pass a
+canonical base64url public key. Its options are `algorithm`, `limits`, and
+`profile`. Limits cover every artifact read, including the entire set. For
+acceptance and termination, the profile covers the claimed revision, the signing
+party's descriptor chain, and the new artifact. For a receipt with a chain view,
+the profile covers the whole retained set. A descriptor's profile includes its
+predecessor history.
+
+Sign `plan.input.message`, then pass the raw `Uint8Array` signature to
+`finishSigning`. A bare-revision receipt has `key: "unnamed"`; public receipt
+verification leaves its signature unchecked. `signing_key_invalid` means the
+snapshot key fails the encoding or shape check; `signing_key_mismatch` means it
+matches no active candidate in the holder's own view. The plan retains private
+copies of its input, context arrays, limits, and profile. The existing producers
+and `assembleCompact` continue to use default limits; use the plan API for caller
+limits and the check before signing. A non-set passed to the existing set-aware
+producers still returns `signing_input_invalid`.
 
 Verification options default to the full algorithm registry, revisions 1..3,
 and `DEFAULT_LIMITS`. Profiles apply to each signed artifact after its local
 checks and before crypto; unsigned charter revisions use only the revision
-axis. Public acceptance, termination and receipt calls re-verify their
-supplied context with the full profile, then apply the requested profile to
-the artifact, matching the reference. `verifyChain` applies it throughout
+axis. Public acceptance, termination, and receipt calls re-verify their
+supplied context and check the artifact under the requested profile. `verifyChain` applies it throughout
 the view. Malformed options return `invalid_limits` or `invalid_profile`;
 excluded artifacts return `algorithm_outside_profile` or
 `revision_outside_profile`.
