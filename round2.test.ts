@@ -113,3 +113,24 @@ test("S3 year 0000 and its leap day pass every timestamp surface", async (t) => 
     assert.deepEqual(api.governingRevision(fixture("chain-verify", "chain-dual-acceptance-valid"), "0000-01-01T00:00:00Z"), { ok: true, governing: "none" });
   });
 });
+
+test("S4 producers and assembly reject malformed artifact claims", async (t) => {
+  const f = fixture("termination-verify", "termination-valid");
+  const view = fixture("chain-verify", "chain-dual-acceptance-valid");
+  const claims = { ...claimsOf(f.compact), protocol_revision: 2 };
+  for (const extensions of [5, { critical: {}, optional: {} }]) await t.test("termination extra member " + typeof extensions, () => {
+    assert.deepEqual(api.terminationSigningInput("k", { ...claims, extensions }, view), { ok: false, code: "unknown_member" });
+  });
+  for (const [file, id, field, value] of [
+    ["party_descriptor-verify", "party-descriptor-genesis-valid", "extra", true],
+    ["acceptance-verify", "acceptance-valid", "accepted_at", "bad-time"],
+    ["termination-verify", "termination-valid", "extensions", 5],
+    ["receipt-verify", "receipt-signed-governing-match", "revision_digest", badDigest],
+  ] as const) await t.test("assembly " + file, () => {
+    const original = fixture(file, id).compact;
+    const [protectedSegment, payloadSegment] = changeClaims(original, (c) => ({ ...c, [field]: value })).split(".");
+    const header = JSON.parse(Buffer.from(protectedSegment, "base64url").toString());
+    const input = { alg: header.alg, protectedSegment, payloadSegment, message: Buffer.from(`${protectedSegment}.${payloadSegment}`) };
+    assert.deepEqual(api.assembleCompact(input, Buffer.alloc(64)), { ok: false, code: "signing_input_invalid" });
+  });
+});

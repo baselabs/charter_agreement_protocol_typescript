@@ -272,11 +272,11 @@ const receiptFixture = {
   protocol_revision: 2,
   charter_id: "sha-256:" + "A".repeat(43),
   revision_number: 2,
-  revision_digest: "sha-256:" + "B".repeat(43),
+  revision_digest: "sha-256:" + Buffer.alloc(32, 1).toString("base64url"),
   issuing_party_role: "issuer",
   agent_party_role: "agent",
-  deployment_digest: "sha-256:" + "C".repeat(43),
-  grant: { scheme: "bap", id: "g-1", grant_digest: "sha-256:" + "D".repeat(43) },
+  deployment_digest: "sha-256:" + Buffer.alloc(32, 2).toString("base64url"),
+  grant: { scheme: "bap", id: "g-1", grant_digest: "sha-256:" + Buffer.alloc(32, 3).toString("base64url") },
   invocation_id: "inv-1",
   decision: "accepted",
   outcome: "effect_committed",
@@ -304,7 +304,6 @@ test("checkSigningClaims: each kind green on well-formed claims", () => {
     reason_code: "mutual",
     issued_at: "2026-08-25T14:00:00Z",
     effective_at: "2026-08-25T15:00:00Z",
-    extensions: { critical: {}, optional: {} },
   }).ok);
 });
 
@@ -329,7 +328,7 @@ test("checkSigningClaims: acceptance and termination schema reds keep the codec 
     governing_revision_digest: acceptance.revision_digest,
     party_descriptor_digest: acceptance.party_descriptor_digest, party_role: "issuer",
     reason_code: "mutual", issued_at: "2026-08-25T16:00:00Z",
-    effective_at: "2026-08-25T15:00:00Z", extensions: { critical: {}, optional: {} },
+    effective_at: "2026-08-25T15:00:00Z",
   })), "termination_invalid");
 });
 
@@ -402,11 +401,11 @@ test("producers mint byte-exact segments for both emission pairs", () => {
     protocol_revision: 3,
     charter_id: "sha-256:" + "A".repeat(43),
     revision_number: 1,
-    revision_digest: "sha-256:" + "B".repeat(43),
+    revision_digest: "sha-256:" + Buffer.alloc(32, 1).toString("base64url"),
     issuing_party_role: "issuer",
     agent_party_role: "acceptor",
-    deployment_digest: "sha-256:" + "C".repeat(43),
-    grant: { scheme: "bap", id: "g", grant_digest: "sha-256:" + "D".repeat(43) },
+    deployment_digest: "sha-256:" + Buffer.alloc(32, 2).toString("base64url"),
+    grant: { scheme: "bap", id: "g", grant_digest: "sha-256:" + Buffer.alloc(32, 3).toString("base64url") },
     invocation_id: "inv",
     decision: "accepted",
     outcome: "effect_committed",

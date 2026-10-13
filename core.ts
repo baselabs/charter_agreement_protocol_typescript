@@ -1823,7 +1823,7 @@ export function checkSigningClaims(
   const error =
     kind === "descriptor" ? signingDescriptorError(claims) :
     kind === "acceptance" ? acceptanceClaimsError(claims) :
-    kind === "termination" ? terminationClaimsError(Object.fromEntries(Object.entries(claims).filter(([name]) => name !== "extensions"))) :
+    kind === "termination" ? terminationClaimsError(claims) :
     kind === "receipt" ? (receiptGrantError(claims) ?? receiptTimingError(claims)) :
     "invalid_type";
   return error ? { ok: false, code: error } : { ok: true };
@@ -2034,7 +2034,7 @@ function buildSigningInput(
   // frame and bind.
   const zeroSignature = Buffer.alloc(row.signatureBytes);
   const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
-  const decoded = decodeArtifact(provisional);
+  const decoded = decodeSigningArtifact(provisional);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
 
   return { ok: true, input: { alg: algorithm as string, protectedSegment, payloadSegment, message } };
@@ -2067,8 +2067,17 @@ export function terminationSigningInput(kid: string, claims: AnyRecord, chainInp
   return built;
 }
 
+function decodeSigningArtifact(compact: string): Result<null> {
+  const decoded = decodeJws(compact);
+  if (!decoded.ok) return decoded;
+  const kind = (Object.keys(PRODUCER_TYPES) as Array<keyof typeof PRODUCER_TYPES>).find((one) => PRODUCER_TYPES[one] === decoded.value.header.typ);
+  if (!kind) return fail("signing_input_invalid");
+  const checked = checkSigningClaims(kind, decoded.value.payload);
+  return checked.ok ? ok(null) : checked;
+}
+
 // Assemble a validated signing input and its exact raw signature (the
-// reference assemble): registry-row length, framing re-decode, size gate.
+// reference assemble): registry-row length, full artifact decode, size gate.
 export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
   if (!input || typeof input !== "object" || !Buffer.isBuffer(signature)) return { ok: false, code: "invalid_type" };
   // The input is a struct the producer minted: the message must BE the
@@ -2083,7 +2092,7 @@ export function assembleCompact(input: SigningInput, signature: Buffer): { ok: t
   if (signature.length !== row.signatureBytes) return { ok: false, code: "signature_invalid" };
   const compact = `${input.message.toString("utf8")}.${encodeBase64url(signature)}`;
   if (Buffer.byteLength(compact) > JSON_DEFAULT_LIMITS.max_bytes) return { ok: false, code: "signing_input_invalid" };
-  const decoded = decodeArtifact(compact);
+  const decoded = decodeSigningArtifact(compact);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
   return { ok: true, compact };
 }
