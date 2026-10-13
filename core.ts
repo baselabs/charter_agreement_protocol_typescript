@@ -8,7 +8,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "LbIos00Tp6kFz-HdlMG3NLl6ykGoTZZiAmNYRLK13hg";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "yFblrRqjUst2Rwfl7vgVHYODqhb4d6xCDc8qVZnTwIc";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
