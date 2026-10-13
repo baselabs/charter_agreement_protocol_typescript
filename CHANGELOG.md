@@ -23,9 +23,9 @@ documented here.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
-- The certified corpus now contains 229 cases in 16 case files, including
-  `signing.prepare`. Its runner calls public `prepareSigning`, and independent
-  tests check all 61 preparation cases and both compiled class floors.
+- The certified corpus now contains 243 cases in 16 case files, including
+  `signing.prepare`. Its runner calls public `prepareSigning`; tests cover
+  its 69 preparation cases, closed runner options, and both compiled class floors.
 - `SECURITY.md` ships in the npm package with supported versions, scope,
   reproduction commands and private reporting through GitHub's Security tab.
 
@@ -44,7 +44,15 @@ documented here.
 
 ### Fixed
 
-- Ed25519 public keys are fully decoded on admission, so keys that are not curve points are rejected; the certified corpus contains 229 cases.
+- Ed25519 public keys and signature `R` use the same point rule: canonical
+  `y`, a curve point, and not small order. Mixed order is accepted. Decoding
+  uses one modular exponentiation per point, with a faster fixed addition chain.
+- The corpus runner rejects unknown members in `limits`, `profile`, and
+  revision bounds with `invalid_type`.
+- Receipt verification and signing preparation apply the caller's limits to
+  the retained chain context. The receipt corpus runner passes these limits through.
+- The source CLI finds its bundled corpus without an explicit path, as the
+  built CLI does.
 - Malformed verification inputs and contexts return typed results instead of
   throwing, including a null message passed to `verifySignature` (which returns
   `false`). Throwing getters and Proxies also return typed results after inputs
