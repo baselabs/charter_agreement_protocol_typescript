@@ -479,3 +479,13 @@ test("verify context fields tolerate generated wrong shapes", () => {
     if (!result.ok) assert.equal(typeof result.code, "string");
   }
 });
+
+test("prepare rejects cyclic and invalid JSON claims without throwing", () => {
+  const set = mintedSet();
+  const cycle: any = {};
+  cycle.child = cycle;
+  for (const value of [cycle, 9007199254740992, 9007199254740993n, () => 1]) {
+    const claims = { ...set.receipt, extensions: { critical: {}, optional: { "com.example/value": value } } };
+    assert.deepEqual(api.prepareSigning("receipt", "k", claims, set.parties[0].publicKey, set.revisionText), { ok: false, code: "signing_input_invalid" });
+  }
+});

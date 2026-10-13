@@ -2283,7 +2283,11 @@ function buildSigningInput(
     return { ok: false, code: "signing_input_invalid" };
   }
   const record = claims as AnyRecord;
-  if (jsonValueError(record)) return { ok: false, code: "signing_input_invalid" };
+  try {
+    if (jsonValueError(record)) return { ok: false, code: "signing_input_invalid" };
+  } catch (_error) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
   const revision = record.protocol_revision;
   if (typeof revision !== "number" || !Number.isInteger(revision) || revision !== emissions()[algorithm as string]) {
     return { ok: false, code: "signing_input_invalid" };
@@ -2294,7 +2298,12 @@ function buildSigningInput(
   const row = ALG_ROWS.find((one) => one.name === algorithm);
   if (!row) return { ok: false, code: "signing_input_invalid" };
 
-  const payloadSegment = encodeBase64url(Buffer.from(canonical(record as never), "utf8"));
+  let payloadSegment: string;
+  try {
+    payloadSegment = encodeBase64url(Buffer.from(canonical(record as never), "utf8"));
+  } catch (_error) {
+    return { ok: false, code: "signing_input_invalid" };
+  }
   const protectedSegment = encodeBase64url(
     Buffer.from(canonical({ alg: algorithm, kid, typ: PRODUCER_TYPES[kind] } as never), "utf8"),
   );
