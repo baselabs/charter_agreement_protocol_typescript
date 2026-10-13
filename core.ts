@@ -2119,6 +2119,126 @@ export function descriptorDigest(compact: unknown): { ok: true; digest: string }
 // nothing here ever sees a key.
 // ---------------------------------------------------------------------------
 
+export type SigningKind = "descriptor" | "acceptance" | "termination" | "receipt";
+export type ChainInput = { revisions: string[]; acceptances: string[]; descriptors: string[]; terminations: string[] };
+type SigningOptions = VerificationOptions & { algorithm?: string };
+type SigningContext =
+  | { kind: "descriptor"; predecessor: DescriptorPredecessor | null }
+  | { kind: "acceptance"; revisionText: string; descriptorCompacts: string[] }
+  | { kind: "termination"; revisionText: string; descriptorCompacts: string[] }
+  | { kind: "receipt"; context: ChainInput | string };
+type FinishResult = { ok: true; compact: string } | { ok: false; code: string };
+
+let createSigningPlan: (kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) => SigningPlan;
+let finishSigningPlan: (plan: SigningPlan, signature: Uint8Array) => FinishResult;
+
+/** A prepared input with retained verification context and settings. */
+export class SigningPlan {
+  readonly kind: SigningKind;
+  readonly key: "matched" | "unnamed";
+  #input: SigningInput;
+  #publicKey: string;
+  #context: SigningContext;
+  #limits: Limits;
+  #profile: ParsedProfile;
+
+  private constructor(kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) {
+    this.kind = kind;
+    this.key = key;
+    this.#input = { ...input, message: Buffer.from(input.message) };
+    this.#publicKey = publicKey;
+    this.#context = context;
+    this.#limits = { ...settings.limits };
+    this.#profile = { ...settings.profile, algorithms: [...settings.profile.algorithms] };
+    Object.freeze(this);
+  }
+
+  get input(): SigningInput {
+    return { ...this.#input, message: Buffer.from(this.#input.message) };
+  }
+
+  static {
+    createSigningPlan = (kind, input, key, publicKey, context, settings) => new SigningPlan(kind, input, key, publicKey, context, settings);
+    finishSigningPlan = (plan, signature) => {
+      if (!(#input in plan) || !(signature instanceof Uint8Array)) return fail("invalid_type");
+      const assembled = assembleUnderLimits(plan.#input, Buffer.from(signature), plan.#limits);
+      if (!assembled.ok) return assembled;
+      const options: VerificationOptions = { limits: plan.#limits, profile: { algorithms: plan.#profile.algorithms, revisions: { min: plan.#profile.minRevision, max: plan.#profile.maxRevision } } };
+      const context = plan.#context;
+      const verified = context.kind === "descriptor" ? verifyDescriptor(assembled.compact, context.predecessor, options) :
+        context.kind === "acceptance" ? verifyAcceptance(assembled.compact, context.revisionText, context.descriptorCompacts, options) :
+        context.kind === "termination" ? verifyTermination(assembled.compact, context.revisionText, context.descriptorCompacts, options) :
+        verifyReceipt(assembled.compact, context.context, options);
+      return verified.ok ? assembled : fail(verified.code);
+    };
+  }
+}
+
+/** Check everything that can be checked before producing a signature. */
+export function prepareSigning(
+  kind: SigningKind, kid: string, claims: AnyRecord, publicKey: string,
+  context: DescriptorPredecessor | null | ChainInput | string,
+  options: SigningOptions = {},
+): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  const validContext = kind === "descriptor" ? context === null || isRecord(context) :
+    kind === "acceptance" || kind === "termination" ? isRecord(context) :
+    kind === "receipt" ? typeof context === "string" || isRecord(context) : false;
+  if (!validContext) return fail("invalid_type");
+  const built = buildSigningInput(kind, kid, claims, options.algorithm, settings.value.limits);
+  if (!built.ok) return built;
+  const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
+  if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
+  const provisional = `${built.input.message.toString("utf8")}.${encodeBase64url(Buffer.alloc(row.signatureBytes))}`;
+  let prepared: Result<PreparedArtifact>;
+  let verifyWith: SigningContext;
+  if (kind === "descriptor") {
+    const previous = reverifyPredecessor(context as DescriptorPredecessor | null, settings.value);
+    if (!previous.ok) return previous;
+    prepared = prepareDescriptor(provisional, previous.value, settings.value);
+    verifyWith = { kind, predecessor: previous.value ? { descriptor_digest: previous.value.digest, lineage: [...previous.value.lineage!] } : null };
+  } else if (kind === "acceptance" || kind === "termination") {
+    // Limits cover the whole set; the caller's profile covers the routed view.
+    const chain = chainFromInput(context as ChainInput, { limits: settings.value.limits, profile: DEFAULT_SETTINGS.profile });
+    if (!chain.ok) return chain;
+    const refusal = kind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
+    if (!refusal.ok) return refusal;
+    const routed = signingContextFromSet(new Map(chain.value.revisions.map((one) => [one.digest, one])), chain.value.descriptors,
+      kind === "acceptance" ? claims.revision_digest : claims.governing_revision_digest, claims.party_descriptor_digest, `${kind}_claims_mismatch`);
+    if (!routed.ok) return routed;
+    const revisionText = routed.value.revision.bytes.toString("utf8");
+    const descriptorCompacts = routed.value.chain.descriptors.map((one) => one.compact);
+    const revision = revisionWithProfile(revisionText, settings.value);
+    if (!revision.ok) return revision;
+    const partyChain = descriptorChain(descriptorCompacts, settings.value);
+    if (!partyChain.ok) return partyChain;
+    prepared = kind === "acceptance" ? prepareAcceptance(provisional, revision.value, partyChain.value, settings.value) : prepareTermination(provisional, revision.value, partyChain.value, settings.value);
+    verifyWith = { kind, revisionText, descriptorCompacts: [...descriptorCompacts] };
+  } else if (typeof context === "string") {
+    const revision = revisionWithProfile(context, settings.value);
+    if (!revision.ok) return revision;
+    prepared = prepareReceipt(provisional, { kind: "revision", revision: revision.value }, settings.value);
+    verifyWith = { kind, context };
+  } else {
+    const chain = chainFromInput(context as ChainInput, settings.value);
+    if (!chain.ok) return chain;
+    prepared = prepareReceipt(provisional, { kind: "chain", chain: chain.value }, settings.value);
+    const view = context as ChainInput;
+    verifyWith = { kind, context: { revisions: [...view.revisions], acceptances: [...view.acceptances], descriptors: [...view.descriptors], terminations: [...view.terminations] } };
+  }
+  if (!prepared.ok) return prepared;
+  if (!prepared.value.unnamed && !prepared.value.keys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
+  if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
+  return { ok: true, plan: createSigningPlan(kind, built.input, prepared.value.unnamed ? "unnamed" : "matched", publicKey, verifyWith, settings.value) };
+}
+
+/** Assemble under the retained limits and run public verification. */
+export function finishSigning(plan: SigningPlan, signature: Uint8Array): FinishResult {
+  if (!(plan instanceof SigningPlan)) return fail("invalid_type");
+  return finishSigningPlan(plan, signature);
+}
+
 export type SigningInput = { alg: string; protectedSegment: string; payloadSegment: string; message: Buffer };
 export type ProducerResult = { ok: true; input: SigningInput } | { ok: false; code: string };
 
