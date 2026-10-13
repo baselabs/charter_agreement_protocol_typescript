@@ -507,14 +507,25 @@ function ed25519Field(value: bigint): bigint {
   return reduced < 0n ? reduced + ED25519_FIELD_PRIME : reduced;
 }
 
-function ed25519Power(base: bigint, exponent: bigint): bigint {
-  let result = 1n;
-  while (exponent > 0n) {
-    if ((exponent & 1n) !== 0n) result = ed25519Field(result * base);
-    base = ed25519Field(base * base);
-    exponent >>= 1n;
-  }
-  return result;
+function squareEd25519(value: bigint, count: number): bigint {
+  for (let i = 0; i < count; i++) value = value * value % ED25519_FIELD_PRIME;
+  return value;
+}
+
+// Fixed addition chain for (p - 5) / 8 = 2^252 - 3: 251 squarings and 11 multiplies.
+function ed25519Power(base: bigint): bigint {
+  const x2 = squareEd25519(base, 1);
+  const x9 = squareEd25519(x2, 2) * base % ED25519_FIELD_PRIME;
+  const x11 = x9 * x2 % ED25519_FIELD_PRIME;
+  const x31 = squareEd25519(x11, 1) * x9 % ED25519_FIELD_PRIME;
+  const x10 = squareEd25519(x31, 5) * x31 % ED25519_FIELD_PRIME;
+  const x20 = squareEd25519(x10, 10) * x10 % ED25519_FIELD_PRIME;
+  const x40 = squareEd25519(x20, 20) * x20 % ED25519_FIELD_PRIME;
+  const x50 = squareEd25519(x40, 10) * x10 % ED25519_FIELD_PRIME;
+  const x100 = squareEd25519(x50, 50) * x50 % ED25519_FIELD_PRIME;
+  const x200 = squareEd25519(x100, 100) * x100 % ED25519_FIELD_PRIME;
+  const x250 = squareEd25519(x200, 50) * x50 % ED25519_FIELD_PRIME;
+  return squareEd25519(x250, 2) * base % ED25519_FIELD_PRIME;
 }
 
 // Homogeneous Edwards coordinates keep the doublings free of division.
@@ -540,15 +551,23 @@ function strictEd25519Point(point: Buffer): boolean {
   const sign = BigInt(point[31] >> 7);
   if (y >= ED25519_FIELD_PRIME) return false;
   const ySquared = ed25519Field(y * y);
+  const numerator = ed25519Field(ySquared - 1n);
   const denominator = ed25519Field(ED25519_D * ySquared + 1n);
   if (denominator === 0n) return false;
-  const square = ed25519Field((ySquared - 1n) * ed25519Power(denominator, ED25519_FIELD_PRIME - 2n));
-  let root = ed25519Power(square, (ED25519_FIELD_PRIME + 3n) / 8n);
-  if (ed25519Field(root * root) !== square) root = ed25519Field(root * ED25519_SQRT_MINUS_ONE);
-  if (ed25519Field(root * root) !== square || (root === 0n && sign === 1n)) return false;
+  // RFC 8032 section 5.1.3 combines inversion and square root in one exponentiation.
+  const cubed = ed25519Field(denominator * denominator * denominator);
+  const seventh = ed25519Field(cubed * cubed * denominator);
+  let root = ed25519Field(numerator * cubed * ed25519Power(ed25519Field(numerator * seventh)));
+  if (ed25519Field(denominator * root * root) !== numerator) root = ed25519Field(root * ED25519_SQRT_MINUS_ONE);
+  if (ed25519Field(denominator * root * root) !== numerator || (root === 0n && sign === 1n)) return false;
   const x = (root & 1n) === sign ? root : ed25519Field(-root);
   const [x8, y8, z8] = doubleEd25519Point(doubleEd25519Point(doubleEd25519Point([x, y, 1n])));
   return !(x8 === 0n && ed25519Field(y8 - z8) === 0n);
+}
+
+function strictEd25519Signature(signature: Buffer): boolean {
+  return signature.length === 64 && strictEd25519Point(signature.subarray(0, 32)) &&
+    decodeLittleEndian(signature.subarray(32)) < ED25519_SUBGROUP_ORDER;
 }
 
 function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
@@ -556,10 +575,7 @@ function ed25519(rawKey: string, message: Buffer, signature: Buffer): boolean {
     if (!validPublicKey(rawKey, ALG_ROWS.find((row) => row.name === "Ed25519")!)) return false;
     const key = Buffer.from(rawKey, "base64url");
     if (signature.length !== 64 || key.length !== 32) return false;
-    const r = signature.subarray(0, 32);
-    const s = signature.subarray(32);
-    if (!strictEd25519Point(r)) return false;
-    if (decodeLittleEndian(s) >= ED25519_SUBGROUP_ORDER) return false;
+    if (!strictEd25519Signature(signature)) return false;
     const prefix = Buffer.from("302a300506032b6570032100", "hex");
     const spki = createPublicKey({ key: Buffer.concat([prefix, key]), format: "der", type: "spki" });
     return nodeVerifySignature(null, message, spki, signature);
@@ -610,7 +626,7 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
   if (!key) return fail("signature_invalid");
   const bytes = Buffer.from(key.public_key, "base64url");
   if (decoded.signature.length !== row.signatureBytes) return fail("signature_invalid");
-  if (row.keyAlgorithm === "Ed25519" && (!strictEd25519Point(decoded.signature.subarray(0, 32)) || decodeLittleEndian(decoded.signature.subarray(32)) >= ED25519_SUBGROUP_ORDER)) return fail("signature_invalid");
+  if (row.keyAlgorithm === "Ed25519" && !strictEd25519Signature(decoded.signature)) return fail("signature_invalid");
   if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
   try {
     const prefix = row.keyAlgorithm === "Ed25519" ? Buffer.from("302a300506032b6570032100", "hex") : ML_DSA_SPKI_PREFIXES[row.keyAlgorithm as keyof typeof ML_DSA_SPKI_PREFIXES];

@@ -146,10 +146,13 @@ substrate cannot verify, keeping that local result outside verdict reports.
   harness and a 25-mutation red-required battery.
 - **The certified corpus** ships in this package (`conformance/`), pinned by
   a raw index SHA-256 asserted at load.
-- **Ed25519 key admission.** After `npm run build`, run
+- **Ed25519 key and R admission.** After `npm run build`, run
   `npm run check:ed25519 -- /path/to/elixir/repository` to compare the source
-  and built predicates with Elixir at `774479d` on 10,000 seeded inputs and
-  51 named edges. The check runs Elixir in a temporary copy of that commit.
+  and built predicates with Elixir at `911d84b` on 10,000 seeded inputs and
+  51 named edges for each role. The check compiles Elixir in a temporary copy
+  of that commit, exposing its private R check by changing only its visibility.
+  Run `npm run bench:ed25519` for admission and native signature costs, plus
+  a valid chain with 80 descriptors, 200 revisions, and 400 acceptances.
 - **This package never publishes verdict claims that were not recomputed
   from raw bytes.**
 

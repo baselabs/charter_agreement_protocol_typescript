@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { Point } from "@noble/ed25519";
 import * as api from "./index.ts";
-import { ED25519_EDGES, generatedEd25519Inputs, loadEd25519Predicate } from "./ed25519-inputs.ts";
+import { ED25519_EDGES, generatedEd25519Inputs, loadEd25519Predicate, loadEd25519Checks } from "./ed25519-inputs.ts";
 
 const prime = 2n ** 255n - 19n;
 const field = (value: bigint) => ((value % prime) + prime) % prime;
@@ -92,10 +94,56 @@ test("Ed25519 admission rejects y two without a curve point", async () => {
 });
 
 test("Ed25519 admission matches Euler and extended coordinates on seeded inputs", async () => {
-  const predicate = await loadEd25519Predicate();
+  const { strictEd25519Point, strictEd25519Signature } = await loadEd25519Checks();
   const inputs = generatedEd25519Inputs();
   assert.equal(new Set(inputs.map((bytes) => bytes.toString("hex"))).size, 10_000);
-  for (const bytes of inputs) assert.equal(predicate(bytes), referenceAdmits(bytes), bytes.toString("hex"));
+  for (const bytes of inputs) {
+    const admitted = referenceAdmits(bytes);
+    assert.equal(strictEd25519Point(bytes), admitted, bytes.toString("hex"));
+    assert.equal(strictEd25519Signature(Buffer.concat([bytes, Buffer.alloc(32)])), admitted, `R ${bytes.toString("hex")}`);
+  }
+});
+
+test("Ed25519 signature R uses the key point rule and exact scalar bounds", async () => {
+  const { strictEd25519Signature } = await loadEd25519Checks();
+  for (const { name, bytes, admitted } of ED25519_EDGES) {
+    assert.equal(strictEd25519Signature(Buffer.concat([bytes, Buffer.alloc(32)])), admitted, name);
+  }
+  for (const length of [0, 1, 32, 63, 65, 96]) assert.equal(strictEd25519Signature(Buffer.alloc(length)), false);
+  const base = ED25519_EDGES.find((edge) => edge.name === "base point")!.bytes;
+  const order = 2n ** 252n + 27742317777372353535851937790883648493n;
+  for (const scalar of [0n, order - 1n, order, order + 1n, 2n ** 256n - 1n]) {
+    const bytes = Buffer.from(scalar.toString(16).padStart(64, "0"), "hex").reverse();
+    assert.equal(strictEd25519Signature(Buffer.concat([base, bytes])), scalar < order);
+  }
+});
+
+test("Ed25519 R identity fails both public signature paths", async () => {
+  const seed = Buffer.alloc(32, 1);
+  const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]), format: "der", type: "pkcs8" });
+  const publicKey = createPublicKey(privateKey);
+  const encoded = publicKey.export({ format: "jwk" }).x!;
+  const fixture = JSON.parse(readFileSync(new URL("./conformance/cases/party_descriptor-verify.json", import.meta.url), "utf8"));
+  const compact = fixture.cases.find((one: any) => one.id === "party-descriptor-genesis-valid").input.compact;
+  const claims = JSON.parse(Buffer.from(compact.split(".")[1], "base64url").toString());
+  claims.protocol_revision = 2;
+  claims.verification_keys = [{ key_id: "k", algorithm: "Ed25519", public_key: encoded, status: "active" }];
+  const framed = api.descriptorSigningInput("k", claims);
+  assert.ok(framed.ok);
+  const secret = createHash("sha512").update(seed).digest().subarray(0, 32);
+  secret[0] &= 248;
+  secret[31] = (secret[31] & 63) | 64;
+  const littleEndian = (bytes: Buffer) => BigInt("0x" + Buffer.from(bytes).reverse().toString("hex"));
+  const r = ED25519_EDGES.find((edge) => edge.name === "identity")!.bytes;
+  const hash = createHash("sha512").update(r).update(Buffer.from(encoded, "base64url")).update(framed.input.message).digest();
+  const scalar = littleEndian(hash) * littleEndian(secret) % (2n ** 252n + 27742317777372353535851937790883648493n);
+  const signature = Buffer.concat([r, Buffer.from(scalar.toString(16).padStart(64, "0"), "hex").reverse()]);
+  const order = 2n ** 252n + 27742317777372353535851937790883648493n;
+  assert.ok(Point.BASE.multiply(scalar).equals(Point.fromBytes(r).add(Point.fromBytes(Buffer.from(encoded, "base64url")).multiply(littleEndian(hash) % order))));
+  for (const verifier of [api, await import("./dist/index.js")]) {
+    for (const algorithm of ["EdDSA", "Ed25519"]) assert.equal(verifier.verifySignature(framed.input.message, signature, encoded, algorithm), false);
+    assert.deepEqual(verifier.verifyDescriptor(`${framed.input.message.toString()}.${signature.toString("base64url")}`), { ok: false, code: "signature_invalid" });
+  }
 });
 
 test("Ed25519 admission checks every named edge and exact byte length", async () => {

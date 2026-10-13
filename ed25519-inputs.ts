@@ -45,14 +45,22 @@ export function generatedEd25519Inputs(count = 10_000, seed = 0x070ed255): Buffe
 }
 
 export async function loadEd25519Predicate(built = false): Promise<(point: Buffer) => boolean> {
+  return (await loadEd25519Checks(built)).strictEd25519Point;
+}
+
+export async function loadEd25519Checks(built = false): Promise<{
+  strictEd25519Point: (point: Buffer) => boolean;
+  strictEd25519Signature: (signature: Buffer) => boolean;
+  validPublicKey: (key: unknown, row: { keyAlgorithm: string; publicKeyBytes: number }) => boolean;
+}> {
   const scratch = mkdtempSync(join(tmpdir(), "cap-ed25519-"));
   try {
     const filename = built ? "core.js" : "core.ts";
     const source = readFileSync(new URL(built ? "./dist/core.js" : "./core.ts", import.meta.url), "utf8");
     const path = join(scratch, filename);
     // Import the complete real module with its private predicate exposed for checks.
-    writeFileSync(path, source + "\nexport { strictEd25519Point };\n");
-    return (await import(pathToFileURL(path).href)).strictEd25519Point;
+    writeFileSync(path, source + "\nexport { strictEd25519Point, strictEd25519Signature, validPublicKey };\n");
+    return await import(pathToFileURL(path).href);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
