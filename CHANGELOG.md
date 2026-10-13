@@ -23,9 +23,9 @@ documented here.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
-- The certified corpus now contains 221 cases in 16 case files, including
+- The certified corpus now contains 229 cases in 16 case files, including
   `signing.prepare`. Its runner calls public `prepareSigning`, and independent
-  tests check all 57 preparation cases and both compiled class floors.
+  tests check all 61 preparation cases and both compiled class floors.
 - `SECURITY.md` ships in the npm package with supported versions, scope,
   reproduction commands and private reporting through GitHub's Security tab.
 
@@ -44,6 +44,7 @@ documented here.
 
 ### Fixed
 
+- Ed25519 public keys are fully decoded on admission, so keys that are not curve points are rejected; the certified corpus contains 229 cases.
 - Malformed verification inputs and contexts return typed results instead of
   throwing, including a null message passed to `verifySignature` (which returns
   `false`). Throwing getters and Proxies also return typed results after inputs
