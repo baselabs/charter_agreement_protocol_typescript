@@ -1131,7 +1131,7 @@ function chainWithOptions(input: AnyRecord, options: VerificationOptions = {}): 
 
 function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
   if (!isRecord(input)) return fail("chain_invalid");
-  const bounded = boundedArtifacts([input.revisions, input.acceptances === undefined ? [] : input.acceptances, input.descriptors, input.terminations === undefined ? [] : input.terminations], settings.limits);
+  const bounded = boundedArtifacts([input.revisions, input.acceptances, input.descriptors, input.terminations], settings.limits);
   if (bounded) return fail(bounded);
   if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorViews(input.descriptors, settings);
@@ -1178,10 +1178,11 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   const acceptances: any[] = [];
   const coordinates = new Set();
   for (const compact of ((input.acceptances as string[]) || [])) {
-    const decoded = decodeJws(compact, settings.limits);
+    const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
     if (!decoded.ok) return decoded;
+    if (typeof decoded.value.payload.revision_digest !== "string" || typeof decoded.value.payload.party_descriptor_digest !== "string") return fail("chain_invalid");
     const revision = byDigest.get(decoded.value.payload.revision_digest);
-    if (!revision) return fail("chain_invalid");
+    if (!revision || !descriptors.value.descriptors.some((one) => one.digest === decoded.value.payload.party_descriptor_digest)) return fail("chain_invalid");
     const verified = acceptanceFromCompact(compact, revision, descriptors.value, settings);
     if (!verified.ok) return verified;
     const coordinate = `${verified.value.claims.revision_digest}\0${verified.value.claims.party_descriptor_digest}\0${verified.value.claims.party_role}`;
@@ -1202,10 +1203,11 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   if (accepted.some((one) => (one.value.supersedes ?? []).some((digest: string) => !acceptedSet.has(digest)))) return fail("chain_invalid");
   const terminations: any[] = [];
   for (const compact of ((input.terminations as string[]) || [])) {
-    const decoded = decodeJws(compact, settings.limits);
+    const decoded = decodeJws(compact, settings.limits, "cap+termination");
     if (!decoded.ok) return decoded;
+    if (typeof decoded.value.payload.governing_revision_digest !== "string" || typeof decoded.value.payload.party_descriptor_digest !== "string") return fail("chain_invalid");
     const revision = byDigest.get(decoded.value.payload.governing_revision_digest);
-    if (!revision) return fail("chain_invalid");
+    if (!revision || !descriptors.value.descriptors.some((one) => one.digest === decoded.value.payload.party_descriptor_digest)) return fail("chain_invalid");
     const verified = terminationFromCompact(compact, revision, descriptors.value, settings);
     if (!verified.ok) return verified;
     terminations.push(verified.value);

@@ -343,9 +343,9 @@ test("checkSigningClaims: receipt schema reds keep the codec codes", () => {
 test("the refusal boundary never throws on partial object views", () => {
   const view = corpusCase("chain-verify.json", "chain-dual-acceptance-valid");
   const claims = acceptanceClaims(view, 0);
-  // No acceptances member at all: behaves as the empty acceptance view.
+  // Missing artifact lists fail with a typed result.
   const partial = { revisions: view.input.revisions, descriptors: view.input.descriptors };
-  assert.ok(acceptanceRefusal(claims, partial).ok);
+  assert.deepEqual(acceptanceRefusal(claims, partial), { ok: false, code: "chain_invalid" });
   // A revision text that is valid JSON but not an object: typed failure.
   const notObject = { ...partial, revisions: ["null"] };
   const acceptance = acceptanceRefusal(claims, notObject);

@@ -164,3 +164,33 @@ test("S8 descriptor key extraction uses codec errors before times and extensions
     assert.deepEqual(api.verifyDescriptor(changeClaims(f.compact, change)), { ok: false, code: "descriptor_invalid" });
   });
 });
+
+test("S9 chain routing checks the envelope and both routing coordinates first", async (t) => {
+  const base = fixture("chain-verify", "chain-dual-acceptance-valid");
+  for (const [kind, list, original, revisionField] of [
+    ["acceptance", "acceptances", base.acceptances[0], "revision_digest"],
+    ["termination", "terminations", fixture("termination-verify", "termination-valid").compact, "governing_revision_digest"],
+  ]) {
+    for (const [label, change] of [
+      ["absent signer", (claims: any) => ({ ...claims, [revisionField]: claimsOf(base.acceptances[0]).revision_digest, party_descriptor_digest: sampleDigest })],
+      ["missing signer coordinate", (claims: any) => { const { party_descriptor_digest, ...rest } = claims; return { ...rest, [revisionField]: claimsOf(base.acceptances[0]).revision_digest }; }],
+    ] as const) await t.test(`${kind} ${label}`, () => {
+      assert.deepEqual(api.verifyChain({ ...base, [list]: [changeClaims(original, change)] }), { ok: false, code: "chain_invalid" });
+    });
+    await t.test(`${kind} wrong type and unknown revision`, () => {
+      const [, payload, signature] = changeClaims(original, (claims) => ({ ...claims, [revisionField]: sampleDigest })).split(".");
+      const header = JSON.parse(Buffer.from(original.split(".")[0], "base64url").toString());
+      const compact = `${Buffer.from(api.canonical({ ...header, typ: "cap+party" })).toString("base64url")}.${payload}.${signature}`;
+      assert.deepEqual(api.verifyChain({ ...base, [list]: [compact] }), { ok: false, code: "protected_header_invalid" });
+    });
+  }
+});
+
+test("chain artifact lists must be supplied explicitly", () => {
+  const base = fixture("chain-verify", "chain-dual-acceptance-valid");
+  for (const list of ["acceptances", "terminations"]) {
+    const view = { ...base };
+    delete view[list];
+    assert.deepEqual(api.verifyChain(view), { ok: false, code: "invalid_type" });
+  }
+});
