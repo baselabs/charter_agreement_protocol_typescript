@@ -77,7 +77,24 @@ test("corpus runner rejects unknown options before every surface executes", asyn
   }
 });
 
-test("public signing preparation matches every corpus projection independently", async (t) => {
+test("receipt corpus runner applies caller limits to its chain context", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-runner-receipt-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    const receiptCases = JSON.parse(readFileSync(new URL("./conformance/cases/receipt-verify.json", import.meta.url), "utf8")).cases;
+    const one = receiptCases.find((one: api.ConformanceCase) => one.id === "receipt-strict-chain-limits");
+    assert.ok(one);
+    assert.ok(api.verifyReceipt(one.input.compact, one.input.chain).ok);
+    assert.deepEqual(api.verifyReceipt(one.input.compact, one.input.chain, { limits: one.input.limits }), { ok: false, code: "limit_exceeded" });
+    assert.deepEqual(executeCase(one), one.expect);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("public signing preparation matches artifact corpus projections independently", async (t) => {
   assert.equal(cases.length, 69);
   for (const one of cases.filter((one) => !one.id.startsWith("signing-unknown-"))) await t.test(one.id, () => {
     const input = one.input;

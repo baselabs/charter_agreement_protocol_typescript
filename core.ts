@@ -1605,7 +1605,7 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
       return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
     }
     case "receipt.verify": {
-      const settings = resolveOptions({ profile: input.profile });
+      const settings = resolveOptions({ limits: input.limits, profile: input.profile });
       if (!settings.ok) return invalid(settings.code);
       return project(receiptWithContext(input.compact, input.revision_text ?? input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
     }
