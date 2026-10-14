@@ -2008,7 +2008,7 @@ function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
     }
     const record = Object.create(null);
     copies.set(value, record);
-    for (const name of Object.getOwnPropertyNames(value)) {
+    for (const name of Object.keys(value)) {
       if (Object.hasOwn(value, name)) record[name] = copy(value[name]);
     }
     return record;
@@ -2020,8 +2020,35 @@ function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
   }
 }
 
+function readOptionMembers(value: any, names: string[], nested: Record<string, (value: any) => any> = {}): any {
+  if (!isRecord(value)) return value;
+  const record = Object.create(null);
+  for (const name of Object.keys(value)) {
+    if (!names.includes(name)) record[name] = undefined;
+  }
+  for (const name of names) {
+    const member = value[name];
+    if (member !== undefined) record[name] = nested[name] ? nested[name](member) : member;
+  }
+  return record;
+}
+
+function plainVerificationInputs<T extends unknown[]>(options: VerificationOptions | SigningOptions, ...inputs: T): Result<[...T, SigningOptions]> {
+  try {
+    const selected = readOptionMembers(options, ["limits", "profile", "algorithm"], {
+      limits: (value) => readOptionMembers(value, Object.keys(DEFAULT_LIMITS)),
+      profile: (value) => readOptionMembers(value, ["algorithms", "revisions"], {
+        revisions: (range) => readOptionMembers(range, ["min", "max"]),
+      }),
+    });
+    return plainInputs(...inputs, selected);
+  } catch (_error) {
+    return fail("invalid_type");
+  }
+}
+
 export function verifySignature(message: Uint8Array, signature: Uint8Array, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
-  const plain = plainInputs(message, signature, publicKeyBase64url, alg, options);
+  const plain = plainVerificationInputs(options, message, signature, publicKeyBase64url, alg);
   if (!plain.ok) return false;
   [message, signature, publicKeyBase64url, alg, options] = plain.value;
   if (!isUint8Array(message) || !isUint8Array(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
@@ -2061,7 +2088,7 @@ export function verifyDescriptor(
   predecessor: DescriptorPredecessor | null = null,
   options: VerificationOptions = {},
 ): VerifyResult {
-  const plain = plainInputs(compact, predecessor, options);
+  const plain = plainVerificationInputs(options, compact, predecessor);
   if (!plain.ok) return plain;
   [compact, predecessor, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2085,7 +2112,7 @@ export function verifyDescriptor(
 }
 
 export function verifyDescriptorChain(compacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainInputs(compacts, options);
+  const plain = plainVerificationInputs(options, compacts);
   if (!plain.ok) return plain;
   [compacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2096,7 +2123,7 @@ export function verifyDescriptorChain(compacts: string[], options: VerificationO
 }
 
 export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainInputs(compact, revisionText, descriptorCompacts, options);
+  const plain = plainVerificationInputs(options, compact, revisionText, descriptorCompacts);
   if (!plain.ok) return plain;
   [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2111,7 +2138,7 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainInputs(compact, revisionText, descriptorCompacts, options);
+  const plain = plainVerificationInputs(options, compact, revisionText, descriptorCompacts);
   if (!plain.ok) return plain;
   [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2126,7 +2153,7 @@ export function verifyTermination(compact: string, revisionText: string, descrip
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainInputs(chainInput, options);
+  const plain = plainVerificationInputs(options, chainInput);
   if (!plain.ok) return plain;
   [chainInput, options] = plain.value;
   const verified = chainWithOptions(chainInput, options);
@@ -2135,7 +2162,7 @@ export function verifyChain(chainInput: AnyRecord, options: VerificationOptions 
 }
 
 export function verifyReceipt(compact: string, context: AnyRecord | string, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainInputs(compact, context, options);
+  const plain = plainVerificationInputs(options, compact, context);
   if (!plain.ok) return plain;
   [compact, context, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2372,7 +2399,7 @@ export function prepareSigning(
   context: DescriptorPredecessor | null | ChainInput | string,
   options: SigningOptions = {},
 ): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
-  const plain = plainInputs(kind, kid, claims, publicKey, context, options);
+  const plain = plainVerificationInputs(options, kind, kid, claims, publicKey, context);
   if (!plain.ok) return plain;
   [kind, kid, claims, publicKey, context, options] = plain.value;
   const settings = resolveOptions(options);
