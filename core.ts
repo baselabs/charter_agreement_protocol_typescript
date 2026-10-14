@@ -1749,6 +1749,11 @@ function corpusDigest(index: Record<string, unknown>): string {
   return taggedHash("corpus_index", Buffer.from(canonical(without as unknown as CanonicalValue)));
 }
 
+function readCaseJson(text: string): any {
+  return JSON.parse(text, (_key, value, context?: { source?: string }) =>
+    typeof value === "number" && context?.source && /[.eE]/.test(context.source) ? new Number(value) : value);
+}
+
 export function loadCorpus(root: string): LoadedCorpus {
   const observedEntries = walk(root);
   if (observedEntries.length === 0 || observedEntries.length > MAXIMUM_CORPUS_FILES ||
@@ -1771,7 +1776,7 @@ export function loadCorpus(root: string): LoadedCorpus {
     const bytes = readFileSync(join(root, entry.path));
     if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
     if (rawHash(bytes) !== String(entry.sha256_base64url)) throw new Error("file hash");
-    const file = JSON.parse(bytes.toString("utf8"));
+    const file = readCaseJson(bytes.toString("utf8"));
     if (canonical(file as CanonicalValue) !== bytes.toString("utf8") || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
     cases.push(...file.cases);
   }

@@ -9,6 +9,25 @@ import * as api from "./index.ts";
 
 const cases: api.ConformanceCase[] = JSON.parse(readFileSync(new URL("./conformance/cases/signing-prepare.json", import.meta.url), "utf8")).cases;
 
+test("case reader preserves float lexemes for integer fields", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-case-numbers-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") +
+      '\nexport { execute as executeCase, readCaseJson as parseCaseText };\n');
+    const { executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
+    const one = cases.find((one) => one.id === "signing-ed25519-party_descriptor")!;
+    const text = JSON.stringify(one).replace('"protocol_revision":2', '"protocol_revision":2.0');
+    assert.notEqual(text, JSON.stringify(one));
+    assert.deepEqual(executeCase(parseCaseText(text)), { status: "invalid", error_code: "signing_input_invalid" });
+    const limitsText = JSON.stringify({ ...one, input: { ...one.input, limits: { max_bytes: 20000 } } })
+      .replace('"max_bytes":20000', '"max_bytes":20000.0');
+    assert.deepEqual(executeCase(parseCaseText(limitsText)), { status: "invalid", error_code: "invalid_limits" });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("signing corpus runner matches Elixir kinds contexts and closed options", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-"));
   try {
