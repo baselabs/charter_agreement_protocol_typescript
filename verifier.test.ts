@@ -54,8 +54,8 @@ test("source and built CLIs find the certified corpus from any working directory
       const run = spawnSync(process.execPath, [...args, join(here, filename)], { cwd: scratch, encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr || run.stdout);
       const report = JSON.parse(run.stdout);
-      assert.equal(report.total, 243);
-      assert.equal(report.agreed, 243);
+      assert.equal(report.total, 364);
+      assert.equal(report.agreed, 364);
       assert.equal(report.disagreed, 0);
       return run.stdout;
     });
@@ -128,7 +128,7 @@ test("check-corpus.mjs accepts the vendored corpus and reports its digest", asyn
   const run = spawnSync(process.execPath, [join(here, "check-corpus.mjs"), join(here, "conformance")], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr || run.stdout);
   const index = JSON.parse(readFileSync(join(here, "conformance", "index.json"), "utf8"));
-  assert.equal(index.total_cases, 243);
+  assert.equal(index.total_cases, 364);
   assert.equal(run.stdout.trim(), index.corpus_digest);
   for (const surface of ["acceptance.verify", "termination.verify", "receipt.verify"]) {
     for (const name of ["profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"]) {

@@ -59,22 +59,22 @@ const classes = [
 ];
 
 const required = {
-  "acceptance.equivocation": ["equivocation", "invalid_constraint"],
-  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
-  "base64url.decode": ["valid", "exact_bound", "invalid_encoding"],
+  "acceptance.equivocation": ["equivocation", "invalid_constraint", "invalid_type"],
+  "acceptance.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
+  "base64url.decode": ["valid", "exact_bound", "invalid_encoding", "invalid_type"],
   "canonicalization.encode": ["valid", "invalid_encoding", "invalid_type", "non_canonical_bytes"],
-  "chain.verify": ["valid", "exact_bound", "maximum_plus_one", "chain_fork", "supersession", "chain_invalid"],
-  "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid"],
+  "chain.verify": ["valid", "exact_bound", "maximum_plus_one", "chain_fork", "supersession", "chain_invalid", "invalid_type"],
+  "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid", "invalid_type"],
   "charter_revision.decode": ["valid", "invalid_encoding", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "non_canonical_bytes", "extension_unknown_critical", "extension_invalid"],
-  "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork"],
+  "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork", "invalid_type"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
-  "governing_revision": ["precedence_selection", "terminated"],
+  "governing_revision": ["precedence_selection", "terminated", "invalid_type"],
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
-  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
-  "receipt.verify": ["maximum_plus_one", "valid", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
+  "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
+  "receipt.verify": ["valid", "maximum_plus_one", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
-  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside"],
+  "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
 };
 
 function canonical(value) {
