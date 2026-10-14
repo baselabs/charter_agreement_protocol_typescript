@@ -359,6 +359,13 @@ function skipWhitespace(text: any, index: any) {
 }
 
 export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Result<CanonicalValue> {
+  try {
+    const plain = plainInputs(text, readOptionMembers(selected, Object.keys(DEFAULT_LIMITS)));
+    if (!plain.ok) return plain;
+    [text, selected] = plain.value;
+  } catch (_error) {
+    return fail("invalid_type");
+  }
   if (!validLimits(selected)) return fail("invalid_limits");
   if (typeof text !== "string") return fail("invalid_type");
   const limits = { ...DEFAULT_LIMITS, ...selected };
@@ -2285,6 +2292,11 @@ export function checkSigningClaims(
   kind: "descriptor" | "acceptance" | "termination" | "receipt",
   claims: AnyRecord,
 ): { ok: true } | { ok: false; code: string } {
+  const plain = copyInput(claims, MAXIMUM_LIMITS, "json");
+  return plain.ok ? signingClaims(kind, plain.value) : plain;
+}
+
+function signingClaims(kind: SigningKind, claims: AnyRecord): RefusalResult {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return { ok: false, code: "invalid_type" };
   const error =
     kind === "descriptor" ? signingDescriptorError(claims) :
@@ -2373,6 +2385,9 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
 // The unique governing revision in a verified view at one UTC instant -
 // a digest, or "contested"/"none" (never silently resolved).
 export function governingRevision(chainInput: AnyRecord, at: string, options: VerificationOptions = {}): { ok: true; governing: string } | { ok: false; code: string } {
+  const plain = plainVerificationInputs(options, [chainInput, at]);
+  if (!plain.ok) return plain;
+  [chainInput, at, options] = plain.value;
   const instant = typeof at === "string" ? parseTimestamp(at) : null;
   if (!instant) return { ok: false, code: "invalid_type" };
   if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) {
@@ -2386,6 +2401,9 @@ export function governingRevision(chainInput: AnyRecord, at: string, options: Ve
 // Decode one canonical unsigned Charter Revision: the parsed claims plus
 // its content digest, computed over the exact text bytes.
 export function decodeCharterRevision(text: unknown, options: VerificationOptions = {}): { ok: true; revision: AnyRecord; digest: string } | { ok: false; code: string } {
+  const plain = plainVerificationInputs(options, [text]);
+  if (!plain.ok) return plain;
+  [text, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const revision = revisionFromText(text, settings.value.limits);
@@ -2549,8 +2567,13 @@ export function prepareSigning(
 
 /** Assemble under the retained limits and run public verification. */
 export function finishSigning(plan: SigningPlan, signature: Uint8Array): FinishResult {
-  if (!(plan instanceof SigningPlan)) return fail("invalid_type");
-  return finishSigningPlan(plan, signature);
+  try {
+    if (!(plan instanceof SigningPlan)) return fail("invalid_type");
+    const plain = plainInputs(signature);
+    return plain.ok ? finishSigningPlan(plan, plain.value[0]) : plain;
+  } catch (_error) {
+    return fail("invalid_type");
+  }
 }
 
 export type SigningInput = { alg: string; protectedSegment: string; payloadSegment: string; message: Buffer };
@@ -2631,7 +2654,7 @@ function buildSigningInput(
   // The reference build's decode step: the claims schema gate runs inside
   // the producer, after framing and size - the same precedence as
   // decode_for_signing inside the Elixir build pipeline.
-  const claimsGate = checkSigningClaims(kind, record);
+  const claimsGate = signingClaims(kind, record);
   if (!claimsGate.ok) return { ok: false, code: "signing_input_invalid" };
 
   // The provisional check: a zero signature at the row's exact length must
@@ -2645,10 +2668,16 @@ function buildSigningInput(
 }
 
 export function descriptorSigningInput(kid: string, claims: AnyRecord, algorithm?: string): ProducerResult {
+  const plain = plainVerificationInputs({}, [kid, claims, algorithm], 1);
+  if (!plain.ok) return plain;
+  [kid, claims, algorithm] = plain.value;
   return buildSigningInput("descriptor", kid, claims, algorithm);
 }
 
 export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: string): ProducerResult {
+  const plain = plainVerificationInputs({}, [kid, claims, algorithm], 1);
+  if (!plain.ok) return plain;
+  [kid, claims, algorithm] = plain.value;
   return buildSigningInput("receipt", kid, claims, algorithm);
 }
 
@@ -2656,6 +2685,9 @@ export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: 
 // claims schema) FIRST, then the set-aware R1-R3 refusal checks - so a
 // claims defect reports the producer code even when the view is also bad.
 export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1);
+  if (!plain.ok) return plain;
+  [kid, claims, chainInput, algorithm] = plain.value;
   const built = buildSigningInput("acceptance", kid, claims, algorithm);
   if (!built.ok) return built;
   const refusal = acceptanceRefusal(claims, chainInput);
@@ -2664,6 +2696,9 @@ export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInpu
 }
 
 export function terminationSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1);
+  if (!plain.ok) return plain;
+  [kid, claims, chainInput, algorithm] = plain.value;
   const built = buildSigningInput("termination", kid, claims, algorithm);
   if (!built.ok) return built;
   const refusal = terminationRefusal(claims, chainInput);
@@ -2676,13 +2711,16 @@ function decodeSigningArtifact(compact: string, limits: Limits = DEFAULT_LIMITS)
   if (!decoded.ok) return decoded;
   const kind = (Object.keys(PRODUCER_TYPES) as Array<keyof typeof PRODUCER_TYPES>).find((one) => PRODUCER_TYPES[one] === decoded.value.header.typ);
   if (!kind) return fail("signing_input_invalid");
-  const checked = checkSigningClaims(kind, decoded.value.payload);
+  const checked = signingClaims(kind, decoded.value.payload);
   return checked.ok ? ok(null) : checked;
 }
 
 // Assemble a validated signing input and its exact raw signature (the
 // reference assemble): registry-row length, full artifact decode, size gate.
 export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
+  const plain = plainVerificationInputs({}, [input, signature]);
+  if (!plain.ok) return plain.code === "limit_exceeded" ? fail("signing_input_invalid") : plain;
+  [input, signature] = plain.value;
   return assembleUnderLimits(input, signature, DEFAULT_LIMITS);
 }
 
@@ -2757,6 +2795,9 @@ function refusalAncestorOf(candidate: string, target: string, byDigest: Map<stri
 }
 
 export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
+  const plain = plainVerificationInputs({}, [claims, chainInput], 0);
+  if (!plain.ok) return plain;
+  [claims, chainInput] = plain.value;
   if (!refusalClaimsShape(claims, ["revision_digest", "charter_id", "party_role", "party_descriptor_digest"], ["revision_number"])) {
     return { ok: false, code: "signing_input_invalid" };
   }
@@ -2801,6 +2842,9 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
 }
 
 export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
+  const plain = plainVerificationInputs({}, [claims, chainInput], 0);
+  if (!plain.ok) return plain;
+  [claims, chainInput] = plain.value;
   if (!refusalClaimsShape(claims, ["governing_revision_digest", "charter_id", "party_role", "party_descriptor_digest", "reason_code"], [])) {
     return { ok: false, code: "signing_input_invalid" };
   }

@@ -83,3 +83,44 @@ test("empty revisions read descriptors before topology checks", () => {
   }
   assert.deepEqual(api.verifyChain({ revisions: [], acceptances: [], descriptors: [descriptor.compact], terminations: [] }, { limits: { max_bytes: 10 } }), { ok: false, code: "limit_exceeded" });
 });
+
+test("all public verdict functions return typed results for hostile reads", async (t) => {
+  const prepared = api.prepareSigning("descriptor", signing.kid, signing.claims, signing.public_key, null);
+  assert.ok(prepared.ok);
+  const framed = api.descriptorSigningInput(signing.kid, signing.claims);
+  assert.ok(framed.ok);
+  const calls: Record<string, [(...args: any[]) => any, any[]]> = {
+    governingRevision: [api.governingRevision, [chain, "2026-09-01T00:00:00Z", {}]],
+    decodeCharterRevision: [api.decodeCharterRevision, [acceptance.revision_text, {}]],
+    revisionDigest: [api.revisionDigest, [acceptance.revision_text, {}]],
+    decodePartyDescriptor: [api.decodePartyDescriptor, [descriptor.compact]],
+    descriptorDigest: [api.descriptorDigest, [descriptor.compact]],
+    decodeArtifact: [api.decodeArtifact, [descriptor.compact]],
+    checkSigningClaims: [api.checkSigningClaims, ["descriptor", signing.claims]],
+    acceptanceRefusal: [api.acceptanceRefusal, [signing.claims, chain]],
+    terminationRefusal: [api.terminationRefusal, [signing.claims, chain]],
+    descriptorSigningInput: [api.descriptorSigningInput, [signing.kid, signing.claims, "Ed25519"]],
+    receiptSigningInput: [api.receiptSigningInput, [signing.kid, signing.claims, "Ed25519"]],
+    acceptanceSigningInput: [api.acceptanceSigningInput, [signing.kid, signing.claims, chain, "Ed25519"]],
+    terminationSigningInput: [api.terminationSigningInput, [signing.kid, signing.claims, chain, "Ed25519"]],
+    assembleCompact: [api.assembleCompact, [framed.input, signature]],
+    finishSigning: [api.finishSigning, [prepared.plan, signature]],
+    decodeJsonText: [api.decodeJsonText, ["{}", {}]],
+  };
+  const unreadable = () => { throw new Error("unreadable"); };
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  const hostile = [
+    new Proxy({}, { get: unreadable, ownKeys: unreadable, getPrototypeOf: unreadable, has: unreadable }),
+    revoked.proxy,
+    { get revisions() { return unreadable(); } },
+    new Proxy([], { get(target, key) { return key === "length" ? unreadable() : Reflect.get(target, key); } }),
+  ];
+  for (const [name, [call, args]] of Object.entries(calls)) await t.test(name, () => {
+    for (let position = 0; position < args.length; position++) for (const value of hostile) {
+      const result = call(...args.map((arg, i) => position === i ? value : arg));
+      assert.equal(typeof result.ok, "boolean");
+      if (!result.ok) assert.equal(typeof result.code, "string");
+    }
+  });
+});

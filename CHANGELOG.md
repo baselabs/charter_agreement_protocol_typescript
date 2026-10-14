@@ -53,10 +53,25 @@ documented here.
   the retained chain context. The receipt corpus runner passes these limits through.
 - The source CLI finds its bundled corpus without an explicit path, as the
   built CLI does.
-- Malformed verification inputs and contexts return typed results instead of
-  throwing, including a null message passed to `verifySignature` (which returns
-  `false`). Throwing getters and Proxies also return typed results after inputs
-  are copied into plain values at the public boundary.
+- The public verdict functions return typed results for malformed inputs,
+  throwing getters, and Proxies: `verifyDescriptor`, `verifyDescriptorChain`,
+  `verifyAcceptance`, `verifyTermination`, `verifyChain`, `verifyReceipt`,
+  `prepareSigning`, `finishSigning`, `governingRevision`, `decodeArtifact`,
+  `decodeCharterRevision`, `revisionDigest`, `decodePartyDescriptor`,
+  `descriptorDigest`, `checkSigningClaims`, `acceptanceRefusal`,
+  `terminationRefusal`, all four signing-input producers, `assembleCompact`, and
+  `decodeJsonText`. `verifySignature` returns `false` for malformed inputs.
+  `canonical`, `jsonProjection`, `encodeBase64url`, `taggedDigest`, `loadCorpus`,
+  and `reportFor` retain their existing return shapes and can throw on invalid
+  caller input, corpus failures, or unavailable corpus verification.
+- Options use ordinary property reads, including inherited and getter values,
+  once at entry. Claims use own enumerable JSON members. Input copies check
+  array lengths and byte sizes before allocation, count expanded bytes and
+  depth, and stop at the selected limits. Deep and shared signing claims return
+  `signing_input_invalid` without overflowing the stack or expanding unboundedly.
+- Empty revision lists read descriptors before topology checks. The runner
+  handles null and incomplete sets, nontext predecessors, and null receipt
+  chains with typed errors. Case JSON preserves float lexemes for integer checks.
 - The signature guard requires canonical base64url public keys and accepts plain
   and cross-realm `Uint8Array` messages and signatures.
 - The workshop passes only the signing party's descriptor history to acceptance

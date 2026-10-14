@@ -105,6 +105,25 @@ and `assembleCompact` continue to use default limits; use the plan API for calle
 limits and the check before signing. A non-set passed to the existing set-aware
 producers still returns `signing_input_invalid`.
 
+The following public functions return typed results for malformed input and
+unreadable getters or Proxies: `verifyDescriptor`, `verifyDescriptorChain`,
+`verifyAcceptance`, `verifyTermination`, `verifyChain`, `verifyReceipt`,
+`prepareSigning`, `finishSigning`, `governingRevision`, `decodeArtifact`,
+`decodeCharterRevision`, `revisionDigest`, `decodePartyDescriptor`,
+`descriptorDigest`, `checkSigningClaims`, `acceptanceRefusal`,
+`terminationRefusal`, `descriptorSigningInput`, `receiptSigningInput`,
+`acceptanceSigningInput`, `terminationSigningInput`, `assembleCompact`, and
+`decodeJsonText`. `verifySignature` returns `false` for malformed input.
+`canonical`, `jsonProjection`, `encodeBase64url`, `taggedDigest`, `loadCorpus`,
+and `reportFor` retain their existing return shapes and can throw on invalid
+caller input, corpus failures, or unavailable corpus verification.
+
+Known option members are read once at entry with ordinary property reads;
+inherited values and getters count. Claims use own enumerable JSON members.
+Copies check array lengths and byte sizes before allocation and bound expanded
+bytes and depth. Deep or excessively shared signing claims return
+`signing_input_invalid`.
+
 Verification options default to the full algorithm registry, revisions 1..3,
 and `DEFAULT_LIMITS`. Profiles apply to each signed artifact after its local
 checks and before crypto; unsigned charter revisions use only the revision
