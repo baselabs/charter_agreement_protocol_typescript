@@ -36,6 +36,69 @@ test("byte decoding preserves parser order before UTF-8 errors", async (t) => {
   }
 });
 
+test("foundation runner surfaces validate their complete inputs", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-foundation-inputs-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") +
+      "\nexport { execute as executeCase, readCaseJson as parseCaseText };\n");
+    const { executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
+    const checks: Array<[string, Record<string, any>, api.CaseResult]> = [
+      ["canonicalization.encode", { tag: "string_codepoint", value: "+0041" }, { status: "valid", output: { text: '"A"' } }],
+      ["canonicalization.encode", { tag: "string_codepoint", value: "D800" }, { status: "invalid", error_code: "invalid_type" }],
+      ["canonicalization.encode", { tag: "integer", text_value: "+007" }, { status: "valid", output: { text: "7" } }],
+      ["canonicalization.encode", { tag: "integer", text_value: "-0" }, { status: "valid", output: { text: "0" } }],
+      ["canonicalization.encode", { tag: "integer", text_value: 1 }, { status: "invalid", error_code: "invalid_type" }],
+      ["canonicalization.encode", { tag: "integer", text_value: "1x" }, { status: "invalid", error_code: "invalid_type" }],
+      ["canonicalization.encode", { tag: "object", members: [["a", { tag: "integer", value: "1" }]] }, { status: "invalid", error_code: "invalid_type" }],
+      ["digest.hash", { bytes_base64url: "e30", domain: "unknown" }, { status: "invalid", error_code: "invalid_type" }],
+      ["digest.hash", { bytes_base64url: "AB" }, { status: "invalid", error_code: "base64url_invalid" }],
+      ["digest.hash", { bytes_base64url: 1 }, { status: "invalid", error_code: "invalid_type" }],
+      ["digest.hash", { bytes_base64url: "e30", tagged: api.taggedDigest("charter_revision_content", Buffer.from("{}")) }, { status: "valid", output: {} }],
+      ["schema.validate", { members: [] }, { status: "invalid", error_code: "invalid_type" }],
+      ["json.decode", { kind: "integer", value: "[1]" }, { status: "invalid", error_code: "invalid_type" }],
+      ["digest.hash", { kind: "integer", value: "{}" }, { status: "invalid", error_code: "invalid_type" }],
+    ];
+    for (const [surface, input, expected] of checks) await t.test(`${surface} ${JSON.stringify(input)}`, () => {
+      assert.deepEqual(executeCase({ surface, input }), expected);
+    });
+    for (const literal of ["9007199254740993", "-9007199254740993", "1000000000000000000000000000000000000000000000000000000000"]) {
+      const text = `{"surface":"canonicalization.encode","input":{"tag":"object","members":[["a",{"tag":"integer","value":${literal}}]]}}`;
+      await t.test(`integer token ${literal}`, () => {
+        assert.deepEqual(executeCase(parseCaseText(text)), { status: "invalid", error_code: "integer_magnitude" });
+      });
+    }
+    const float = '{"surface":"canonicalization.encode","input":{"tag":"object","members":[["a",{"tag":"integer","value":1.0}]]}}';
+    assert.deepEqual(executeCase(parseCaseText(float)), { status: "invalid", error_code: "invalid_type" });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("runner chain views contain exactly four lists and use top level limits", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-case-views-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    for (const id of ["signing-ed25519-acceptance", "signing-ed25519-receipt"]) {
+      const one = cases.find((one) => one.id === id)!;
+      const member = id.endsWith("acceptance") ? "set" : "chain";
+      for (const extra of ["note", "limits"]) await t.test(`${id} ${extra}`, () => {
+        const context = { [member]: { ...one.input.context[member], [extra]: {} } };
+        assert.deepEqual(executeCase({ ...one, input: { ...one.input, context } }), { status: "invalid", error_code: "invalid_type" });
+      });
+    }
+    const one = corpusCases.find((one) => one.id === "receipt-signed-governing-match")!;
+    assert.deepEqual(executeCase({ ...one, input: { ...one.input, chain: { ...one.input.chain, limits: {} } } }),
+      { status: "invalid", error_code: "invalid_type" });
+    assert.deepEqual(executeCase({ ...one, input: { ...one.input, limits: { max_artifact_set_items: 0 } } }),
+      { status: "invalid", error_code: "limit_exceeded" });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("runner matches every certified case with typed results", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-cases-"));
   try {

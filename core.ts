@@ -1571,17 +1571,17 @@ function closedCaseOptions(input: AnyRecord): Result<null> {
   return ok(null);
 }
 
-function signingCaseContext(context: any): Result<SigningCaseContext> {
+function signingCaseContext(context: any, options: VerificationOptions): Result<SigningCaseContext> {
   if (!isRecord(context)) return ok({ value: context, kind: context === null ? "descriptor" : "raw" });
   if ("set" in context) {
     const set = context.set;
     const members = ["revisions", "acceptances", "descriptors", "terminations"];
-    if (!isRecord(set)) return fail("invalid_type");
+    if (!exactKeys(set, [...CHAIN_MEMBERS])) return fail("invalid_type");
     return ok({ value: Object.fromEntries(members.map((name) => [name, set?.[name] ?? null])) as ChainInput, kind: "set" });
   }
   if ("chain" in context) {
-    if (!isRecord(context.chain)) return fail("invalid_type");
-    const verified = verifyChain(context.chain, { limits: context.chain.limits });
+    if (!exactKeys(context.chain, [...CHAIN_MEMBERS])) return fail("invalid_type");
+    const verified = verifyChain(context.chain, { limits: options.limits });
     return verified.ok ? ok({ value: context.chain, kind: "chain" }) : fail(verified.code);
   }
   if ("revision_text" in context) {
@@ -1618,7 +1618,7 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
   switch (one.surface) {
     case "signing.prepare": {
       const options = signingCaseOptions(input);
-      const context = signingCaseContext(input.context);
+      const context = signingCaseContext(input.context, options);
       if (!context.ok) return invalid(context.code);
       const key = strictBase64url(input.public_key);
       if (!key.ok) return invalid(key.code);
@@ -1661,7 +1661,8 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
     case "receipt.verify": {
       const settings = resolveOptions({ limits: input.limits, profile: input.profile });
       if (!settings.ok) return invalid(settings.code);
-      return project(receiptWithContext(input.compact, input.revision_text ?? input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
+      if (!Object.hasOwn(input, "revision_text") && !exactKeys(input.chain, [...CHAIN_MEMBERS])) return invalid("invalid_type");
+      return project(receiptWithContext(input.compact, Object.hasOwn(input, "revision_text") ? input.revision_text : input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
     }
     default:
       return null;
@@ -1677,9 +1678,85 @@ function execute(one: ConformanceCase): CaseResult {
   }
 }
 
+function isIntegerToken(value: unknown): value is number | bigint {
+  return typeof value === "bigint" || (typeof value === "number" && Number.isInteger(value));
+}
+
+function caseKindMatches(input: AnyRecord): boolean {
+  const value = input.value;
+  switch (input.kind) {
+    case "integer": return isIntegerToken(value);
+    case "float": return value instanceof Number || (typeof value === "number" && !Number.isInteger(value));
+    case "string": return typeof value === "string";
+    case "boolean": return typeof value === "boolean";
+    case "null": return value === null;
+    case "array": return Array.isArray(value);
+    case "object": return isRecord(value);
+    default: return false;
+  }
+}
+
+function canonicalInteger(value: number | bigint): CaseResult {
+  const integer = BigInt(value);
+  return integer > MAXIMUM_SAFE_INTEGER || integer < -MAXIMUM_SAFE_INTEGER ? invalid("integer_magnitude") :
+    valid({ text: integer.toString() });
+}
+
+function executeCanonicalCase(input: AnyRecord): CaseResult {
+  if (Object.hasOwn(input, "text")) {
+    const decoded = decodeJsonText(input.text);
+    if (!decoded.ok) return invalid(decoded.code);
+    return canonical(decoded.value) === input.text ? valid({ text: input.text }) : invalid("non_canonical_bytes");
+  }
+  if (input.tag === "integer") {
+    if (typeof input.text_value !== "string" || !/^[+-]?[0-9]+$/.test(input.text_value)) return invalid("invalid_type");
+    return canonicalInteger(BigInt(input.text_value));
+  }
+  if (input.tag === "string_codepoint") {
+    if (typeof input.value !== "string" || !/^[+-]?[0-9a-fA-F]+$/.test(input.value)) return invalid("invalid_type");
+    const point = Number.parseInt(input.value, 16);
+    if (point < 0 || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return invalid("invalid_type");
+    const text = JSON.stringify(String.fromCodePoint(point));
+    const decoded = decodeJsonText(text);
+    return decoded.ok ? valid({ text }) : invalid(decoded.code);
+  }
+  if (input.tag === "object" && Array.isArray(input.members)) {
+    const pairs = input.members;
+    if (!pairs.every((pair: any) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" &&
+      isRecord(pair[1]) && pair[1].tag === "integer" && isIntegerToken(pair[1].value))) return invalid("invalid_type");
+    const names = pairs.map(([name]: [string, unknown]) => name);
+    if (new Set(names).size !== names.length) return invalid("duplicate_member");
+    for (const [name, item] of pairs) {
+      const encodedName = decodeJsonText(JSON.stringify(name));
+      if (!encodedName.ok) return invalid(encodedName.code);
+      const encoded = canonicalInteger(item.value);
+      if (encoded.status === "invalid") return encoded;
+    }
+    return valid({ text: canonical(Object.fromEntries(pairs.map(([name, item]: any) => [name, Number(item.value)]))) });
+  }
+  return invalid("invalid_type");
+}
+
+function executeDigestCase(input: AnyRecord): CaseResult {
+  const domain = input.domain ?? "charter_revision_content";
+  if (typeof domain !== "string" || !Object.hasOwn(SEPARATORS, domain) || domain === "signature_registry") return invalid("invalid_type");
+  if (!Object.hasOwn(input, "bytes_base64url")) return invalid("invalid_type");
+  const bytes = strictBase64url(input.bytes_base64url);
+  if (!bytes.ok) return invalid(bytes.code);
+  if (!Object.hasOwn(input, "tagged")) return valid({ algorithm: "sha-256" });
+  if (typeof input.tagged !== "string") return invalid("invalid_type");
+  const separator = input.tagged.indexOf(":");
+  if (separator < 0) return invalid("digest_encoding_invalid");
+  if (input.tagged.slice(0, separator) !== "sha-256") return invalid("digest_algorithm_unsupported");
+  const declared = strictBase64url(input.tagged.slice(separator + 1));
+  if (!declared.ok || declared.value.length !== 32) return invalid("digest_encoding_invalid");
+  return input.tagged === taggedHash(domain as Domain, bytes.value) ? valid({}) : invalid("digest_mismatch");
+}
+
 function executeInputCase(one: ConformanceCase): CaseResult {
   const options = closedCaseOptions(one.input);
   if (!options.ok) return invalid(options.code);
+  if (Object.hasOwn(one.input, "kind") && Object.hasOwn(one.input, "value") && !caseKindMatches(one.input)) return invalid("invalid_type");
   const artifact = executeArtifactCase(one);
   if (artifact) return artifact;
   const input = one.input;
@@ -1694,32 +1771,12 @@ function executeInputCase(one: ConformanceCase): CaseResult {
       return project(decodeJsonBytes(bytes.value, { ...DEFAULT_LIMITS, ...input.limits }), jsonProjection);
     }
     case "canonicalization.encode":
-      if (input.tag === "integer") {
-        const literal = input.text_value !== undefined ? (input.text_value as string) : String(input.value);
-        if (/^-?[0-9]+$/.test(literal) && (BigInt(literal) > MAXIMUM_SAFE_INTEGER || BigInt(literal) < -MAXIMUM_SAFE_INTEGER)) return invalid("integer_magnitude");
-        return valid({ text: literal });
-      }
-      if (input.tag === "object") {
-        const names = input.members.map(([key]: any) => key);
-        if (new Set(names).size !== names.length) return invalid("duplicate_member");
-        return valid({ text: canonical(Object.fromEntries(input.members.map(([key, value]: any) => [key, value.value])) as unknown as CanonicalValue) });
-      }
-      if (input.tag === "string_codepoint") return invalid("invalid_encoding");
-      if (input.kind === "improper_object") return invalid("invalid_type");
-      return canonical(JSON.parse(input.text)) === input.text ? valid({ text: input.text }) : invalid("non_canonical_bytes");
+      return executeCanonicalCase(input);
     case "digest.hash":
-      if (!("bytes_base64url" in input)) return invalid("invalid_type");
-      if (input.tagged !== undefined) {
-        if (typeof input.tagged !== "string") return invalid("invalid_type");
-        const separator = input.tagged.indexOf(":");
-        if (separator < 1) return invalid("digest_encoding_invalid");
-        if (input.tagged.slice(0, separator) !== "sha-256") return invalid("digest_algorithm_unsupported");
-        if (!/^[A-Za-z0-9_-]{43}$/.test(input.tagged.slice(separator + 1))) return invalid("digest_encoding_invalid");
-        if (input.tagged !== taggedHash((input.domain as Domain) || "charter_revision_content", Buffer.from(input.bytes_base64url as string, "base64url"))) return invalid("digest_mismatch");
-      }
-      return valid({ algorithm: "sha-256" });
+      return executeDigestCase(input);
     case "schema.validate": {
-      const members = input.members as Record<string, any>;
+      const members = input.members;
+      if (!isRecord(members)) return invalid("invalid_type");
       if (Object.keys(members).some((key) => key !== "name")) return invalid("unknown_member");
       if (!("name" in members)) return invalid("missing_required");
       if (typeof members.name !== "string") return invalid("invalid_type");
@@ -1796,10 +1853,12 @@ function corpusDigest(index: Record<string, unknown>): string {
 
 function readCaseJson(text: string): any {
   return JSON.parse(text, (_key, value, context?: { source?: string }) =>
-    typeof value === "number" && context?.source && /[.eE]/.test(context.source) ? new Number(value) : value);
+    typeof value !== "number" || !context?.source ? value : /[.eE]/.test(context.source) ? new Number(value) :
+      Number.isSafeInteger(value) ? value : BigInt(context.source));
 }
 
-function encodeCaseJson(value: CanonicalValue): string {
+function encodeCaseJson(value: CanonicalValue | bigint): string {
+  if (typeof value === "bigint") return value.toString();
   if (value instanceof Number) {
     const text = canonical(value);
     return /^-?[0-9]+$/.test(text) ? `${text}.0` : text;

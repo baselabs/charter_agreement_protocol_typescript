@@ -88,6 +88,11 @@ documented here.
   chains with typed errors. Case JSON preserves float lexemes during integrity
   checks and execution: `protocol_revision: 2.0` returns `signing_input_invalid`
   during signing preparation, and float profile bounds return `invalid_profile`.
+- The corpus runner validates codepoints, integer text, tagged integer members,
+  digest domains and byte encodings, and schema member shapes. Case JSON retains
+  large integer tokens without rounding. Kind and value types must match.
+  Case chain views contain exactly the four artifact lists; limits come from
+  the case's top level.
 - The signature guard requires canonical base64url public keys and accepts plain
   and cross-realm `Uint8Array` messages and signatures.
 - The workshop passes only the signing party's descriptor history to acceptance
