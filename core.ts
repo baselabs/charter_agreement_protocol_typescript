@@ -238,12 +238,13 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   index = skipWhitespace(text, index);
   const char = text[index];
   if (char === undefined) return { status: "need-character" };
-  if ((char === "{" || char === "[") && depth + 1 > limits.max_depth) return { status: "error", code: "limit_exceeded" };
   if (char === "{") {
     const members = new Map<string, unknown>();
     let duplicate = false;
     let count = 0;
     let cursor = skipWhitespace(text, index + 1);
+    if (text[cursor] !== "}" && text[cursor] !== '"') return { status: "syntax" };
+    if (depth + 1 > limits.max_depth) return { status: "error", code: "limit_exceeded" };
     if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
     for (;;) {
       if (text[cursor] !== '"') return { status: "syntax" };
@@ -273,6 +274,8 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   if (char === "[") {
     const items: unknown[] = [];
     let cursor = skipWhitespace(text, index + 1);
+    if (text[cursor] === undefined) return { status: "syntax" };
+    if (depth + 1 > limits.max_depth) return { status: "error", code: "limit_exceeded" };
     if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
     for (;;) {
       const item = readJsonValue(text, cursor, limits, depth + 1);
@@ -360,9 +363,9 @@ function skipWhitespace(text: any, index: any) {
 
 export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Result<CanonicalValue> {
   try {
-    const plain = plainInputs(text, readOptionMembers(selected, Object.keys(DEFAULT_LIMITS)));
+    const plain = plainInputs(readOptionMembers(selected, Object.keys(DEFAULT_LIMITS)));
     if (!plain.ok) return plain;
-    [text, selected] = plain.value;
+    [selected] = plain.value;
   } catch (_error) {
     return fail("invalid_type");
   }
@@ -1665,12 +1668,11 @@ function executeInputCase(one: ConformanceCase): CaseResult {
     case "base64url.decode":
       return project(strictBase64url(input.text), (bytes) => ({ bytes_base64url: bytes.toString("base64url") }));
     case "json.decode": {
-      if (!("text" in input) && !("bytes_base64url" in input)) return invalid("invalid_type");
-      if (input.limits !== undefined && !validLimits(input.limits)) return invalid("invalid_limits");
-      const bytes = "text" in input ? Buffer.from(input.text as string) : Buffer.from(input.bytes_base64url as string, "base64url");
-      const decoded = decodeJsonBytes(bytes, { ...DEFAULT_LIMITS, ...input.limits });
-      if (!decoded.ok) return invalid(decoded.code);
-      return project(jsonWithinLimits(decoded.value, bytes, input.limits), jsonProjection);
+      if ("text" in input) return project(decodeJsonText(input.text, input.limits), jsonProjection);
+      if (!("bytes_base64url" in input)) return invalid("invalid_type");
+      const bytes = strictBase64url(input.bytes_base64url);
+      if (!bytes.ok) return invalid(bytes.code);
+      return project(decodeJsonBytes(bytes.value, { ...DEFAULT_LIMITS, ...input.limits }), jsonProjection);
     }
     case "canonicalization.encode":
       if (input.tag === "integer") {

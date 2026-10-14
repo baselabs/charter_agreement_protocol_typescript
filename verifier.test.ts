@@ -25,6 +25,17 @@ test("strict I-JSON: noncharacters and lone surrogates reject", () => {
   assert.equal(decodeJsonText("1 2").ok, false);
 });
 
+test("JSON checks limits and input type before bytes and streaming syntax", () => {
+  assert.deepEqual(decodeJsonText(42 as any, { max_bytes: -1 }), { ok: false, code: "invalid_limits" });
+  assert.deepEqual(decodeJsonText(42 as any, { max_bytes: 0 }), { ok: false, code: "invalid_type" });
+  assert.deepEqual(decodeJsonText("{", { max_depth: 0 }), { ok: false, code: "invalid_syntax" });
+  assert.deepEqual(decodeJsonText("[bad", { max_depth: 0 }), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(decodeJsonText("{", { max_depth: 0, max_bytes: 0 }), { ok: false, code: "limit_exceeded" });
+  const text = `"${"a".repeat(1_048_576)}"`;
+  const decoded = decodeJsonText(text, { max_bytes: 2_097_152, max_string_bytes: 1_048_576 });
+  assert.ok(decoded.ok);
+});
+
 test("number tagging follows the lexeme, never the value", () => {
   const decoded = decodeJsonText('{"a":0.0,"b":2e0,"c":5}');
   assert.ok(decoded.ok);
