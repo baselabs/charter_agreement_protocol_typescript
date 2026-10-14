@@ -64,11 +64,11 @@ test("chain entry points check every list type before bounds", () => {
 });
 
 test("malformed array lengths have one error code", () => {
-  for (const length of [2 ** 60, -1, "5", 1.5, NaN, Infinity]) {
+  for (const length of [2 ** 40, 2 ** 60, -1, "5", 1.5, NaN, Infinity]) {
     const revisions = new Proxy([], { get(target, key) { return key === "length" ? length : Reflect.get(target, key); } });
     assert.deepEqual(api.verifyChain({ ...chain, revisions }), { ok: false, code: "invalid_type" });
   }
-  for (const length of [2 ** 40, 2 ** 32 - 1]) {
+  for (const length of [2 ** 32 - 1]) {
     const revisions = new Proxy([], { get(target, key) { return key === "length" ? length : Reflect.get(target, key); } });
     assert.deepEqual(api.verifyChain({ ...chain, revisions }), { ok: false, code: "limit_exceeded" });
   }

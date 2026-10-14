@@ -83,6 +83,8 @@ documented here.
   retain at most the selected member count, count expanded bytes and depth,
   and stop at the selected limits. Deep and shared signing claims return
   `signing_input_invalid` without overflowing the stack or expanding unboundedly.
+  Reported array lengths must fit the unsigned 32-bit array range; all malformed
+  lengths return `invalid_type` before reading any items.
 - Empty revision lists read descriptors before topology checks. The runner
   handles null and incomplete sets, nontext predecessors, and null receipt
   chains with typed errors. Case JSON preserves float lexemes during integrity

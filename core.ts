@@ -2210,7 +2210,7 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
     if (depth + 1 > (mode === "json" ? limits.max_depth : LIMIT_MAXIMUMS.max_depth)) throw COPY_LIMIT;
     const array = Array.isArray(value);
     const length = array ? value.length : 0;
-    if (array && (!Number.isSafeInteger(length) || length < 0)) throw new TypeError();
+    if (array && (!Number.isInteger(length) || length < 0 || length > 0xffff_ffff)) throw new TypeError();
     if (array && length > (mode === "json" ? limits.max_array_items : limits.max_artifact_set_items)) throw COPY_LIMIT;
     if (mode === "json") count(2);
     const keys = array ? null : selectedMembers ? selectedMembers.filter((name) =>
