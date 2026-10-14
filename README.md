@@ -186,8 +186,9 @@ cross-verifies TypeScript-signed artifacts from raw bytes):
 - **This package** — `@charter-agreement-protocol/verifier`: verification
   and the pure producer surface (signing inputs, refusal guards, assembly).
 - [`@charter-agreement-protocol/signer`](https://www.npmjs.com/package/@charter-agreement-protocol/signer)
-  — the holder-side companion: key custody, the wrong-key guard, and
-  post-sign verification, delegating all protocol logic here.
+  — the holder-side companion: key custody and the wrong-key guard. It
+  calls `prepareSigning` before the key is used and `finishSigning` after,
+  so every protocol check stays in this package.
 
 The pair releases together: the signer depends on this package, so a
 verifier release stages first and the signer locks and releases against
