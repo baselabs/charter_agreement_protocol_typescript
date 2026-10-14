@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import * as api from "./index.ts";
 
 function fixture(file: string, id: string): any {
@@ -123,4 +124,51 @@ test("all public verdict functions return typed results for hostile reads", asyn
       if (!result.ok) assert.equal(typeof result.code, "string");
     }
   });
+});
+
+test("bounded copies preserve preparation error order", () => {
+  assert.deepEqual(api.prepareSigning("receipt", "k", signing.claims, signing.public_key, null, { limits: { max_bytes: 0 } }),
+    { ok: false, code: "invalid_type" });
+  const context = { ...chain, revisions: new Array(2000).fill("x") };
+  assert.deepEqual(api.prepareSigning("acceptance", "k", {}, signing.public_key, context),
+    { ok: false, code: "signing_input_invalid" });
+  const acceptanceClaims = fixture("signing-prepare", "signing-ed25519-acceptance").claims;
+  assert.deepEqual(api.prepareSigning("acceptance", "k", acceptanceClaims, "AAAA", context),
+    { ok: false, code: "signing_key_invalid" });
+});
+
+test("predecessor history does not consume artifact set limits", () => {
+  const successor = fixture("signing-prepare", "signing-successor-with-predecessor");
+  let previous: any = null;
+  for (const compact of successor.context.predecessor_compacts) {
+    const verified = api.verifyDescriptor(compact, previous);
+    assert.ok(verified.ok);
+    previous = verified.facts;
+  }
+  const options = { limits: { max_artifact_set_items: 0, max_artifact_set_bytes: 0 } };
+  const prepared = api.prepareSigning("descriptor", successor.kid, successor.claims, successor.public_key, previous, options);
+  assert.ok(prepared.ok);
+  const privateKey = Array.from({ length: 9 }, (_, i) => createPrivateKey({
+    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, i + 1)]),
+    format: "der", type: "pkcs8",
+  })).find((key) => createPublicKey(key).export({ format: "jwk" }).x === successor.public_key);
+  assert.ok(privateKey);
+  const finished = api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, privateKey));
+  assert.ok(finished.ok);
+  assert.ok(api.verifyDescriptor(finished.compact, previous, options).ok);
+});
+
+test("a reported array length rejects before reading its items", () => {
+  let lengths = 0;
+  let items = 0;
+  const list = new Proxy([], {
+    get(target, key) {
+      if (key === "length") { lengths++; return 2 ** 32 - 1; }
+      if (key === "0") { items++; throw new Error("oversized item read"); }
+      return Reflect.get(target, key);
+    },
+  });
+  assert.deepEqual(api.verifyChain({ revisions: list, acceptances: [], descriptors: [], terminations: [] }), { ok: false, code: "limit_exceeded" });
+  assert.equal(lengths, 1);
+  assert.equal(items, 0);
 });

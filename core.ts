@@ -2120,7 +2120,11 @@ function readOptionMembers(value: any, names: string[], nested: Record<string, (
   return record;
 }
 
-function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1): Result<[...T, SigningOptions]> {
+function predecessorCopyLimits(limits: Limits): Limits {
+  return { ...limits, max_artifact_set_items: LIMIT_MAXIMUMS.max_artifact_set_items, max_artifact_set_bytes: LIMIT_MAXIMUMS.max_artifact_set_bytes };
+}
+
+function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1): Result<[...T, SigningOptions]> {
   try {
     const selected = readOptionMembers(options, ["limits", "profile", "algorithm"], {
       limits: (value) => readOptionMembers(value, Object.keys(DEFAULT_LIMITS)),
@@ -2134,7 +2138,7 @@ function plainVerificationInputs<const T extends unknown[]>(options: Verificatio
     if (!settings.ok) return settings;
     const copies: unknown[] = [];
     for (let i = 0; i < inputs.length; i++) {
-      const copied = copyInput(inputs[i], settings.value.limits, i === jsonIndex ? "json" : "input");
+      const copied = copyInput(inputs[i], i === predecessorIndex ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, i === jsonIndex ? "json" : "input");
       if (!copied.ok) return copied;
       copies.push(copied.value);
     }
@@ -2185,7 +2189,7 @@ export function verifyDescriptor(
   predecessor: DescriptorPredecessor | null = null,
   options: VerificationOptions = {},
 ): VerifyResult {
-  const plain = plainVerificationInputs(options, [compact, predecessor]);
+  const plain = plainVerificationInputs(options, [compact, predecessor], -1, 1);
   if (!plain.ok) return plain;
   [compact, predecessor, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2507,22 +2511,33 @@ export function prepareSigning(
   context: DescriptorPredecessor | null | ChainInput | string,
   options: SigningOptions = {},
 ): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
-  const plain = plainVerificationInputs(options, [kind, kid, claims, publicKey, context], 2);
+  const optionInputs = plainVerificationInputs(options, []);
+  if (!optionInputs.ok) return optionInputs;
+  options = optionInputs.value[0];
+  try {
+    const member = (name: string) => Object.prototype.propertyIsEnumerable.call(context, name);
+    const descriptorContext = context === null || (isRecord(context) && member("lineage") &&
+      (member("descriptor_digest") || member("digest")));
+    const setContext = isRecord(context) && ["revisions", "acceptances", "descriptors", "terminations"].every(member);
+    const validContext = kind === "descriptor" ? descriptorContext :
+      kind === "acceptance" || kind === "termination" ? setContext :
+      kind === "receipt" ? typeof context === "string" || setContext : false;
+    if (!validContext) return fail("invalid_type");
+  } catch (_error) {
+    return fail("invalid_type");
+  }
+  const plain = plainVerificationInputs(options, [kind, kid, claims, publicKey], 2);
   if (!plain.ok) return plain;
-  [kind, kid, claims, publicKey, context, options] = plain.value;
+  [kind, kid, claims, publicKey, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const descriptorContext = context === null || (isRecord(context) && "lineage" in context &&
-    ("descriptor_digest" in context || "digest" in context));
-  const setContext = isRecord(context) && ["revisions", "acceptances", "descriptors", "terminations"].every((name) => name in context);
-  const validContext = kind === "descriptor" ? descriptorContext :
-    kind === "acceptance" || kind === "termination" ? setContext :
-    kind === "receipt" ? typeof context === "string" || setContext : false;
-  if (!validContext) return fail("invalid_type");
   const built = buildSigningInput(kind, kid, claims, options.algorithm, settings.value.limits);
   if (!built.ok) return built;
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
+  const copiedContext = copyInput(context, kind === "descriptor" ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, "input");
+  if (!copiedContext.ok) return copiedContext;
+  context = copiedContext.value;
   const provisional = `${built.input.message.toString("utf8")}.${encodeBase64url(Buffer.alloc(row.signatureBytes))}`;
   let prepared: Result<PreparedArtifact>;
   let verifyWith: SigningContext;

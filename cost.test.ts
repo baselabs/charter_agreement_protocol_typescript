@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-for (const shape of ["sparse", "proxy", "message", "wide", "shared", "deep"]) {
+for (const shape of ["sparse", "proxy", "message", "set bytes", "wide", "shared", "deep"]) {
   test(`entry copy bounds ${shape} input cost`, () => {
     const script = `
       import * as api from ${JSON.stringify(new URL("./core.ts", import.meta.url).href)};
@@ -18,6 +18,10 @@ for (const shape of ["sparse", "proxy", "message", "wide", "shared", "deep"]) {
       } else if (${JSON.stringify(shape)} === "message") {
         const bytes = new Uint8Array(200 * 1024 * 1024);
         run = () => api.verifySignature(bytes, new Uint8Array(64), "AAAA", "Ed25519");
+      } else if (${JSON.stringify(shape)} === "set bytes") {
+        const text = "x".repeat(65536);
+        const set = { revisions: Array(1024).fill(text), acceptances: Array(1024).fill(text), descriptors: Array(1024).fill(text), terminations: [] };
+        run = () => api.verifyChain(set);
       } else {
         let claims = {};
         if (${JSON.stringify(shape)} === "shared") {
