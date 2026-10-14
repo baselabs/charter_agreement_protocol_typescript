@@ -900,7 +900,8 @@ test("limits expose the reference defaults and compiled maximums", () => {
 });
 
 test("malformed limit and profile values return codes on source and built APIs", async () => {
-  const built = await import("./dist/index.js");
+  const builtEntry = "./dist/index.js";
+  const built: typeof publicApi = await import(builtEntry);
   const descriptor = corpusCase("party_descriptor-verify.json", "party-descriptor-genesis-valid").input;
   const acceptance = corpusCase("acceptance-verify.json", "acceptance-valid").input;
   const termination = corpusCase("termination-verify.json", "termination-valid").input;

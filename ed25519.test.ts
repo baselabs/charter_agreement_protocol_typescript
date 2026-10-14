@@ -150,7 +150,9 @@ test("Ed25519 R identity fails both public signature paths", async () => {
   const page = createContext({ TextEncoder, TextDecoder, atob, btoa });
   runInContext(bundle.outputFiles[0].text, page);
   const browser = page.CAP;
-  for (const verifier of [api, await import("./dist/index.js"), browser]) {
+  const builtEntry = "./dist/index.js";
+  const built: typeof api = await import(builtEntry);
+  for (const verifier of [api, built, browser]) {
     for (const algorithm of ["EdDSA", "Ed25519"]) assert.equal(verifier.verifySignature(framed.input.message, signature, encoded, algorithm), false);
     assert.deepEqual(JSON.parse(JSON.stringify(verifier.verifyDescriptor(`${framed.input.message.toString()}.${signature.toString("base64url")}`))), { ok: false, code: "signature_invalid" });
     const prepared = verifier.prepareSigning("descriptor", "k", claims, encoded, null);
