@@ -1716,7 +1716,11 @@ function executeInputCase(one: ConformanceCase): CaseResult {
       });
     }
     case "charter_revision.decode":
-      return project(revisionFromText(input.text), (revision) => ({ revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration, abp_binding: { blueprint_id: revision.value.abp_bindings[0].blueprint_id, release_number: revision.value.abp_bindings[0].release_number, content_digest: revision.value.abp_bindings[0].content_digest, deployment_digest: revision.value.abp_bindings[0].deployment_digest } }));
+      return project(revisionFromText(input.text), (revision) => {
+        const binding = revision.value.abp_bindings[0];
+        return { revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration,
+          abp_binding: binding ? { blueprint_id: binding.blueprint_id, release_number: binding.release_number, content_digest: binding.content_digest, deployment_digest: binding.deployment_digest } : null };
+      });
 
     case "acceptance.equivocation": {
       const chain = descriptorChain(input.descriptor_compacts);
@@ -1748,13 +1752,16 @@ function executeInputCase(one: ConformanceCase): CaseResult {
     }
     case "governing_revision": {
       const chain = chainWithOptions(input, { limits: input.limits });
-      if (!chain.ok) return invalid("governing_invalid");
-      return valid({
-        governing_revisions: input.queries.map((query: any) => {
-          const at = parseTimestamp(query.at);
-          return at ? governing(chain.value, at) : "none";
-        }),
-      });
+      if (!chain.ok) return invalid(chain.code);
+      if (!Array.isArray(input.queries)) return invalid("invalid_type");
+      const revisions = [];
+      for (const query of input.queries) {
+        if (!isRecord(query) || typeof query.at !== "string") return invalid("invalid_type");
+        const at = parseTimestamp(query.at);
+        if (!at) return invalid("timestamp_invalid");
+        revisions.push(governing(chain.value, at));
+      }
+      return valid({ governing_revisions: revisions });
     }
 
     default:
