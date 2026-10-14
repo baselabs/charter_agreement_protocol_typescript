@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ED25519_EDGES, generatedEd25519Inputs, loadEd25519Checks } from "./ed25519-inputs.ts";
 
-const reference = "911d84b2acd03a4c7c2941fbc07f830dd4016856";
+const reference = "a0b41e94f2339cebf7951f58ef13d4d9cf7ed78d";
 const repository = process.argv[2];
 if (!repository || process.argv.length !== 3) throw new Error("usage: node check-ed25519.ts ELIXIR_REPOSITORY");
 const resolved = execFileSync("git", ["-C", repository, "rev-parse", `${reference}^{commit}`], { encoding: "utf8" }).trim();

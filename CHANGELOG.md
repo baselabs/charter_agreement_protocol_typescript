@@ -23,9 +23,9 @@ documented here.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
-- The certified corpus now contains 243 cases in 16 case files, including
+- The certified corpus now contains 364 cases in 16 case files, including
   `signing.prepare`. Its runner calls public `prepareSigning`; tests cover
-  its 69 preparation cases, closed runner options, and both compiled class floors.
+  its 84 preparation cases, closed runner options, and both compiled class floors.
 - `SECURITY.md` ships in the npm package with supported versions, scope,
   reproduction commands and private reporting through GitHub's Security tab.
 
@@ -47,8 +47,17 @@ documented here.
 - Ed25519 public keys and signature `R` use the same point rule: canonical
   `y`, a curve point, and not small order. Mixed order is accepted. Decoding
   uses one modular exponentiation per point, with a faster fixed addition chain.
-- The corpus runner rejects unknown members in `limits`, `profile`, and
-  revision bounds with `invalid_type`.
+- The corpus runner checks limits first, then the profile, then operation inputs.
+  Malformed limits return `invalid_limits`; malformed profiles and revision bounds
+  return `invalid_profile`. A missing profile or axis uses the full profile or axis;
+  an empty profile uses both full axes. An explicit null profile or axis returns
+  `invalid_profile` on every surface. Malformed runner inputs return typed errors.
+- JSON decoding checks limits validity, input type, byte size, then streaming
+  syntax and limits. It reads the syntax needed to start a container before
+  checking depth: `{` is `invalid_syntax` at depth zero, while `[bad` is
+  `limit_exceeded`. The runner rejects malformed base64url input before JSON decoding.
+- Revision projections return a null binding when the binding list is empty.
+  Governing queries and predecessor histories retain errors from context reads.
 - Receipt verification and signing preparation apply the caller's limits to
   the retained chain context. The receipt corpus runner passes these limits through.
 - The source CLI finds its bundled corpus without an explicit path, as the
@@ -71,7 +80,9 @@ documented here.
   `signing_input_invalid` without overflowing the stack or expanding unboundedly.
 - Empty revision lists read descriptors before topology checks. The runner
   handles null and incomplete sets, nontext predecessors, and null receipt
-  chains with typed errors. Case JSON preserves float lexemes for integer checks.
+  chains with typed errors. Case JSON preserves float lexemes during integrity
+  checks and execution: `protocol_revision: 2.0` returns `signing_input_invalid`
+  during signing preparation, and float profile bounds return `invalid_profile`.
 - The signature guard requires canonical base64url public keys and accepts plain
   and cross-realm `Uint8Array` messages and signatures.
 - The workshop passes only the signing party's descriptor history to acceptance
