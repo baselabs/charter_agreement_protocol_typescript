@@ -3,7 +3,7 @@
 All notable public changes to `@charter-agreement-protocol/verifier` are
 documented here.
 
-## [Unreleased]
+## [0.7.0] — 2026-10-14
 
 ### Added
 
