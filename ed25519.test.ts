@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { Point } from "@noble/ed25519";
+import { build } from "esbuild";
+import { createContext, runInContext } from "node:vm";
+import { browserBundleOptions } from "./web/bundle.ts";
 import * as api from "./index.ts";
 import { ED25519_EDGES, generatedEd25519Inputs, loadEd25519Predicate, loadEd25519Checks } from "./ed25519-inputs.ts";
 
@@ -140,9 +143,19 @@ test("Ed25519 R identity fails both public signature paths", async () => {
   const signature = Buffer.concat([r, Buffer.from(scalar.toString(16).padStart(64, "0"), "hex").reverse()]);
   const order = 2n ** 252n + 27742317777372353535851937790883648493n;
   assert.ok(Point.BASE.multiply(scalar).equals(Point.fromBytes(r).add(Point.fromBytes(Buffer.from(encoded, "base64url")).multiply(littleEndian(hash) % order))));
-  for (const verifier of [api, await import("./dist/index.js")]) {
+  const bundle = await build({
+    ...browserBundleOptions, entryPoints: ["index.ts"], bundle: true,
+    format: "iife", globalName: "CAP", write: false,
+  });
+  const page = createContext({ TextEncoder, TextDecoder, atob, btoa });
+  runInContext(bundle.outputFiles[0].text, page);
+  const browser = page.CAP;
+  for (const verifier of [api, await import("./dist/index.js"), browser]) {
     for (const algorithm of ["EdDSA", "Ed25519"]) assert.equal(verifier.verifySignature(framed.input.message, signature, encoded, algorithm), false);
-    assert.deepEqual(verifier.verifyDescriptor(`${framed.input.message.toString()}.${signature.toString("base64url")}`), { ok: false, code: "signature_invalid" });
+    assert.deepEqual(JSON.parse(JSON.stringify(verifier.verifyDescriptor(`${framed.input.message.toString()}.${signature.toString("base64url")}`))), { ok: false, code: "signature_invalid" });
+    const prepared = verifier.prepareSigning("descriptor", "k", claims, encoded, null);
+    assert.ok(prepared.ok);
+    assert.equal(verifier.finishSigning(prepared.plan, signature).code, "signature_invalid");
   }
 });
 
