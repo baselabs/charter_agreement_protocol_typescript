@@ -10,6 +10,32 @@ import * as api from "./index.ts";
 const corpusCases = api.loadCorpus(new URL("./conformance", import.meta.url).pathname).cases;
 const cases = corpusCases.filter((one) => one.surface === "signing.prepare");
 
+test("byte decoding preserves parser order before UTF-8 errors", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-byte-reader-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    for (const [text, limits, code] of [
+      [[0x5b, 0xff], { max_depth: 0 }, "limit_exceeded"],
+      [[0x5b, 0x31, 0x5d, 0xff], {}, "trailing_bytes"],
+      [[0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d], { max_depth: 0 }, "limit_exceeded"],
+      [[0x7b, 0xff], { max_depth: 0 }, "invalid_encoding"],
+      [[0x22, 0xff, 0x22], {}, "invalid_encoding"],
+      [[0x5b, 0xff], {}, "invalid_encoding"],
+    ] as const) await t.test(`${Buffer.from(text).toString("hex")} ${JSON.stringify(limits)}`, () => {
+      assert.deepEqual(executeCase({ surface: "json.decode", input: {
+        bytes_base64url: Buffer.from(text).toString("base64url"), limits,
+      } }), { status: "invalid", error_code: code });
+    });
+    const text = '["é","𝄞",{"中":"\\u0000"}]';
+    assert.deepEqual(executeCase({ surface: "json.decode", input: { bytes_base64url: Buffer.from(text).toString("base64url") } }),
+      executeCase({ surface: "json.decode", input: { text } }));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("runner matches every certified case with typed results", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-cases-"));
   try {

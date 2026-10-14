@@ -56,6 +56,8 @@ documented here.
   syntax and limits. It reads the syntax needed to start a container before
   checking depth: `{` is `invalid_syntax` at depth zero, while `[bad` is
   `limit_exceeded`. The runner rejects malformed base64url input before JSON decoding.
+  Byte input follows parser order too: `[` followed by an invalid UTF-8 byte
+  hits depth zero first, and an invalid byte after `[1]` is `trailing_bytes`.
 - Revision projections return a null binding when the binding list is empty.
   Governing queries and predecessor histories retain errors from context reads.
 - Receipt verification and signing preparation apply the caller's limits to

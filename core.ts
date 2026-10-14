@@ -234,7 +234,7 @@ const NUMBER_TOKEN = /(?:-?(?:0|[1-9][0-9]*))(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y
 // Plain property access remains compatible with existing artifact consumers.
 const JSON_MEMBER_ORDER = new WeakMap<object, string[]>();
 
-function readJsonValue(text: string, index: number, limits: Limits, depth = 0): JsonReader {
+function readJsonValue(text: string, index: number, limits: Limits, depth = 0, bytes?: Buffer): JsonReader {
   index = skipWhitespace(text, index);
   const char = text[index];
   if (char === undefined) return { status: "need-character" };
@@ -248,12 +248,12 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
     if (text[cursor] === "}") return { status: "ok", value: {}, index: cursor + 1 };
     for (;;) {
       if (text[cursor] !== '"') return { status: "syntax" };
-      const key = readJsonString(text, cursor);
+      const key = readJsonString(text, cursor, bytes);
       if (key.status !== "ok") return key;
       if (Buffer.byteLength(key.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
       cursor = skipWhitespace(text, key.index);
       if (text[cursor] !== ":") return { status: "syntax" };
-      const item = readJsonValue(text, skipWhitespace(text, cursor + 1), limits, depth + 1);
+      const item = readJsonValue(text, skipWhitespace(text, cursor + 1), limits, depth + 1, bytes);
       if (item.status !== "ok") return item;
       cursor = skipWhitespace(text, item.index);
       if (text[cursor] !== "," && text[cursor] !== "}") return { status: "syntax" };
@@ -278,7 +278,7 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
     if (depth + 1 > limits.max_depth) return { status: "error", code: "limit_exceeded" };
     if (text[cursor] === "]") return { status: "ok", value: items, index: cursor + 1 };
     for (;;) {
-      const item = readJsonValue(text, cursor, limits, depth + 1);
+      const item = readJsonValue(text, cursor, limits, depth + 1, bytes);
       if (item.status !== "ok") return item;
       cursor = skipWhitespace(text, item.index);
       if (text[cursor] !== "," && text[cursor] !== "]") return { status: "syntax" };
@@ -291,7 +291,7 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
     }
   }
   if (char === '"') {
-    const string = readJsonString(text, index);
+    const string = readJsonString(text, index, bytes);
     if (string.status === "ok" && Buffer.byteLength(string.value) > limits.max_string_bytes) return { status: "error", code: "limit_exceeded" };
     return string.status === "ok" ? { status: "ok", value: string.value, index: string.index } : string;
   }
@@ -328,7 +328,8 @@ function readJsonValue(text: string, index: number, limits: Limits, depth = 0): 
   return { status: "syntax" };
 }
 
-function readJsonString(text: any, index: any) {
+function readJsonString(text: string, index: number, bytes?: Buffer):
+  { status: "ok"; value: string; index: number } | { status: "syntax" } | { status: "error"; code: string } {
   if (text[index] !== '"') return { status: "syntax" };
   let end = index + 1;
   while (end < text.length) {
@@ -338,7 +339,15 @@ function readJsonString(text: any, index: any) {
   }
   if (text[end] !== '"') return { status: "syntax" };
   try {
-    const value = JSON.parse(text.slice(index, end + 1));
+    let literal = text.slice(index, end + 1);
+    if (bytes) {
+      try {
+        literal = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(index, end + 1));
+      } catch (_error) {
+        return { status: "error", code: "invalid_encoding" };
+      }
+    }
+    const value = JSON.parse(literal);
     if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)) {
       return { status: "syntax" };
     }
@@ -382,7 +391,19 @@ export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Re
 function decodeJsonBytes(bytes: Buffer, limits: Limits = DEFAULT_LIMITS): Result<CanonicalValue> {
   try {
     if (bytes.length > limits.max_bytes) return fail("limit_exceeded");
-    return decodeJsonText(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes), limits);
+    // Byte offsets stay intact while syntax and container callbacks run.
+    // Decode UTF-8 only when the parser reaches a string token.
+    const text = bytes.toString("latin1");
+    const value = readJsonValue(text, 0, limits, 0, bytes);
+    if (value.status === "error") return fail(value.code as string);
+    if (value.status === "need-character" || value.status === "syntax") {
+      // The reference classifies a parse failure by the input's encoding.
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      return fail("invalid_syntax");
+    }
+    if (value.index === undefined || skipWhitespace(text, value.index) !== text.length) return fail("trailing_bytes");
+    if (value.deferredCode) return fail(value.deferredCode);
+    return ok(value.value as CanonicalValue);
   } catch (_error) {
     return fail("invalid_encoding");
   }
