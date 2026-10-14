@@ -45,9 +45,18 @@ test("signing corpus runner matches Elixir kinds contexts and closed options", a
       ["profile before wrong context", receipt, { context: acceptance.input.context, profile: { algorithms: [] } }, { status: "invalid", error_code: "invalid_profile" }],
       ["key decode before wrong kind", descriptor, { kind: "descriptor", public_key: "=" }, { status: "invalid", error_code: "base64url_padded" }],
       ["chain read before wrong kind", acceptance, { context: { chain: { ...receipt.input.context.chain, descriptors: ["garbage"] } } }, { status: "invalid", error_code: "compact_invalid" }],
+      ["null set", acceptance, { context: { set: null } }, invalidType],
+      ["set missing terminations", acceptance, { context: { set: { ...acceptance.input.context.set, terminations: undefined } } }, invalidType],
+      ["nontext predecessor", descriptor, { context: { predecessor_compacts: [1] } }, invalidType],
+      ["null receipt chain", receipt, { context: { chain: null } }, invalidType],
     ];
     for (const [name, one, patch, expected] of checks) await t.test(name, () => {
       assert.deepEqual(executeCase({ ...one, input: { ...one.input, ...patch } }), expected);
+    });
+    for (const member of ["revisions", "acceptances", "descriptors", "terminations"]) await t.test(`set missing ${member}`, () => {
+      const set = { ...acceptance.input.context.set };
+      delete set[member];
+      assert.deepEqual(executeCase({ ...acceptance, input: { ...acceptance.input, context: { set } } }), invalidType);
     });
   } finally {
     rmSync(scratch, { recursive: true, force: true });

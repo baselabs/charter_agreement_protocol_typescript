@@ -1543,8 +1543,14 @@ function closedCaseOptions(input: AnyRecord): Result<null> {
 
 function signingCaseContext(context: any): Result<SigningCaseContext> {
   if (!isRecord(context)) return ok({ value: context, kind: context === null ? "descriptor" : "raw" });
-  if ("set" in context) return ok({ value: context.set, kind: "set" });
+  if ("set" in context) {
+    const set = context.set;
+    const members = ["revisions", "acceptances", "descriptors", "terminations"];
+    if (set !== null && !isRecord(set)) return fail("invalid_type");
+    return ok({ value: Object.fromEntries(members.map((name) => [name, set?.[name] ?? null])) as ChainInput, kind: "set" });
+  }
   if ("chain" in context) {
+    if (!isRecord(context.chain)) return fail("invalid_type");
     const verified = verifyChain(context.chain, { limits: context.chain.limits });
     return verified.ok ? ok({ value: context.chain, kind: "chain" }) : fail(verified.code);
   }
@@ -1553,8 +1559,10 @@ function signingCaseContext(context: any): Result<SigningCaseContext> {
     return decoded.ok ? ok({ value: context.revision_text, kind: "revision" }) : fail(decoded.code);
   }
   if ("predecessor_compacts" in context) {
+    if (!Array.isArray(context.predecessor_compacts)) return fail("invalid_type");
     let previous: DescriptorPredecessor | null = null;
     for (const compact of context.predecessor_compacts) {
+      if (typeof compact !== "string") return fail("invalid_type");
       const verified = verifyDescriptor(compact, previous);
       if (!verified.ok) return fail(verified.code);
       previous = verified.facts as DescriptorPredecessor;
@@ -1597,7 +1605,9 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
       // A case may name its predecessor history, genesis first; each entry
       // verifies under the full profile against the one before it.
       let predecessor: DescriptorPredecessor | null = null;
+      if (input.predecessor_compacts !== undefined && !Array.isArray(input.predecessor_compacts)) return invalid("invalid_type");
       for (const compact of (input.predecessor_compacts ?? []) as string[]) {
+        if (typeof compact !== "string") return invalid("invalid_type");
         const verified = verifyDescriptor(compact, predecessor);
         if (!verified.ok) throw new Error("corpus predecessor history does not verify");
         predecessor = verified.facts as DescriptorPredecessor;
