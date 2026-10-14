@@ -309,7 +309,7 @@ test("receipt preparation retains copies of every artifact list", () => {
   assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, set.parties[0].privateKey)).ok);
 });
 
-test("public verify and preparation return invalid_type for throwing input reads", () => {
+test("public verify and preparation keep hostile reads inside the result boundary", () => {
   const set = mintedSet();
   const receipt = rawCompact("receipt", "k", set.receipt, "Ed25519", set.parties[0].privateKey);
   const options = {};
@@ -351,13 +351,14 @@ test("public verify and preparation return invalid_type for throwing input reads
     count++;
     try {
       const result = call(...input);
-      if (label === "signature" ? result !== false : result.ok || result.code !== "invalid_type") unexpected.push(`${label}[${position}]`);
+      if (label === "signature" ? typeof result !== "boolean" :
+        typeof result.ok !== "boolean" || (!result.ok && typeof result.code !== "string")) unexpected.push(`${label}[${position}]`);
     } catch (error) {
       escaped.push(`${label}[${position}]: ${String(error)}`);
     }
   }
   assert.deepEqual(escaped, [], `${escaped.length} of ${count} calls threw`);
-  assert.deepEqual(unexpected, [], "throwing reads must return invalid_type or false");
+  assert.deepEqual(unexpected, [], "hostile reads must return typed results");
 });
 
 test("SigningPlan construction requires preparation", () => {

@@ -363,9 +363,7 @@ function skipWhitespace(text: any, index: any) {
 
 export function decodeJsonText(text: string, selected: Partial<Limits> = {}): Result<CanonicalValue> {
   try {
-    const plain = plainInputs(readOptionMembers(selected, Object.keys(DEFAULT_LIMITS)));
-    if (!plain.ok) return plain;
-    [selected] = plain.value;
+    selected = readOptionMembers(selected, Object.keys(DEFAULT_LIMITS));
   } catch (_error) {
     return fail("invalid_type");
   }
@@ -1248,9 +1246,9 @@ function revisionWithProfile(text: unknown, settings: Settings): ReturnType<type
 }
 
 function boundedArtifacts(lists: unknown[], limits: Limits): string | null {
+  if (!lists.every(Array.isArray)) return "invalid_type";
   let bytes = 0;
-  for (const list of lists) {
-    if (!Array.isArray(list)) return "invalid_type";
+  for (const list of lists as string[][]) {
     for (let i = 0; i < list.length; i++) {
       if (i >= limits.max_artifact_set_items) return "limit_exceeded";
       if (typeof list[i] !== "string") return "invalid_type";
@@ -2041,12 +2039,25 @@ function isUint8Array(value: unknown): value is Uint8Array {
 }
 
 type CopyMode = "input" | "json";
-const ARTIFACT_LIST_MEMBERS = new Set(["revisions", "acceptances", "descriptors", "terminations", "lineage"]);
+const CHAIN_MEMBERS = ["revisions", "acceptances", "descriptors", "terminations"] as const;
+const PREDECESSOR_MEMBERS = ["lineage", "descriptor_digest", "digest"] as const;
+const FRAMING_MEMBERS = ["alg", "protectedSegment", "payloadSegment", "message"] as const;
+const ARTIFACT_LIST_MEMBERS = new Set<string>([...CHAIN_MEMBERS, "lineage"]);
 const COPY_LIMIT = Symbol();
 const COPY_CYCLE = Symbol();
 const typedArrayByteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength")!.get!;
 
-function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> {
+function boundedMemberNames(value: object, maximum: number): string[] {
+  const names: string[] = [];
+  for (const name in value) {
+    if (!Object.hasOwn(value, name)) continue;
+    if (names.length >= maximum) throw COPY_LIMIT;
+    names.push(name);
+  }
+  return names;
+}
+
+function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: readonly string[]): Result<any> {
   type Frame = { source: any; target: any; keys: string[] | null; length: number; index: number; depth: number; artifacts: boolean };
   const frames: Frame[] = [];
   const active = new Set<object>();
@@ -2057,7 +2068,7 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
     bytes += size;
     if (bytes > maxBytes) throw COPY_LIMIT;
   }
-  function copy(value: any, depth: number, artifacts = false): any {
+  function copy(value: any, depth: number, artifacts = false, selectedMembers?: readonly string[]): any {
     if (typeof value === "string") {
       const size = Buffer.byteLength(value);
       if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
@@ -2065,9 +2076,10 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
       return value;
     }
     if (value === null || typeof value !== "object") {
-      count(["number", "boolean"].includes(typeof value) || value === null ? JSON.stringify(value).length : 5);
+      if (mode === "json") count(["number", "boolean"].includes(typeof value) || value === null ? JSON.stringify(value).length : 5);
       return value;
     }
+    if (ArrayBuffer.isView(value) && !isUint8Array(value)) throw new TypeError();
     if (isUint8Array(value)) {
       const length = typedArrayByteLength.call(value);
       if (length > limits.max_bytes) throw COPY_LIMIT;
@@ -2079,15 +2091,16 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
       count(JSON.stringify(number).length);
       return new Number(number);
     }
+    if (mode === "input" && !Array.isArray(value) && !selectedMembers) throw new TypeError();
     if (active.has(value)) throw COPY_CYCLE;
     if (depth + 1 > (mode === "json" ? limits.max_depth : LIMIT_MAXIMUMS.max_depth)) throw COPY_LIMIT;
     const array = Array.isArray(value);
     const length = array ? value.length : 0;
     if (array && (!Number.isSafeInteger(length) || length < 0)) throw new TypeError();
     if (array && length > (mode === "json" ? limits.max_array_items : limits.max_artifact_set_items)) throw COPY_LIMIT;
-    const keys = array ? null : Object.keys(value);
-    if (keys && keys.length > (mode === "json" ? limits.max_object_members : LIMIT_MAXIMUMS.max_object_members)) throw COPY_LIMIT;
-    count(2);
+    if (mode === "json") count(2);
+    const keys = array ? null : selectedMembers ? selectedMembers.filter((name) =>
+      Object.prototype.propertyIsEnumerable.call(value, name)) : boundedMemberNames(value, limits.max_object_members);
     const target = array ? [] : Object.create(null);
     active.add(value);
     frames.push({ source: value, target, keys, length: array ? length : keys!.length, index: 0, depth: depth + 1, artifacts });
@@ -2097,7 +2110,7 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
   }
   try {
     if (mode === "input" && (input === null || typeof input !== "object")) return ok(input);
-    const result = copy(input, 0, mode === "input" && Array.isArray(input));
+    const result = copy(input, 0, mode === "input" && Array.isArray(input), members);
     while (frames.length) {
       const frame = frames[frames.length - 1];
       if (frame.index === frame.length) {
@@ -2107,8 +2120,8 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
       }
       const index = frame.index++;
       const key = frame.keys ? frame.keys[index] : String(index);
-      if (index) count(1);
-      if (frame.keys) {
+      if (mode === "json" && index) count(1);
+      if (mode === "json" && frame.keys) {
         const size = Buffer.byteLength(key);
         if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
         count(Buffer.byteLength(JSON.stringify(key)) + 1);
@@ -2118,7 +2131,9 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> 
         artifactBytes += Buffer.byteLength(value);
         if (artifactBytes > limits.max_artifact_set_bytes) throw COPY_LIMIT;
       }
-      frame.target[key] = copy(value, frame.depth, mode === "input" && ARTIFACT_LIST_MEMBERS.has(key));
+      const nestedMembers = mode === "input" ? key === "limits" ? Object.keys(DEFAULT_LIMITS) :
+        key === "profile" ? ["algorithms", "revisions"] : key === "revisions" && !Array.isArray(value) ? ["min", "max"] : undefined : undefined;
+      frame.target[key] = copy(value, frame.depth, mode === "input" && ARTIFACT_LIST_MEMBERS.has(key), nestedMembers);
     }
     return ok(result);
   } catch (error) {
@@ -2141,8 +2156,8 @@ function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
 function readOptionMembers(value: any, names: string[], nested: Record<string, (value: any) => any> = {}): any {
   if (!isRecord(value)) return value;
   const record = Object.create(null);
-  for (const name of Object.keys(value)) {
-    if (!names.includes(name)) record[name] = value[name];
+  for (const name of boundedMemberNames(value, LIMIT_MAXIMUMS.max_object_members)) {
+    if (!names.includes(name)) record[name] = null;
   }
   for (const name of names) {
     const member = value[name];
@@ -2155,7 +2170,7 @@ function predecessorCopyLimits(limits: Limits): Limits {
   return { ...limits, max_artifact_set_items: LIMIT_MAXIMUMS.max_artifact_set_items, max_artifact_set_bytes: LIMIT_MAXIMUMS.max_artifact_set_bytes };
 }
 
-function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1): Result<[...T, SigningOptions]> {
+function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1, inputMembers: Record<number, readonly string[]> = {}): Result<[...T, SigningOptions]> {
   try {
     const selected = readOptionMembers(options, ["limits", "profile", "algorithm"], {
       limits: (value) => readOptionMembers(value, Object.keys(DEFAULT_LIMITS)),
@@ -2163,13 +2178,19 @@ function plainVerificationInputs<const T extends unknown[]>(options: Verificatio
         revisions: (range) => readOptionMembers(range, ["min", "max"]),
       }),
     });
-    const copiedOptions = copyInput(selected, { ...MAXIMUM_LIMITS, max_artifact_set_bytes: MAXIMUM_LIMITS.max_bytes }, "input");
-    if (!copiedOptions.ok) return copiedOptions;
-    const settings = resolveOptions(copiedOptions.value);
+    const settings = resolveOptions(selected);
     if (!settings.ok) return settings;
+    const copiedOptions = copyInput(selected, { ...MAXIMUM_LIMITS, max_artifact_set_bytes: MAXIMUM_LIMITS.max_bytes }, "input", ["limits", "profile", "algorithm"]);
+    if (!copiedOptions.ok) return copiedOptions;
+    for (const [index, members] of Object.entries(inputMembers)) {
+      if (members !== CHAIN_MEMBERS || typeof inputs[Number(index)] === "string") continue;
+      const view = inputs[Number(index)];
+      if (isRecord(view) && !CHAIN_MEMBERS.every((name) =>
+        Object.prototype.propertyIsEnumerable.call(view, name) && Array.isArray(view[name]))) return fail("invalid_type");
+    }
     const copies: unknown[] = [];
     for (let i = 0; i < inputs.length; i++) {
-      const copied = copyInput(inputs[i], i === predecessorIndex ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, i === jsonIndex ? "json" : "input");
+      const copied = copyInput(inputs[i], i === predecessorIndex ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, i === jsonIndex ? "json" : "input", i === predecessorIndex ? PREDECESSOR_MEMBERS : inputMembers[i]);
       if (!copied.ok) return copied;
       copies.push(copied.value);
     }
@@ -2285,7 +2306,7 @@ export function verifyTermination(compact: string, revisionText: string, descrip
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, [chainInput]);
+  const plain = plainVerificationInputs(options, [chainInput], -1, -1, { 0: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [chainInput, options] = plain.value;
   const verified = chainWithOptions(chainInput, options);
@@ -2294,7 +2315,7 @@ export function verifyChain(chainInput: AnyRecord, options: VerificationOptions 
 }
 
 export function verifyReceipt(compact: string, context: AnyRecord | string, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, [compact, context]);
+  const plain = plainVerificationInputs(options, [compact, context], -1, -1, { 1: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [compact, context, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2420,7 +2441,7 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
 // The unique governing revision in a verified view at one UTC instant -
 // a digest, or "contested"/"none" (never silently resolved).
 export function governingRevision(chainInput: AnyRecord, at: string, options: VerificationOptions = {}): { ok: true; governing: string } | { ok: false; code: string } {
-  const plain = plainVerificationInputs(options, [chainInput, at]);
+  const plain = plainVerificationInputs(options, [chainInput, at], -1, -1, { 0: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [chainInput, at, options] = plain.value;
   const instant = typeof at === "string" ? parseTimestamp(at) : null;
@@ -2566,7 +2587,7 @@ export function prepareSigning(
   if (!built.ok) return built;
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
-  const copiedContext = copyInput(context, kind === "descriptor" ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, "input");
+  const copiedContext = copyInput(context, kind === "descriptor" ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, "input", kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS);
   if (!copiedContext.ok) return copiedContext;
   context = copiedContext.value;
   const provisional = `${built.input.message.toString("utf8")}.${encodeBase64url(Buffer.alloc(row.signatureBytes))}`;
@@ -2731,7 +2752,7 @@ export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: 
 // claims schema) FIRST, then the set-aware R1-R3 refusal checks - so a
 // claims defect reports the producer code even when the view is also bad.
 export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
-  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1);
+  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1, -1, { 2: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [kid, claims, chainInput, algorithm] = plain.value;
   const built = buildSigningInput("acceptance", kid, claims, algorithm);
@@ -2742,7 +2763,7 @@ export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInpu
 }
 
 export function terminationSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
-  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1);
+  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1, -1, { 2: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [kid, claims, chainInput, algorithm] = plain.value;
   const built = buildSigningInput("termination", kid, claims, algorithm);
@@ -2764,7 +2785,7 @@ function decodeSigningArtifact(compact: string, limits: Limits = DEFAULT_LIMITS)
 // Assemble a validated signing input and its exact raw signature (the
 // reference assemble): registry-row length, full artifact decode, size gate.
 export function assembleCompact(input: SigningInput, signature: Buffer): { ok: true; compact: string } | { ok: false; code: string } {
-  const plain = plainVerificationInputs({}, [input, signature]);
+  const plain = plainVerificationInputs({}, [input, signature], -1, -1, { 0: FRAMING_MEMBERS });
   if (!plain.ok) return plain.code === "limit_exceeded" ? fail("signing_input_invalid") : plain;
   [input, signature] = plain.value;
   return assembleUnderLimits(input, signature, DEFAULT_LIMITS);
@@ -2841,7 +2862,7 @@ function refusalAncestorOf(candidate: string, target: string, byDigest: Map<stri
 }
 
 export function acceptanceRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
-  const plain = plainVerificationInputs({}, [claims, chainInput], 0);
+  const plain = plainVerificationInputs({}, [claims, chainInput], 0, -1, { 1: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [claims, chainInput] = plain.value;
   if (!refusalClaimsShape(claims, ["revision_digest", "charter_id", "party_role", "party_descriptor_digest"], ["revision_number"])) {
@@ -2888,7 +2909,7 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
 }
 
 export function terminationRefusal(claims: AnyRecord, chainInput: AnyRecord): RefusalResult {
-  const plain = plainVerificationInputs({}, [claims, chainInput], 0);
+  const plain = plainVerificationInputs({}, [claims, chainInput], 0, -1, { 1: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [claims, chainInput] = plain.value;
   if (!refusalClaimsShape(claims, ["governing_revision_digest", "charter_id", "party_role", "party_descriptor_digest", "reason_code"], [])) {

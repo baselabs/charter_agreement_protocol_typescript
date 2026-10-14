@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-for (const shape of ["sparse", "proxy", "message", "set bytes", "wide", "shared", "deep"]) {
+for (const shape of ["sparse", "proxy", "message", "other bytes", "ignored keys", "set bytes", "wide", "shared", "deep"]) {
   test(`entry copy bounds ${shape} input cost`, () => {
     const script = `
       import * as api from ${JSON.stringify(new URL("./core.ts", import.meta.url).href)};
@@ -18,6 +18,12 @@ for (const shape of ["sparse", "proxy", "message", "set bytes", "wide", "shared"
       } else if (${JSON.stringify(shape)} === "message") {
         const bytes = new Uint8Array(200 * 1024 * 1024);
         run = () => api.verifySignature(bytes, new Uint8Array(64), "AAAA", "Ed25519");
+      } else if (${JSON.stringify(shape)} === "other bytes") {
+        const bytes = new Int8Array(20_000_000);
+        run = () => api.verifySignature(bytes, new Uint8Array(64), "AAAA", "Ed25519");
+      } else if (${JSON.stringify(shape)} === "ignored keys") {
+        const note = new Proxy({}, { ownKeys() { throw new Error("unread keys"); } });
+        run = () => api.verifyChain({ ...empty, note });
       } else if (${JSON.stringify(shape)} === "set bytes") {
         const text = "x".repeat(65536);
         const set = { revisions: Array(1024).fill(text), acceptances: Array(1024).fill(text), descriptors: Array(1024).fill(text), terminations: [] };
@@ -42,9 +48,9 @@ for (const shape of ["sparse", "proxy", "message", "set bytes", "wide", "shared"
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
     const { result, elapsed } = JSON.parse(child.stdout);
-    assert.deepEqual(result, shape === "message" ? false : { ok: false, code:
-      ["wide", "shared", "deep"].includes(shape) ? "signing_input_invalid" : "limit_exceeded" });
-    assert.ok(elapsed < (shape === "message" ? 100 : 1000), `${shape}: ${elapsed}ms`);
+    assert.deepEqual(result, ["message", "other bytes"].includes(shape) ? false : { ok: false, code:
+      shape === "ignored keys" ? "chain_invalid" : ["wide", "shared", "deep"].includes(shape) ? "signing_input_invalid" : "limit_exceeded" });
+    assert.ok(elapsed < (["message", "other bytes", "ignored keys"].includes(shape) ? 100 : 1000), `${shape}: ${elapsed}ms`);
     console.log(`${shape}: ${elapsed.toFixed(2)}ms, ${JSON.stringify(result)}`);
   });
 }

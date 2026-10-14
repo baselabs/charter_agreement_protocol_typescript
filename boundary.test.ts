@@ -30,6 +30,44 @@ const calls: Record<string, (options: any) => any> = {
   verifySignature: (o) => api.verifySignature(message, signature, publicKey, "EdDSA", o),
 };
 
+test("chain entry points ignore unread members", () => {
+  for (const note of ["x".repeat(70_000_000), Array(5000).fill(1), new Int8Array(20_000_000)]) {
+    assert.ok(api.verifyChain({ ...chain, note }).ok);
+    assert.ok(api.verifyReceipt(receipt.compact, { ...receipt.chain, note }).ok);
+  }
+  const view = { ...chain, get note() { throw new Error("unread member"); } };
+  assert.ok(api.verifyChain(view).ok);
+  assert.ok(api.governingRevision(view, "2026-09-01T00:00:00Z").ok);
+  const candidate = fixture("signing-prepare", "signing-ed25519-acceptance");
+  assert.ok(api.prepareSigning("acceptance", candidate.kid, candidate.claims, candidate.public_key,
+    { ...candidate.context.set, get note() { throw new Error("unread member"); } }).ok);
+  const previous = api.verifyDescriptor(descriptor.compact);
+  assert.ok(previous.ok);
+  assert.deepEqual(api.verifyDescriptor(descriptor.compact, { ...previous.facts, lineage: previous.facts.lineage,
+    get note() { throw new Error("unread member"); } }), api.verifyDescriptor(descriptor.compact, previous.facts));
+});
+
+test("chain entry points check every list type before bounds", () => {
+  const options = { limits: { max_artifact_set_bytes: 100, max_bytes: 100 } };
+  for (const member of ["revisions", "acceptances", "descriptors", "terminations"]) {
+    const view = { ...chain, [member]: "x".repeat(300) };
+    assert.deepEqual(api.verifyChain(view, options), { ok: false, code: "invalid_type" });
+    assert.deepEqual(api.verifyReceipt(receipt.compact, view, options), { ok: false, code: "invalid_type" });
+    assert.deepEqual(api.governingRevision(view, "2026-09-01T00:00:00Z", options), { ok: false, code: "invalid_type" });
+  }
+});
+
+test("malformed array lengths have one error code", () => {
+  for (const length of [2 ** 60, -1, "5", 1.5, NaN, Infinity]) {
+    const revisions = new Proxy([], { get(target, key) { return key === "length" ? length : Reflect.get(target, key); } });
+    assert.deepEqual(api.verifyChain({ ...chain, revisions }), { ok: false, code: "invalid_type" });
+  }
+  for (const length of [2 ** 40, 2 ** 32 - 1]) {
+    const revisions = new Proxy([], { get(target, key) { return key === "length" ? length : Reflect.get(target, key); } });
+    assert.deepEqual(api.verifyChain({ ...chain, revisions }), { ok: false, code: "limit_exceeded" });
+  }
+});
+
 test("entry points honor inherited and getter options", async (t) => {
   const narrow = { algorithms: ["ML-DSA-65"] };
   for (const [name, call] of Object.entries(calls)) {

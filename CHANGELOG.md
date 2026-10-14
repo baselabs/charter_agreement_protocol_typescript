@@ -74,9 +74,12 @@ documented here.
   and `reportFor` retain their existing return shapes and can throw on invalid
   caller input, corpus failures, or unavailable corpus verification.
 - Options use ordinary property reads, including inherited and getter values,
-  once at entry. Claims use own enumerable JSON members. Input copies check
-  array lengths and byte sizes before allocation, count expanded bytes and
-  depth, and stop at the selected limits. Deep and shared signing claims return
+  once at entry. Claims use own enumerable JSON members. Context copies read
+  only the members the entry point uses and check all chain list types before
+  bounds. Array lengths and typed byte lengths are checked before allocating
+  their copies. Other typed arrays are rejected before enumeration. JSON copies
+  retain at most the selected member count, count expanded bytes and depth,
+  and stop at the selected limits. Deep and shared signing claims return
   `signing_input_invalid` without overflowing the stack or expanding unboundedly.
 - Empty revision lists read descriptors before topology checks. The runner
   handles null and incomplete sets, nontext predecessors, and null receipt
