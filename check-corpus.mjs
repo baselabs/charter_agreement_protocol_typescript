@@ -77,12 +77,16 @@ const required = {
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
 };
 
-function canonical(value) {
+function canonical(value, preserveFloats = false) {
+  if (value instanceof Number) {
+    const text = JSON.stringify(value.valueOf());
+    return preserveFloats && /^-?[0-9]+$/.test(text) ? `${text}.0` : text;
+  }
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map((item) => canonical(item, preserveFloats)).join(",")}]`;
   if (typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key], preserveFloats)}`).join(",")}}`;
   }
   throw new Error("unsupported JSON value");
 }
@@ -137,8 +141,9 @@ function check(root) {
     const bytes = readFileSync(join(root, entry.path));
     if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
     if (hash(bytes) !== entry.sha256_base64url) throw new Error("file hash");
-    const file = JSON.parse(bytes);
-    if (canonical(file) !== bytes.toString() || !exactKeys(file, ["cases", "format"]) || file.format !== caseFormat || !Array.isArray(file.cases)) throw new Error("case file");
+    const file = JSON.parse(bytes, (_key, value, context) =>
+      typeof value === "number" && context?.source && /[.eE]/.test(context.source) ? new Number(value) : value);
+    if (canonical(file, true) !== bytes.toString() || !exactKeys(file, ["cases", "format"]) || file.format !== caseFormat || !Array.isArray(file.cases)) throw new Error("case file");
     if (entry.cases !== file.cases.length) throw new Error("file count");
     allCases.push(...file.cases);
   }

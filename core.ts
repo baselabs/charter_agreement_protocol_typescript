@@ -1761,6 +1761,18 @@ function readCaseJson(text: string): any {
     typeof value === "number" && context?.source && /[.eE]/.test(context.source) ? new Number(value) : value);
 }
 
+function encodeCaseJson(value: CanonicalValue): string {
+  if (value instanceof Number) {
+    const text = canonical(value);
+    return /^-?[0-9]+$/.test(text) ? `${text}.0` : text;
+  }
+  if (Array.isArray(value)) return `[${value.map(encodeCaseJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${canonical(key)}:${encodeCaseJson(value[key])}`).join(",")}}`;
+  }
+  return canonical(value);
+}
+
 export function loadCorpus(root: string): LoadedCorpus {
   const observedEntries = walk(root);
   if (observedEntries.length === 0 || observedEntries.length > MAXIMUM_CORPUS_FILES ||
@@ -1784,7 +1796,7 @@ export function loadCorpus(root: string): LoadedCorpus {
     if (bytes.length !== observedSizes.get(entry.path)) throw new Error("case file changed during read");
     if (rawHash(bytes) !== String(entry.sha256_base64url)) throw new Error("file hash");
     const file = readCaseJson(bytes.toString("utf8"));
-    if (canonical(file as CanonicalValue) !== bytes.toString("utf8") || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
+    if (encodeCaseJson(file) !== bytes.toString("utf8") || file.format !== CASE_FORMAT || file.cases.length !== entry.cases) throw new Error("case file");
     cases.push(...file.cases);
   }
   if (cases.length !== index.total_cases || cases.length === 0) throw new Error("case count");
