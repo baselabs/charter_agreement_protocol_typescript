@@ -81,6 +81,7 @@ test("signing corpus runner matches Elixir kinds contexts and closed options", a
       ["key decode before wrong kind", descriptor, { kind: "descriptor", public_key: "=" }, { status: "invalid", error_code: "base64url_padded" }],
       ["chain read before wrong kind", acceptance, { context: { chain: { ...receipt.input.context.chain, descriptors: ["garbage"] } } }, { status: "invalid", error_code: "compact_invalid" }],
       ["null set", acceptance, { context: { set: null } }, invalidType],
+      ["null set before short key", byId("signing-key-before-bad-set"), { context: { set: null } }, invalidType],
       ["set missing terminations", acceptance, { context: { set: { ...acceptance.input.context.set, terminations: undefined } } }, invalidType],
       ["nontext predecessor", descriptor, { context: { predecessor_compacts: [1] } }, invalidType],
       ["null receipt chain", receipt, { context: { chain: null } }, invalidType],

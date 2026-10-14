@@ -1557,7 +1557,7 @@ function signingCaseContext(context: any): Result<SigningCaseContext> {
   if ("set" in context) {
     const set = context.set;
     const members = ["revisions", "acceptances", "descriptors", "terminations"];
-    if (set !== null && !isRecord(set)) return fail("invalid_type");
+    if (!isRecord(set)) return fail("invalid_type");
     return ok({ value: Object.fromEntries(members.map((name) => [name, set?.[name] ?? null])) as ChainInput, kind: "set" });
   }
   if ("chain" in context) {
