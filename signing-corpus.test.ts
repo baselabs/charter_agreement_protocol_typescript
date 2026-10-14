@@ -99,6 +99,29 @@ test("runner chain views contain exactly four lists and use top level limits", a
   }
 });
 
+test("runner reads receipt contexts before profile admission and preparation", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-receipt-order-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    const receipt = corpusCases.find((one) => one.id === "receipt-profile-context-algorithm-outside")!;
+    for (const limits of [{ max_object_members: 8 }, { max_object_members: 10 }, { max_array_items: 1 }, { max_string_bytes: 50 }]) {
+      await t.test(JSON.stringify(limits), () => {
+        assert.deepEqual(executeCase({ ...receipt, input: { ...receipt.input, limits } }), { status: "invalid", error_code: "limit_exceeded" });
+      });
+    }
+    const signing = cases.find((one) => one.id === "signing-strict-receipt-limits")!;
+    for (const member of ["revisions", "acceptances"]) await t.test(member, () => {
+      const chain = { ...signing.input.context.chain, [member]: [1, ...signing.input.context.chain[member].slice(1)] };
+      assert.deepEqual(executeCase({ ...signing, input: { ...signing.input, context: { chain } } }),
+        { status: "invalid", error_code: "invalid_type" });
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("runner matches every certified case with typed results", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-cases-"));
   try {

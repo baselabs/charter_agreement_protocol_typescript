@@ -1611,7 +1611,7 @@ function signingCaseContext(context: any, options: VerificationOptions): Result<
   }
   if ("chain" in context) {
     if (!exactKeys(context.chain, [...CHAIN_MEMBERS])) return fail("invalid_type");
-    const verified = verifyChain(context.chain, { limits: options.limits });
+    const verified = chainWithOptions(context.chain, { limits: options.limits });
     return verified.ok ? ok({ value: context.chain, kind: "chain" }) : fail(verified.code);
   }
   if ("revision_text" in context) {
@@ -1692,6 +1692,10 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
       const settings = resolveOptions({ limits: input.limits, profile: input.profile });
       if (!settings.ok) return invalid(settings.code);
       if (!Object.hasOwn(input, "revision_text") && !exactKeys(input.chain, [...CHAIN_MEMBERS])) return invalid("invalid_type");
+      if (!Object.hasOwn(input, "revision_text")) {
+        const context = chainWithOptions(input.chain, { limits: input.limits });
+        if (!context.ok) return invalid(context.code);
+      }
       return project(receiptWithContext(input.compact, Object.hasOwn(input, "revision_text") ? input.revision_text : input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
     }
     default:
