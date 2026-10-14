@@ -517,7 +517,10 @@ function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTy
       typeof header.typ !== "string" || (expectedTyp !== undefined && header.typ !== expectedTyp) ||
       typeof header.kid !== "string" || !/^[A-Za-z0-9._~-]{1,128}$/.test(header.kid)) return fail("protected_header_invalid");
   const payloadValue = decodeJsonBytes(payloadBytes.value, limits);
-  if (!payloadValue.ok || canonicalTextError(payloadValue.value, payloadBytes.value.toString())) return fail("non_canonical_bytes");
+  if (!payloadValue.ok) return fail("non_canonical_bytes");
+  const integerError = integerTokenError(payloadValue.value, schemaForType(expectedTyp));
+  if (integerError) return fail(integerError);
+  if (canonicalTextError(payloadValue.value, payloadBytes.value.toString())) return fail("non_canonical_bytes");
   if (!isRecord(payloadValue.value)) return fail("protected_header_invalid");
   const payload = payloadValue.value as AnyRecord;
   if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
@@ -925,6 +928,31 @@ function schemaError(value: unknown, fields: FieldRule[]): string | null {
   return null;
 }
 
+function schemaForType(typ: string | undefined): FieldRule[] {
+  switch (typ) {
+    case "cap+party": return DESCRIPTOR_SCHEMA;
+    case "cap+acceptance": return ACCEPTANCE_SCHEMA;
+    case "cap+termination": return TERMINATION_SCHEMA;
+    case "cap+receipt": return RECEIPT_SCHEMA;
+    default: return [];
+  }
+}
+
+function integerTokenError(value: unknown, fields: FieldRule[]): string | null {
+  if (!isRecord(value)) return null;
+  for (const rule of fields) {
+    const item = value[rule.name];
+    if (rule.type === "integer" && item instanceof Number) return "invalid_type";
+    if (!rule.nested) continue;
+    const items = rule.type === "array" && Array.isArray(item) ? item : [item];
+    for (const child of items) {
+      const error = integerTokenError(child, rule.nested);
+      if (error) return error;
+    }
+  }
+  return null;
+}
+
 const REVISION_SCHEMA: FieldRule[] = [
   field("protocol_revision", "integer", integerRange(1, 2)), digestField("charter_id", false),
   safeIntegerField("revision_number"), digestField("prev_revision_digest", false),
@@ -1026,6 +1054,8 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   if (typeof text !== "string") return fail("invalid_type");
   const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
+  const integerError = integerTokenError(decoded.value, REVISION_SCHEMA);
+  if (integerError) return fail(integerError);
   const encoding = canonicalTextError(decoded.value, text);
   if (encoding) return fail(encoding);
   const value = decoded.value as AnyRecord;
@@ -2773,6 +2803,7 @@ function buildSigningInput(
   } catch (_error) {
     return { ok: false, code: "signing_input_invalid" };
   }
+  if (integerTokenError(record, schemaForType(PRODUCER_TYPES[kind]))) return fail("signing_input_invalid");
   const revision = record.protocol_revision;
   if (typeof revision !== "number" || !Number.isInteger(revision) || revision !== emissions()[algorithm as string]) {
     return { ok: false, code: "signing_input_invalid" };

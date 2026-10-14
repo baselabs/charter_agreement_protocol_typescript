@@ -68,6 +68,30 @@ test("malformed array lengths have one error code", () => {
   }
 });
 
+test("integer claims reject float tokens before canonical encoding", () => {
+  for (const [input, verify, names] of [
+    [descriptor, (compact: string) => api.verifyDescriptor(compact), ["protocol_revision", "descriptor_number"]],
+    [acceptance, (compact: string) => api.verifyAcceptance(compact, acceptance.revision_text, acceptance.descriptor_compacts), ["protocol_revision", "revision_number"]],
+    [termination, (compact: string) => api.verifyTermination(compact, termination.revision_text, termination.descriptor_compacts), ["protocol_revision"]],
+    [receipt, (compact: string) => api.verifyReceipt(compact, receipt.chain), ["protocol_revision", "revision_number"]],
+  ] as const) {
+    const [header, payload, signature] = input.compact.split(".");
+    const text = Buffer.from(payload, "base64url").toString();
+    for (const name of names) for (const suffix of [".0", "e0"]) {
+      const altered = text.replace(new RegExp(`("${name}":)([0-9]+)`), `$1$2${suffix}`);
+      assert.notEqual(altered, text);
+      const compact = `${header}.${Buffer.from(altered).toString("base64url")}.${signature}`;
+      assert.deepEqual(verify(compact), { ok: false, code: "invalid_type" });
+    }
+  }
+  const text = acceptance.revision_text;
+  for (const name of ["protocol_revision", "revision_number", "release_number"]) {
+    const altered = text.replace(new RegExp(`("${name}":)([0-9]+)`), "$1$2.0");
+    assert.notEqual(altered, text);
+    assert.deepEqual(api.decodeCharterRevision(altered), { ok: false, code: "invalid_type" });
+  }
+});
+
 test("entry points honor inherited and getter options", async (t) => {
   const narrow = { algorithms: ["ML-DSA-65"] };
   for (const [name, call] of Object.entries(calls)) {

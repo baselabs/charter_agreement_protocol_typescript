@@ -93,6 +93,9 @@ documented here.
   large integer tokens without rounding. Kind and value types must match.
   Case chain views contain exactly the four artifact lists; limits come from
   the case's top level.
+- Integer claims reject float tokens before canonical encoding, including
+  integral floats such as `1.0`. Signing returns `signing_input_invalid`;
+  artifact verification and revision decoding return `invalid_type`.
 - The signature guard requires canonical base64url public keys and accepts plain
   and cross-realm `Uint8Array` messages and signatures.
 - The workshop passes only the signing party's descriptor history to acceptance
