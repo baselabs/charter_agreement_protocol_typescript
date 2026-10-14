@@ -23,9 +23,9 @@ documented here.
 - `signing_key_invalid` reports an invalid snapshot key encoding or shape.
   `signing_key_mismatch` reports a snapshot that does not match an active candidate
   in the holder's own view.
-- The certified corpus now contains 364 cases in 16 case files, including
+- The certified corpus now contains 541 cases in 16 case files, including
   `signing.prepare`. Its runner calls public `prepareSigning`; tests cover
-  its 84 preparation cases, closed runner options, and both compiled class floors.
+  its 107 preparation cases, closed runner options, and both compiled class floors.
 - `SECURITY.md` ships in the npm package with supported versions, scope,
   reproduction commands and private reporting through GitHub's Security tab.
 
