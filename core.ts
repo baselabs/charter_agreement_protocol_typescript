@@ -1606,7 +1606,7 @@ function signingCaseContext(context: any, options: VerificationOptions): Result<
   if ("set" in context) {
     const set = context.set;
     const members = ["revisions", "acceptances", "descriptors", "terminations"];
-    if (!exactKeys(set, [...CHAIN_MEMBERS])) return fail("invalid_type");
+    if (!isRecord(set)) return fail("invalid_type");
     return ok({ value: Object.fromEntries(members.map((name) => [name, set?.[name] ?? null])) as ChainInput, kind: "set" });
   }
   if ("chain" in context) {
@@ -2280,6 +2280,16 @@ function predecessorCopyLimits(limits: Limits): Limits {
   return { ...limits, max_artifact_set_items: LIMIT_MAXIMUMS.max_artifact_set_items, max_artifact_set_bytes: LIMIT_MAXIMUMS.max_artifact_set_bytes };
 }
 
+function retainedInput(value: unknown, members: readonly string[]): Result<unknown> {
+  if (!isRecord(value)) return ok(value);
+  const retained = Object.create(null);
+  for (const name of members) {
+    if (Object.prototype.propertyIsEnumerable.call(value, name)) retained[name] = value[name];
+  }
+  if (members === CHAIN_MEMBERS && !CHAIN_MEMBERS.every((name) => Array.isArray(retained[name]))) return fail("invalid_type");
+  return ok(retained);
+}
+
 function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1, inputMembers: Record<number, readonly string[]> = {}): Result<[...T, SigningOptions]> {
   try {
     const selected = readOptionMembers(options, ["limits", "profile", "algorithm"], {
@@ -2293,10 +2303,9 @@ function plainVerificationInputs<const T extends unknown[]>(options: Verificatio
     const copiedOptions = copyInput(selected, { ...MAXIMUM_LIMITS, max_artifact_set_bytes: MAXIMUM_LIMITS.max_bytes }, "input", ["limits", "profile", "algorithm"]);
     if (!copiedOptions.ok) return copiedOptions;
     for (const [index, members] of Object.entries(inputMembers)) {
-      if (members !== CHAIN_MEMBERS || typeof inputs[Number(index)] === "string") continue;
-      const view = inputs[Number(index)];
-      if (isRecord(view) && !CHAIN_MEMBERS.every((name) =>
-        Object.prototype.propertyIsEnumerable.call(view, name) && Array.isArray(view[name]))) return fail("invalid_type");
+      const retained = retainedInput(inputs[Number(index)], members);
+      if (!retained.ok) return retained;
+      inputs[Number(index)] = retained.value;
     }
     const copies: unknown[] = [];
     for (let i = 0; i < inputs.length; i++) {
@@ -2697,6 +2706,13 @@ export function prepareSigning(
   if (!built.ok) return built;
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
+  try {
+    const retained = retainedInput(context, kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS);
+    if (!retained.ok) return retained;
+    context = retained.value as typeof context;
+  } catch (_error) {
+    return fail("invalid_type");
+  }
   const copiedContext = copyInput(context, kind === "descriptor" ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, "input", kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS);
   if (!copiedContext.ok) return copiedContext;
   context = copiedContext.value;

@@ -55,6 +55,12 @@ test("chain entry points check every list type before bounds", () => {
     assert.deepEqual(api.verifyReceipt(receipt.compact, view, options), { ok: false, code: "invalid_type" });
     assert.deepEqual(api.governingRevision(view, "2026-09-01T00:00:00Z", options), { ok: false, code: "invalid_type" });
   }
+  const candidate = fixture("signing-prepare", "signing-ed25519-acceptance");
+  for (const member of ["revisions", "acceptances", "descriptors", "terminations"]) {
+    const view = { ...candidate.context.set, [member]: "x".repeat(30000) };
+    assert.deepEqual(api.prepareSigning("acceptance", candidate.kid, candidate.claims, candidate.public_key,
+      view, { limits: { max_artifact_set_bytes: 100 } }), { ok: false, code: "invalid_type" });
+  }
 });
 
 test("malformed array lengths have one error code", () => {

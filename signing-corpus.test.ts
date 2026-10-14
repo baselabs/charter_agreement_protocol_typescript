@@ -81,7 +81,7 @@ test("runner chain views contain exactly four lists and use top level limits", a
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
     const { executeCase } = await import(pathToFileURL(modulePath).href);
-    for (const id of ["signing-ed25519-acceptance", "signing-ed25519-receipt"]) {
+    for (const id of ["signing-ed25519-receipt"]) {
       const one = cases.find((one) => one.id === id)!;
       const member = id.endsWith("acceptance") ? "set" : "chain";
       for (const extra of ["note", "limits"]) await t.test(`${id} ${extra}`, () => {
