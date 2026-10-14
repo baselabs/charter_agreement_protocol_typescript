@@ -335,7 +335,7 @@ test("public verify and preparation return invalid_type for throwing input reads
     new Proxy(["x"], { get: throwing }),
     new Proxy({ lineage: [] }, { getOwnPropertyDescriptor: throwing }),
     new Proxy({}, { getPrototypeOf: throwing }),
-    Object.defineProperty({}, "profile", { get: throwing }),
+    Object.defineProperty({}, "profile", { get: throwing, enumerable: true }),
     { get lineage() { return throwing(); } },
     { limits: { get max_bytes() { return throwing(); } } },
     { profile: { get algorithms() { return throwing(); } } },

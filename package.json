@@ -33,7 +33,7 @@
     "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "self-checks": "node --experimental-strip-types --no-warnings self-checks.ts",
-    "test": "npm run build && node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts parity.test.ts presign.test.ts signing-corpus.test.ts workshop.test.ts ed25519.test.ts boundary.test.ts",
+    "test": "npm run build && node --test --experimental-strip-types --no-warnings verifier.test.ts api.test.ts parity.test.ts presign.test.ts signing-corpus.test.ts workshop.test.ts ed25519.test.ts boundary.test.ts cost.test.ts",
     "conformance": "node --experimental-strip-types --no-warnings cli.ts",
     "check:ed25519": "node --experimental-strip-types --no-warnings check-ed25519.ts",
     "bench:ed25519": "node --experimental-strip-types --no-warnings bench-ed25519.ts",

@@ -1988,52 +1988,118 @@ function isUint8Array(value: unknown): value is Uint8Array {
   return ArrayBuffer.isView(value) && uint8ArrayTag.call(value) === "Uint8Array";
 }
 
-function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
-  const copies = new Map<object, any>();
-  function copy(value: any): any {
-    if (value === null || typeof value !== "object") return value;
-    if (copies.has(value)) return copies.get(value);
+type CopyMode = "input" | "json";
+const ARTIFACT_LIST_MEMBERS = new Set(["revisions", "acceptances", "descriptors", "terminations", "lineage"]);
+const COPY_LIMIT = Symbol();
+const COPY_CYCLE = Symbol();
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength")!.get!;
+
+function copyInput(input: unknown, limits: Limits, mode: CopyMode): Result<any> {
+  type Frame = { source: any; target: any; keys: string[] | null; length: number; index: number; depth: number; artifacts: boolean };
+  const frames: Frame[] = [];
+  const active = new Set<object>();
+  let bytes = 0;
+  const maxBytes = mode === "json" ? limits.max_bytes : limits.max_artifact_set_bytes + limits.max_bytes;
+  let artifactBytes = 0;
+  function count(size: number) {
+    bytes += size;
+    if (bytes > maxBytes) throw COPY_LIMIT;
+  }
+  function copy(value: any, depth: number, artifacts = false): any {
+    if (typeof value === "string") {
+      const size = Buffer.byteLength(value);
+      if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
+      count(mode === "json" ? Buffer.byteLength(JSON.stringify(value)) : size);
+      return value;
+    }
+    if (value === null || typeof value !== "object") {
+      count(["number", "boolean"].includes(typeof value) || value === null ? JSON.stringify(value).length : 5);
+      return value;
+    }
     if (isUint8Array(value)) {
-      const bytes = Buffer.from(value);
-      copies.set(value, bytes);
-      return bytes;
+      const length = typedArrayByteLength.call(value);
+      if (length > limits.max_bytes) throw COPY_LIMIT;
+      count(length);
+      return Buffer.from(value);
     }
-    if (value instanceof Number) return new Number(Number.prototype.valueOf.call(value));
-    if (Array.isArray(value)) {
-      const array: any[] = [];
-      copies.set(value, array);
-      const length = value.length;
-      for (let i = 0; i < length; i++) array.push(copy(value[i]));
-      return array;
+    if (value instanceof Number) {
+      const number = Number.prototype.valueOf.call(value);
+      count(JSON.stringify(number).length);
+      return new Number(number);
     }
-    const record = Object.create(null);
-    copies.set(value, record);
-    for (const name of Object.keys(value)) {
-      if (Object.hasOwn(value, name)) record[name] = copy(value[name]);
-    }
-    return record;
+    if (active.has(value)) throw COPY_CYCLE;
+    if (depth + 1 > (mode === "json" ? limits.max_depth : LIMIT_MAXIMUMS.max_depth)) throw COPY_LIMIT;
+    const array = Array.isArray(value);
+    const length = array ? value.length : 0;
+    if (array && (!Number.isSafeInteger(length) || length < 0)) throw new TypeError();
+    if (array && length > (mode === "json" ? limits.max_array_items : limits.max_artifact_set_items)) throw COPY_LIMIT;
+    const keys = array ? null : Object.keys(value);
+    if (keys && keys.length > (mode === "json" ? limits.max_object_members : LIMIT_MAXIMUMS.max_object_members)) throw COPY_LIMIT;
+    count(2);
+    const target = array ? [] : Object.create(null);
+    active.add(value);
+    frames.push({ source: value, target, keys, length: array ? length : keys!.length, index: 0, depth: depth + 1, artifacts });
+    const order = JSON_MEMBER_ORDER.get(value);
+    if (order) JSON_MEMBER_ORDER.set(target, [...order]);
+    return target;
   }
   try {
-    return ok(copy(inputs));
-  } catch (_error) {
+    if (mode === "input" && (input === null || typeof input !== "object")) return ok(input);
+    const result = copy(input, 0, mode === "input" && Array.isArray(input));
+    while (frames.length) {
+      const frame = frames[frames.length - 1];
+      if (frame.index === frame.length) {
+        active.delete(frame.source);
+        frames.pop();
+        continue;
+      }
+      const index = frame.index++;
+      const key = frame.keys ? frame.keys[index] : String(index);
+      if (index) count(1);
+      if (frame.keys) {
+        const size = Buffer.byteLength(key);
+        if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
+        count(Buffer.byteLength(JSON.stringify(key)) + 1);
+      }
+      const value = frame.source[key];
+      if (frame.artifacts && typeof value === "string") {
+        artifactBytes += Buffer.byteLength(value);
+        if (artifactBytes > limits.max_artifact_set_bytes) throw COPY_LIMIT;
+      }
+      frame.target[key] = copy(value, frame.depth, mode === "input" && ARTIFACT_LIST_MEMBERS.has(key));
+    }
+    return ok(result);
+  } catch (error) {
+    if (error === COPY_LIMIT) return fail(mode === "json" ? "signing_input_invalid" : "limit_exceeded");
+    if (error === COPY_CYCLE && mode === "json") return fail("signing_input_invalid");
     return fail("invalid_type");
   }
+}
+
+function plainInputs<T extends unknown[]>(...inputs: T): Result<T> {
+  const copies: unknown[] = [];
+  for (const input of inputs) {
+    const copied = copyInput(input, DEFAULT_LIMITS, "input");
+    if (!copied.ok) return copied;
+    copies.push(copied.value);
+  }
+  return ok(copies as T);
 }
 
 function readOptionMembers(value: any, names: string[], nested: Record<string, (value: any) => any> = {}): any {
   if (!isRecord(value)) return value;
   const record = Object.create(null);
   for (const name of Object.keys(value)) {
-    if (!names.includes(name)) record[name] = undefined;
+    if (!names.includes(name)) record[name] = value[name];
   }
   for (const name of names) {
     const member = value[name];
-    if (member !== undefined) record[name] = nested[name] ? nested[name](member) : member;
+    if (member !== undefined || name in value) record[name] = nested[name] ? nested[name](member) : member;
   }
   return record;
 }
 
-function plainVerificationInputs<T extends unknown[]>(options: VerificationOptions | SigningOptions, ...inputs: T): Result<[...T, SigningOptions]> {
+function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1): Result<[...T, SigningOptions]> {
   try {
     const selected = readOptionMembers(options, ["limits", "profile", "algorithm"], {
       limits: (value) => readOptionMembers(value, Object.keys(DEFAULT_LIMITS)),
@@ -2041,14 +2107,24 @@ function plainVerificationInputs<T extends unknown[]>(options: VerificationOptio
         revisions: (range) => readOptionMembers(range, ["min", "max"]),
       }),
     });
-    return plainInputs(...inputs, selected);
+    const copiedOptions = copyInput(selected, { ...MAXIMUM_LIMITS, max_artifact_set_bytes: MAXIMUM_LIMITS.max_bytes }, "input");
+    if (!copiedOptions.ok) return copiedOptions;
+    const settings = resolveOptions(copiedOptions.value);
+    if (!settings.ok) return settings;
+    const copies: unknown[] = [];
+    for (let i = 0; i < inputs.length; i++) {
+      const copied = copyInput(inputs[i], settings.value.limits, i === jsonIndex ? "json" : "input");
+      if (!copied.ok) return copied;
+      copies.push(copied.value);
+    }
+    return ok([...copies, copiedOptions.value] as [...T, SigningOptions]);
   } catch (_error) {
     return fail("invalid_type");
   }
 }
 
 export function verifySignature(message: Uint8Array, signature: Uint8Array, publicKeyBase64url: string, alg: string, options: VerificationOptions = {}): boolean {
-  const plain = plainVerificationInputs(options, message, signature, publicKeyBase64url, alg);
+  const plain = plainVerificationInputs(options, [message, signature, publicKeyBase64url, alg]);
   if (!plain.ok) return false;
   [message, signature, publicKeyBase64url, alg, options] = plain.value;
   if (!isUint8Array(message) || !isUint8Array(signature) || typeof publicKeyBase64url !== "string" || typeof alg !== "string") return false;
@@ -2088,7 +2164,7 @@ export function verifyDescriptor(
   predecessor: DescriptorPredecessor | null = null,
   options: VerificationOptions = {},
 ): VerifyResult {
-  const plain = plainVerificationInputs(options, compact, predecessor);
+  const plain = plainVerificationInputs(options, [compact, predecessor]);
   if (!plain.ok) return plain;
   [compact, predecessor, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2112,7 +2188,7 @@ export function verifyDescriptor(
 }
 
 export function verifyDescriptorChain(compacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, compacts);
+  const plain = plainVerificationInputs(options, [compacts]);
   if (!plain.ok) return plain;
   [compacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2123,7 +2199,7 @@ export function verifyDescriptorChain(compacts: string[], options: VerificationO
 }
 
 export function verifyAcceptance(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, compact, revisionText, descriptorCompacts);
+  const plain = plainVerificationInputs(options, [compact, revisionText, descriptorCompacts]);
   if (!plain.ok) return plain;
   [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2138,7 +2214,7 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, compact, revisionText, descriptorCompacts);
+  const plain = plainVerificationInputs(options, [compact, revisionText, descriptorCompacts]);
   if (!plain.ok) return plain;
   [compact, revisionText, descriptorCompacts, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2153,7 +2229,7 @@ export function verifyTermination(compact: string, revisionText: string, descrip
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, chainInput);
+  const plain = plainVerificationInputs(options, [chainInput]);
   if (!plain.ok) return plain;
   [chainInput, options] = plain.value;
   const verified = chainWithOptions(chainInput, options);
@@ -2162,7 +2238,7 @@ export function verifyChain(chainInput: AnyRecord, options: VerificationOptions 
 }
 
 export function verifyReceipt(compact: string, context: AnyRecord | string, options: VerificationOptions = {}): VerifyResult {
-  const plain = plainVerificationInputs(options, compact, context);
+  const plain = plainVerificationInputs(options, [compact, context]);
   if (!plain.ok) return plain;
   [compact, context, options] = plain.value;
   const settings = resolveOptions(options);
@@ -2399,7 +2475,7 @@ export function prepareSigning(
   context: DescriptorPredecessor | null | ChainInput | string,
   options: SigningOptions = {},
 ): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
-  const plain = plainVerificationInputs(options, kind, kid, claims, publicKey, context);
+  const plain = plainVerificationInputs(options, [kind, kid, claims, publicKey, context], 2);
   if (!plain.ok) return plain;
   [kind, kid, claims, publicKey, context, options] = plain.value;
   const settings = resolveOptions(options);
