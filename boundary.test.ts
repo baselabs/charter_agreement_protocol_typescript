@@ -69,3 +69,17 @@ test("claims use own enumerable members", () => {
   Object.defineProperty(claims, "hidden", { get() { throw new Error("hidden"); } });
   assert.ok(api.prepareSigning("descriptor", signing.kid, claims, signing.public_key, null).ok);
 });
+
+test("empty revisions read descriptors before topology checks", () => {
+  const [protectedSegment, payloadSegment, signatureSegment] = descriptor.compact.split(".");
+  const header = JSON.parse(Buffer.from(protectedSegment, "base64url").toString());
+  const compactWithHeader = (text: string) => `${Buffer.from(text).toString("base64url")}.${payloadSegment}.${signatureSegment}`;
+  for (const [compact, code] of [
+    ["broken", "compact_invalid"],
+    [compactWithHeader(JSON.stringify({ ...header, typ: "cap+receipt" })), "protected_header_invalid"],
+    [`${protectedSegment}.${Buffer.from(" " + Buffer.from(payloadSegment, "base64url").toString()).toString("base64url")}.${signatureSegment}`, "non_canonical_bytes"],
+  ]) {
+    assert.deepEqual(api.verifyChain({ revisions: [], acceptances: [], descriptors: [compact], terminations: [] }), { ok: false, code });
+  }
+  assert.deepEqual(api.verifyChain({ revisions: [], acceptances: [], descriptors: [descriptor.compact], terminations: [] }, { limits: { max_bytes: 10 } }), { ok: false, code: "limit_exceeded" });
+});

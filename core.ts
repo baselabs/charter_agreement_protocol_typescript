@@ -1260,7 +1260,6 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   if (!isRecord(input)) return fail("chain_invalid");
   const bounded = boundedArtifacts([input.revisions, input.acceptances, input.descriptors, input.terminations], settings.limits);
   if (bounded) return fail(bounded);
-  if (!Array.isArray(input.revisions) || input.revisions.length === 0) return fail("chain_invalid");
   const descriptors = descriptorViews(input.descriptors, settings);
   if (!descriptors.ok) return descriptors;
   const revisions = [];
