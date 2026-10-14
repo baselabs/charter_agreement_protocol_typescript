@@ -7,7 +7,23 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as api from "./index.ts";
 
-const cases: api.ConformanceCase[] = JSON.parse(readFileSync(new URL("./conformance/cases/signing-prepare.json", import.meta.url), "utf8")).cases;
+const corpusCases = api.loadCorpus(new URL("./conformance", import.meta.url).pathname).cases;
+const cases = corpusCases.filter((one) => one.surface === "signing.prepare");
+
+test("runner matches every certified case with typed results", async (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), "cap-runner-cases-"));
+  try {
+    const modulePath = join(scratch, "core.ts");
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
+    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    assert.equal(corpusCases.length, 364);
+    for (const one of corpusCases) await t.test(one.id, () => {
+      assert.deepEqual(executeCase(one), one.expect);
+    });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test("case reader preserves float lexemes for integer fields", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-case-numbers-"));
@@ -52,13 +68,13 @@ test("signing corpus runner matches Elixir kinds contexts and closed options", a
       ["receipt raw revision", receipt, { context: receipt.input.context.chain.revisions[0] }, invalidType],
       ["acceptance raw set", acceptance, { context: acceptance.input.context.set }, invalidType],
       ["receipt raw set", receipt, { context: receipt.input.context.chain }, invalidType],
-      ["profile extra member", descriptor, { profile: { unknown: 42 } }, invalidType],
-      ["profile extra unrecognized name", descriptor, { profile: { ts_verifier_uninterned_member_12345: 42 } }, invalidType],
-      ["limits extra member", descriptor, { limits: { unknown: 42 } }, invalidType],
-      ["revision bounds extra member", descriptor, { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, invalidType],
-      ["null profile", descriptor, { profile: null }, invalidType],
-      ["null limits", descriptor, { limits: null }, invalidType],
-      ["null revision bounds", descriptor, { profile: { revisions: null } }, invalidType],
+      ["profile extra member", descriptor, { profile: { unknown: 42 } }, { status: "invalid", error_code: "invalid_profile" }],
+      ["profile extra unrecognized name", descriptor, { profile: { ts_verifier_uninterned_member_12345: 42 } }, { status: "invalid", error_code: "invalid_profile" }],
+      ["limits extra member", descriptor, { limits: { unknown: 42 } }, { status: "invalid", error_code: "invalid_limits" }],
+      ["revision bounds extra member", descriptor, { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, { status: "invalid", error_code: "invalid_profile" }],
+      ["null profile", descriptor, { profile: null }, { status: "invalid", error_code: "invalid_profile" }],
+      ["null limits", descriptor, { limits: null }, { status: "invalid", error_code: "invalid_limits" }],
+      ["null revision bounds", descriptor, { profile: { revisions: null } }, { status: "invalid", error_code: "invalid_profile" }],
       ["null algorithms", descriptor, { profile: { algorithms: null } }, { status: "invalid", error_code: "invalid_profile" }],
       ["limits before wrong kind", descriptor, { kind: "descriptor", limits: { max_bytes: -1 } }, { status: "invalid", error_code: "invalid_limits" }],
       ["profile before wrong context", receipt, { context: acceptance.input.context, profile: { algorithms: [] } }, { status: "invalid", error_code: "invalid_profile" }],
@@ -96,7 +112,7 @@ test("corpus runner rejects unknown options before every surface executes", asyn
         { profile: { revisions: { min: 1, max: 3, unknown: 42 } } }, { limits: null },
         { profile: null }, { profile: { revisions: null } }]) {
         await t.test(`${one.surface} ${JSON.stringify(patch)}`, () => {
-          assert.deepEqual(executeCase({ ...one, input: { ...one.input, ...patch } }), { status: "invalid", error_code: "invalid_type" });
+          assert.deepEqual(executeCase({ ...one, input: { ...one.input, ...patch } }), { status: "invalid", error_code: "limits" in patch ? "invalid_limits" : "invalid_profile" });
         });
       }
     }
@@ -123,7 +139,7 @@ test("receipt corpus runner applies caller limits to its chain context", async (
 });
 
 test("public signing preparation matches artifact corpus projections independently", async (t) => {
-  assert.equal(cases.length, 69);
+  assert.equal(cases.length, 84);
   for (const one of cases.filter((one) => !one.id.startsWith("signing-unknown-"))) await t.test(one.id, () => {
     const input = one.input;
     let context: any = input.context;

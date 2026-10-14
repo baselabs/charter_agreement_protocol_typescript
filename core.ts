@@ -1541,11 +1541,12 @@ function mappedCaseOptions(selected: unknown, kind: keyof typeof CASE_OPTION_MEM
 
 function closedCaseOptions(input: AnyRecord): Result<null> {
   const limits = mappedCaseOptions(Object.hasOwn(input, "limits") ? input.limits : {}, "limits");
-  if (!limits.ok) return limits;
+  if (!limits.ok || !validLimits(limits.value)) return fail("invalid_limits");
   const profile = mappedCaseOptions(Object.hasOwn(input, "profile") ? input.profile : {}, "profile");
-  if (!profile.ok) return profile;
+  if (!profile.ok) return fail("invalid_profile");
   const range = mappedCaseOptions(Object.hasOwn(profile.value, "revisions") ? profile.value.revisions : {}, "revisions");
-  return range.ok ? ok(null) : range;
+  if (!range.ok || !parseProfile(profile.value).ok) return fail("invalid_profile");
+  return ok(null);
 }
 
 function signingCaseContext(context: any): Result<SigningCaseContext> {
@@ -1616,7 +1617,7 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
       for (const compact of (input.predecessor_compacts ?? []) as string[]) {
         if (typeof compact !== "string") return invalid("invalid_type");
         const verified = verifyDescriptor(compact, predecessor);
-        if (!verified.ok) throw new Error("corpus predecessor history does not verify");
+        if (!verified.ok) return invalid(verified.code);
         predecessor = verified.facts as DescriptorPredecessor;
       }
       const verified = verifyDescriptor(input.compact, predecessor, { profile: input.profile });
@@ -1646,6 +1647,15 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
 }
 
 function execute(one: ConformanceCase): CaseResult {
+  try {
+    if (!isRecord(one) || !isRecord(one.input)) return invalid("invalid_type");
+    return executeInputCase(one);
+  } catch (_error) {
+    return invalid("invalid_type");
+  }
+}
+
+function executeInputCase(one: ConformanceCase): CaseResult {
   const options = closedCaseOptions(one.input);
   if (!options.ok) return invalid(options.code);
   const artifact = executeArtifactCase(one);
@@ -1746,7 +1756,7 @@ function execute(one: ConformanceCase): CaseResult {
     }
 
     default:
-      throw new Error("unsupported surface");
+      return invalid("invalid_type");
   }
 }
 
