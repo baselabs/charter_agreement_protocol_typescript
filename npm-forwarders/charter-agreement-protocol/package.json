@@ -1,0 +1,31 @@
+{
+  "name": "charter-agreement-protocol",
+  "version": "0.2.0",
+  "description": "Forwards to @charter-agreement-protocol/verifier. Use that package directly.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baselabs/charter_agreement_protocol_typescript.git",
+    "directory": "npm-forwarders/charter-agreement-protocol"
+  },
+  "engines": {
+    "node": ">=24.8.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "dependencies": {
+    "@charter-agreement-protocol/verifier": ">=0.7.0"
+  }
+}
