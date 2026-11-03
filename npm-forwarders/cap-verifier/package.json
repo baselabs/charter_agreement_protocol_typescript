@@ -13,7 +13,7 @@
     "node": ">=24.8.0"
   },
   "bin": {
-    "cap-verifier": "./bin.js"
+    "cap-verifier": "bin.js"
   },
   "files": [
     "bin.js",
