@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch: {}
   push:
     tags: ["v*"]
 
@@ -22,10 +23,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push" > "$RUNNER_TEMP/source-ci.json"
-          node --input-type=module -e 'import {readFileSync} from "node:fs"; import assert from "node:assert/strict"; const runs=JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/source-ci.json")).workflow_runs; assert.ok(runs.some(r => r.head_sha === process.env.GITHUB_SHA && r.event === "push" && r.conclusion === "success"), "the tagged commit must have green main CI");'
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; import assert from "node:assert/strict"; const runs=JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/source-ci.json")).workflow_runs; assert.ok(runs.some(r => r.head_sha === process.env.GITHUB_SHA && r.event === "push" && r.conclusion === "success"), "the source commit must have green main CI");'
       - name: Pin archive tooling
         run: npm install --global npm@11.19.0 --ignore-scripts
       - name: Require the package version to match its tag
+        if: github.event_name == 'push'
         run: node --input-type=module -e 'import {readFileSync} from "node:fs"; import assert from "node:assert/strict"; assert.equal("v" + JSON.parse(readFileSync("package.json")).version, process.env.GITHUB_REF_NAME);'
       - name: Set up the Elixir reference runtime
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
@@ -66,4 +68,4 @@ jobs:
         working-directory: artifacts
         run: sha256sum --check SHA256SUMS
       - name: Stage for owner approval on npm
-        run: npm stage publish artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+        run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
