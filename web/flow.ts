@@ -149,11 +149,8 @@ export class Workshop {
         revision_digest: this.genesisDigest,
         revision_number: 1,
       };
-      const r = await signAcceptance(claims, this.handle(p), {
-        revisionText: this.genesisText,
-        descriptorCompacts: [p.descriptor!],
-        chain: this.view({ acceptances: this.acceptanceIssuer ? [this.acceptanceIssuer] : [] }),
-      });
+      const r = await signAcceptance(claims, this.handle(p),
+        this.view({ acceptances: this.acceptanceIssuer ? [this.acceptanceIssuer] : [] }));
       if (!r.ok) return failure(`signAcceptance (${p.role})`, r);
       if (p === this.issuer) this.acceptanceIssuer = r.result.acceptance; else this.acceptanceAcceptor = r.result.acceptance;
     }

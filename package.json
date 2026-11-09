@@ -1,7 +1,7 @@
 {
   "name": "@charter-agreement-protocol/verifier",
-  "version": "0.7.0",
-  "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) — byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
+  "version": "1.0.0",
+  "description": "Independent TypeScript verifier for the Charter Agreement Protocol (CAP) \u2014 byte-exact, offline re-verification of signed charter evidence. CAP verifies; it never authorizes.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,7 +24,8 @@
     "LICENSE",
     "NOTICE",
     "README.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "reference.json"
   ],
   "engines": {
     "node": ">=24.8.0"
@@ -39,16 +40,19 @@
     "bench:ed25519": "node --experimental-strip-types --no-warnings bench-ed25519.ts",
     "prepack": "npm run build",
     "typecheck:web": "tsc -p tsconfig.web.json",
-    "build:site": "node web/build.mjs"
+    "build:site": "node web/build.mjs",
+    "check:reference": "node scripts/check-reference.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "check": "npm run typecheck && npm run typecheck:web && npm run test && npm run self-checks && npm run build:site && npm run check:reference && npm run check:package"
   },
   "devDependencies": {
-    "@charter-agreement-protocol/signer": "^0.2.0",
+    "@charter-agreement-protocol/signer": "^0.3.0",
     "@noble/ed25519": "^3.2.0",
     "@noble/hashes": "^2.4.0",
-    "@types/node": "^26.0.0",
+    "@types/node": "^26.6.6",
     "buffer": "^6.0.3",
     "esbuild": "^0.28.2",
-    "typescript": "^5.9.0"
+    "typescript": "^7.0.2"
   },
   "repository": {
     "type": "git",

@@ -15,8 +15,13 @@ satisfaction, and more. Hosts read the evidence and decide.
 ## Install
 
 ```console
-npm install @charter-agreement-protocol/verifier
+npm install @charter-agreement-protocol/verifier@^1.0.0
 ```
+
+
+Release submissions use npm's staged publishing workflow. A staged version
+becomes publicly installable only after owner approval. During release review,
+maintainers can use `npm stage download <stage-id>` and install that tarball.
 
 Requires Node >= 24.8 (ML-DSA landed in the Node builtins across the
 24.6–24.8 minors). Zero runtime dependencies — Node builtins only.
@@ -35,14 +40,14 @@ const require = createRequire(import.meta.url);
 const corpusRoot = join(dirname(require.resolve("@charter-agreement-protocol/verifier/package.json")), "conformance");
 const report = reportFor(corpusRoot);
 console.log(report.bytes);   // canonical JSON report
-process.exit(report.exitStatus); // 0 = all certified cases recomputed and agreed
+process.exitCode = report.exitStatus; // 0 = all certified cases recomputed and agreed
 ```
 
 Or from the shell:
 
 ```console
-npx @charter-agreement-protocol/verifier        # the vendored certified corpus
-npx @charter-agreement-protocol/verifier --corpus DIR  # any corpus directory
+npx @charter-agreement-protocol/verifier@^1.0.0        # the vendored certified corpus
+npx @charter-agreement-protocol/verifier@^1.0.0 --corpus DIR  # any corpus directory
 ```
 
 Exit `0` means every case recomputed and agreed with the certified
@@ -62,8 +67,10 @@ cannot verify green.
 | `jsonProjection(value)` | The tagged projection used by reports; object members retain text order |
 | `Limits`, `DEFAULT_LIMITS`, `MAXIMUM_LIMITS` | Closed limits type, reference defaults and compiled maximum values; overrides must be nonnegative integers within the maximums |
 | `ChainInput` | A chain view with `revisions`, `acceptances`, `descriptors`, and `terminations` string arrays |
-| `VerificationOptions` | Optional `{ limits?: Partial<Limits>, profile?: { algorithms: string[]; revisions: { min: number; max: number } } }` for public verification |
+| `VerificationOptions` | Optional `{ limits?: Partial<Limits>, profile?: { algorithms?: string[]; revisions?: { min: number; max: number } } }` for public verification |
 | `SigningOptions` | Verification options plus an optional `algorithm` for `prepareSigning` |
+| `algorithmRegistry()` / `emissions()` / `defaultEmissionName()` | Signature registry rows, producer algorithm/revision pairs and the default emission name |
+| `Profile` / `DescriptorPredecessor` | Optional capability axes and retained descriptor identity/lineage types |
 | `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
 | `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
@@ -81,6 +88,12 @@ cannot verify green.
 | `decodeCharterRevision(text, options?)` / `revisionDigest(text, options?)` | Decode one canonical unsigned Charter Revision (claims + content digest over the exact text bytes) |
 | `decodePartyDescriptor(compact)` / `descriptorDigest(compact)` | Decode one Party Descriptor's claims and digest without verifying its signature |
 | `acceptanceRefusal(claims, chainInput)` / `terminationRefusal(claims, chainInput)` | The honest-signer refusal checks (R1–R3: claims-truth, no-equivocation, ancestry/governing coverage) over the caller's own view return `{ok: true}`, `signing_refused`, `signing_input_invalid`, or the set verification error. Holder-side signers run these before any key is used; the rule that fired is deliberately not surfaced |
+
+Additional exported structural types are `CanonicalValue`, `Projection`,
+`DecodeResult`, `CaseResult`, `CorpusFile`, `CorpusIndex`, `ConformanceCase`,
+`LoadedCorpus`, `CaseOutcome`, `ConformanceReport`, `ReportOutput`,
+`SigningInput`, `ProducerResult`, `AlgRow`, `VerifyResult`, and `RefusalResult`.
+The installed declarations contain their complete shapes.
 
 `prepareSigning` accepts a predecessor or `null` for a descriptor, a chain view
 (`revisions`, `acceptances`, `descriptors`, `terminations` arrays) for acceptance
@@ -162,7 +175,7 @@ substrate cannot verify, keeping that local result outside verdict reports.
   canonical reports must be byte-identical over the certified corpus — in
   this repository and over the unpacked published package — enforced by the
   reference repository's gates, together with a randomized differential
-  harness and a 25-mutation red-required battery.
+  harness and its red-required mutation battery.
 - **The certified corpus** ships in this package (`conformance/`), pinned by
   a raw index SHA-256 asserted at load.
 - **Ed25519 key and R admission.** After `npm run build`, run
@@ -190,16 +203,57 @@ cross-verifies TypeScript-signed artifacts from raw bytes):
   calls `prepareSigning` before the key is used and `finishSigning` after,
   so every protocol check stays in this package.
 
-The pair releases together: the signer depends on this package, so a
-verifier release stages first and the signer locks and releases against
-the published version immediately after.
+The 1.0 signer supports both the certified verifier 0.7 line and 1.x.
+Its registry lock pins published 0.7.0 for the baseline compatibility check.
+Its other check binds verifier 1.0 to the commit and exact archive integrity
+recorded from staging. When promoting a paired release, approve the verifier
+stage first, then the signer stage.
 
 ## SemVer
 
-Package SemVer is decoupled from the protocol's `protocol_revision`: new
-wire revisions land additively (minor releases; old revisions keep
-verifying side by side); a package major is owed only when a shipped public
-API is removed or verdicts change.
+The 1.x public JavaScript exports, TypeScript contracts and documented option
+and error shapes follow Semantic Versioning. Removing or renaming a public
+surface, or making an incompatible change to valid-input behavior, requires a
+major release. New exports and optional options or fields are minor additions. An incompatible
+change to a closed TypeScript union requires a major release. Compatible bug and
+security fixes can tighten malformed-input handling; they are recorded in the
+changelog. Package versions do not change an artifact's `protocol_revision`.
+
+## Conformance reference and development
+
+`reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
+The unchanged corpus contains 541 cases in 16 case files. `npm run check:reference`
+compares every corpus file with that archive. `npm run check:reference -- --report`
+also runs the published Elixir package and requires byte-identical reports;
+this needs Elixir 1.19/1.20 on OTP 28/29 linked to OpenSSL 3.5 or newer.
+The Elixir release's historical TypeScript source pin remains immutable.
+
+Use Node >= 24.8.0 and npm; `.tool-versions` pins the development Node.
+The lockfile records TypeScript 7 and the current Node declarations. Run:
+
+```console
+npm ci
+npm run check
+```
+
+`check` runs strict library and browser typechecks, the full native/browser and
+resource-boundary suites, self-checks, both builds, corpus agreement, the
+reference-byte check, and the packed-consumer documentation/declaration checks.
+CI covers Node 24.8.0 and current Node 24; both lanes also require Bun
+1.3.14 for its real substrate behavior. `npm run check:package` proves package
+contents and reproducible bytes, executes this quickstart and the installed CLI,
+and writes the verified tarball to `artifacts/package.tgz`.
+
+## Release staging
+
+Run the checks before pushing main and wait for CI. Tag that same commit
+`v<package-version>` after confirming package and tag versions agree. The
+[Release workflow](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/release.yml)
+checks the source without publishing permissions, then stages the verified
+archive using `npm stage publish --provenance --ignore-scripts` in a separate job.
+Staging requires npm >= 11.15.0; the workflow pins its publishing CLI.
+Only the owner can approve the staged package with npm 2FA. Record the stage ID
+and archive integrity, and approve the verifier before the signer.
 
 ## License
 

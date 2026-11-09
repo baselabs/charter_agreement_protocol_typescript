@@ -5,3 +5,5 @@ dist/
 
 site-dist/
 .playwright-mcp/
+
+artifacts/

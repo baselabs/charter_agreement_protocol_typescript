@@ -1,0 +1,5 @@
+# actionlint 1.7.12 predates the GitHub-hosted ubuntu-26.04 label.
+# The published Elixir ML-DSA oracle requires that image's OpenSSL >=3.5.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

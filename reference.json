@@ -1,0 +1,7 @@
+{
+  "package": "charter_agreement_protocol",
+  "version": "1.0.0",
+  "archive_sha256": "77a70e80b7f9a71b7e84928a65ad92f984a746cc96d8700f97d436b3dfca5f21",
+  "corpus_path": "priv/conformance",
+  "verification_semantics": 6
+}

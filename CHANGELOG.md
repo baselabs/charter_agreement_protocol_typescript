@@ -3,6 +3,21 @@
 All notable public changes to `@charter-agreement-protocol/verifier` are
 documented here.
 
+## [1.0.0] — 2026-11-09
+
+- Lets the quickstart flush its complete canonical report before process exit.
+- Updates the browser workshop to pass the current direct chain context to
+  the signer, fixing its stale wrapped acceptance context.
+- Stabilizes the public API under Semantic Versioning; wire revisions 1–3 and
+  the certified corpus stay unchanged.
+- Pins and checks the published Elixir 1.0 conformance reference. The release
+  gate verifies packed contents, reproducible bytes, installed README examples
+  and generated declarations.
+- Refreshes documentation, security support, Node requirements and workshop
+  version labels. Updates development tools and adds the Node 24.8 CI floor.
+- Stages verified archives with provenance through the existing npm trusted
+  publisher. Owner approval with 2FA is required to make them public.
+
 ## [0.7.0] — 2026-10-14
 
 ### Added
