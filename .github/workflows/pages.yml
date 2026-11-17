@@ -1,13 +1,6 @@
-# GitHub Pages — the verifier bench. Static bundle built from this
-# repository's verifier source plus the published signer package (demo
-# issuance only — this package itself keeps zero runtime dependencies);
-# no backend, no secrets.
 name: Pages
 
 on:
-  push:
-    branches: [main]
-    paths: ["web/**", "package.json", "package-lock.json", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -15,47 +8,49 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build the bench bundle
+  publish:
+    name: Build and publish the static site
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.21.0 # Development build pin; CI covers the Node 24.8 floor too.
-          cache: npm
-
-      - name: Install (frozen lockfile)
-        run: npm ci
-
-      - name: Typecheck the site
-        run: npm run typecheck:web
-
-      - name: Build the bundle
-        run: npm run build:site
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: site-dist
-
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-24.04
+    timeout-minutes: 7 # Run 42651891950: build 20s + deploy 174s; twice their sum.
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
-      name: github-pages
+      name: publish
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy
+      - name: Refuse a ref outside the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || { echo "::error::Publication requires the default branch"; exit 1; }
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node from the tool versions
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .tool-versions
+          package-manager-cache: false
+      - name: Refuse a different Node version
+        run: |
+          expected="$(awk '$1 == "nodejs" {print $2}' .tool-versions)"
+          test "$(node --version)" = "v$expected" || { echo "::error::Node must be exactly $expected"; exit 1; }
+      - name: Install with the frozen lockfile
+        run: npm ci
+      - name: Build the site
+        run: npm run build:site
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site-dist
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

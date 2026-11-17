@@ -2,8 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'kci/**']
-  pull_request:
+    branches: ['kci/**']
 
 permissions:
   contents: read
@@ -14,49 +13,152 @@ concurrency:
 
 jobs:
   verify:
-    name: typecheck, test, build, vendored conformance
+    name: typecheck, test, build (${{ matrix.lane }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 3 # Run 41587842713: source checks took 68s; twice that, rounded up.
     strategy:
       fail-fast: false
       matrix:
-        node: ["24.8.0", "24"]
+        include:
+          - lane: primary
+            node: ""
+          - lane: minimum
+            node: "24.8.0"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
-
-      - name: Set up Bun (runtime whose ML-DSA keys report no type)
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read the exact Node pin
+        id: runtime
+        env:
+          COMPATIBILITY_NODE: ${{ matrix.node }}
+        run: |
+          version="${COMPATIBILITY_NODE:-$(awk '$1 == "nodejs" {print $2}' .tool-versions)}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Node requires an exact pin"; exit 1; }
+          echo "node=$version" >> "$GITHUB_OUTPUT"
+      - name: Set up the pinned Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.runtime.outputs.node }}
+          package-manager-cache: false
+      - name: Refuse a different Node version
+        env:
+          EXPECTED_NODE: ${{ steps.runtime.outputs.node }}
+        run: |
+          test "$(node --version)" = "v$EXPECTED_NODE" || { echo "::error::Node must be exactly $EXPECTED_NODE"; exit 1; }
+      - name: Set up Bun from the tool versions
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
-
+          bun-version-file: .tool-versions
+          no-cache: true
+      - name: Refuse a different Bun version
+        run: |
+          expected="$(awk '$1 == "bun" {print $2}' .tool-versions)"
+          test "$(bun --version)" = "$expected" || { echo "::error::Bun must be exactly $expected"; exit 1; }
       - name: Pin archive tooling
         run: npm install --global npm@11.19.0 --ignore-scripts
-
-      - name: Install (frozen lockfile)
+      - name: Install with the frozen lockfile
         run: npm ci
-
-      - name: Complete source, package and documentation checks
+      - name: Check source, conformance and the packed package
         env:
           CAP_REQUIRE_BUN: "1"
-        run: npm run check
+        run: |
+          npm run typecheck
+          npm run test
+          npm run self-checks
+          npm run check:reference
+          npm run check:package
+
   reference:
-    name: Published Elixir 1.0 report agreement
+    name: Published Elixir report agreement
     runs-on: ubuntu-26.04
+    timeout-minutes: 1 # Run 44077949078: reference agreement took 20s; twice that, rounded up.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "24"
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node from the tool versions
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .tool-versions
+          package-manager-cache: false
+      - name: Refuse a different Node version
+        run: |
+          expected="$(awk '$1 == "nodejs" {print $2}' .tool-versions)"
+          test "$(node --version)" = "v$expected" || { echo "::error::Node must be exactly $expected"; exit 1; }
       - name: Set up the Elixir reference runtime
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          elixir-version: "1.20.3"
-          otp-version: "29.0.3"
-      - run: npm ci
-      - run: npm run build
-      - run: npm run check:reference -- --report
+          version-file: .tool-versions
+          version-type: strict
+      - name: Refuse a different BEAM runtime
+        run: |
+          expected_otp="$(awk '$1 == "erlang" {print $2}' .tool-versions)"
+          expected_elixir="$(awk '$1 == "elixir" {print $2}' .tool-versions)"
+          actual_otp="$(elixir -e 'release = :erlang.system_info(:otp_release); IO.write(String.trim(File.read!(Path.join([List.to_string(:code.root_dir()), "releases", List.to_string(release), "OTP_VERSION"]))))')"
+          test "$actual_otp" = "$expected_otp" || { echo "::error::OTP must be exactly $expected_otp"; exit 1; }
+          test "$(elixir --short-version)" = "$expected_elixir" || { echo "::error::Elixir must be exactly $expected_elixir"; exit 1; }
+      - name: Set up Bun from the tool versions
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .tool-versions
+          no-cache: true
+      - name: Refuse a different Bun version
+        run: |
+          expected="$(awk '$1 == "bun" {print $2}' .tool-versions)"
+          test "$(bun --version)" = "$expected" || { echo "::error::Bun must be exactly $expected"; exit 1; }
+      - name: Install with the frozen lockfile
+        run: npm ci
+      - name: Build the verifier
+        run: npm run build
+      - name: Compare the published Elixir and TypeScript reports
+        run: npm run check:reference -- --report
+
+  site:
+    name: Typecheck and build the static site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1 # Run 42651891950: the former Pages build took 20s.
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node from the tool versions
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .tool-versions
+          package-manager-cache: false
+      - name: Refuse a different Node version
+        run: |
+          expected="$(awk '$1 == "nodejs" {print $2}' .tool-versions)"
+          test "$(node --version)" = "v$expected" || { echo "::error::Node must be exactly $expected"; exit 1; }
+      - name: Install with the frozen lockfile
+        run: npm ci
+      - name: Typecheck the site
+        run: npm run typecheck:web
+      - name: Build the site
+        run: npm run build:site
+
+  qualified:
+    if: always()
+    needs: [verify, reference, site]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2 # No green run yet; qualification control job has no measurement.
+    steps:
+      - name: Require every qualification job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          results = json.loads(os.environ['NEEDS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              print('Qualification refused: ' + ', '.join(failed))
+          sys.exit(bool(failed) or not results)
+          PYTHON
