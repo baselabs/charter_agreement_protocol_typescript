@@ -263,9 +263,10 @@ and the green `qualified` run. Infra obtains owner approval and dispatches
 from the default branch. The default branch accepts only commits with a green
 `qualified` run. The protected `publish` job refuses an existing registry version
 or version tag, builds
-the library and documentation site, inspects the archive, and publishes those
-exact bytes with `npm publish --provenance` through OIDC. No stored npm token is
-used. Infra reads the publication back before creating `v<version>` on the
+the library and documentation site, inspects the archive, and stages those
+exact bytes with `npm stage publish --provenance` through OIDC. No stored npm
+token is used. The package becomes public only after the owner approves the
+staged release on npmjs.com with 2FA. Infra reads the publication back before creating `v<version>` on the
 published commit. For a paired release, publish and verify the verifier first.
 
 Site typechecking and building are required by `qualified`. Infra dispatches

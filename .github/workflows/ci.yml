@@ -148,7 +148,7 @@ jobs:
     if: always()
     needs: [verify, reference, site]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # No green run yet; the 5-minute floor for short jobs until the landing run is recorded.
+    timeout-minutes: 5 # Run 44190196993: slowest green 4s; under 2.5 minutes, so the 5-minute floor.
     steps:
       - name: Require every qualification job to succeed
         env:

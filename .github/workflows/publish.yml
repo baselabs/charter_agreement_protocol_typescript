@@ -67,4 +67,4 @@ jobs:
         working-directory: artifacts
         run: sha256sum --check SHA256SUMS
       - name: Publish to npm with trusted publishing
-        run: npm publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+        run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
