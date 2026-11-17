@@ -3,6 +3,12 @@
 All notable public changes to `@charter-agreement-protocol/verifier` are
 documented here.
 
+## [Unreleased]
+
+- Qualifies commits only through landing CI, with exact runtime checks and a
+  required site job. The maintainers' release process dispatches protected npm
+  and Pages publication from the default branch after qualification.
+
 ## [1.0.0] — 2026-11-09
 
 - Lets the quickstart flush its complete canonical report before process exit.
