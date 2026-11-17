@@ -15,7 +15,7 @@ jobs:
   verify:
     name: typecheck, test, build (${{ matrix.lane }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 3 # Run 41587842713: source checks took 68s; twice that, rounded up.
+    timeout-minutes: 5 # Run 41587842713: source checks took 68s; under 2.5 minutes, so the 5-minute floor for short jobs.
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +74,7 @@ jobs:
   reference:
     name: Published Elixir report agreement
     runs-on: ubuntu-26.04
-    timeout-minutes: 1 # Run 44077949078: reference agreement took 20s; twice that, rounded up.
+    timeout-minutes: 5 # Run 44077949078: reference agreement took 20s; under 2.5 minutes, so the 5-minute floor for short jobs.
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -121,7 +121,7 @@ jobs:
   site:
     name: Typecheck and build the static site
     runs-on: ubuntu-24.04
-    timeout-minutes: 1 # Run 42651891950: the former Pages build took 20s.
+    timeout-minutes: 5 # Run 42651891950: the former Pages build took 20s; under 2.5 minutes, so the 5-minute floor for short jobs.
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,7 +148,7 @@ jobs:
     if: always()
     needs: [verify, reference, site]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2 # No green run yet; qualification control job has no measurement.
+    timeout-minutes: 5 # No green run yet; the 5-minute floor for short jobs until the landing run is recorded.
     steps:
       - name: Require every qualification job to succeed
         env:

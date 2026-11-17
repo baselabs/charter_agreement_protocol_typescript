@@ -21,7 +21,7 @@ jobs:
       pages: write
       id-token: write
     environment:
-      name: publish
+      name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Refuse a ref outside the default branch
