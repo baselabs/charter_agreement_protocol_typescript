@@ -5,6 +5,9 @@ documented here.
 
 ## [Unreleased]
 
+- Resumes approved npm releases on the same commit, refusing missing package
+  names, retired versions and differing archive bytes. Preserves verified
+  consumer files for the maintainers' GitHub release and reads npm integrity back.
 - Qualifies commits only through landing CI, with exact runtime checks and a
   required site job. The maintainers' release process dispatches protected npm
   and Pages publication from the default branch after qualification.

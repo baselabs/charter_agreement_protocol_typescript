@@ -1,0 +1,135 @@
+{
+  "verifier": {
+    "source": "https://registry.npmjs.org/@charter-agreement-protocol%2fverifier",
+    "recorded": "2026-11-18",
+    "selectedVersion": "1.0.0",
+    "status": 200,
+    "packument": {
+      "name": "@charter-agreement-protocol/verifier",
+      "versions": {
+        "1.0.0": {
+          "name": "@charter-agreement-protocol/verifier",
+          "version": "1.0.0",
+          "dist": {
+            "shasum": "78e29e6cd66eb6c8bc9c0683d891a7ee02a22f2b",
+            "tarball": "https://registry.npmjs.org/@charter-agreement-protocol/verifier/-/verifier-1.0.0.tgz",
+            "integrity": "sha512-fjiqnSgXzCFM1cYMWmIurcLc7OObwpQzmd9TNy8uzoPS4cxMKZ3o4kXcH90DRv9WYtOn/PLu3ffkjOa8bJe3GA==",
+            "fileCount": 30,
+            "unpackedSize": 1937631,
+            "attestations": {
+              "url": "https://registry.npmjs.org/-/npm/v1/attestations/@charter-agreement-protocol%2fverifier@1.0.0",
+              "provenance": {
+                "predicateType": "https://slsa.dev/provenance/v1"
+              }
+            },
+            "signatures": [
+              {
+                "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+                "sig": "MEQCIB5ItAi+lt9its+aJvvnnfYAoNmE/q/OolMT1C2uMyLVAiB7l8Bjug56IgMuVaI5OvNG1e16eYrYkPlBRqm037eatQ=="
+              }
+            ]
+          }
+        }
+      },
+      "time": {
+        "created": "2026-09-14T13:01:01.695Z",
+        "modified": "2026-11-09T16:14:52.394Z",
+        "1.0.0": "2026-11-09T16:14:52.040Z"
+      }
+    }
+  },
+  "signer": {
+    "source": "https://registry.npmjs.org/@charter-agreement-protocol%2fsigner",
+    "recorded": "2026-11-18",
+    "selectedVersion": "1.0.0",
+    "status": 200,
+    "packument": {
+      "name": "@charter-agreement-protocol/signer",
+      "versions": {
+        "1.0.0": {
+          "name": "@charter-agreement-protocol/signer",
+          "version": "1.0.0",
+          "dist": {
+            "shasum": "b376687ad859c9c59cb9d99181eff025eac90cfc",
+            "tarball": "https://registry.npmjs.org/@charter-agreement-protocol/signer/-/signer-1.0.0.tgz",
+            "integrity": "sha512-Xl3rZNqmC48W8rL9ii3GeWgiF2DhYsFfT6kMxM5GP9P+v5Xvcy5fyZuaQ4TLvA3pfiDuZoT0ugrUzzvgy3YVlw==",
+            "fileCount": 15,
+            "unpackedSize": 376671,
+            "attestations": {
+              "url": "https://registry.npmjs.org/-/npm/v1/attestations/@charter-agreement-protocol%2fsigner@1.0.0",
+              "provenance": {
+                "predicateType": "https://slsa.dev/provenance/v1"
+              }
+            },
+            "signatures": [
+              {
+                "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+                "sig": "MEUCIENIYvT+u9Md68QYxzWFh/IBrEIDU4ZQ5a+E9lDBvb53AiEAorSjiz95O67ZgtPoVxipYpw+yS0aZoHQyIgu+xStkiM="
+              }
+            ]
+          }
+        }
+      },
+      "time": {
+        "created": "2026-09-14T13:46:16.759Z",
+        "modified": "2026-11-09T16:14:41.160Z",
+        "1.0.0": "2026-11-09T16:14:40.780Z"
+      }
+    }
+  },
+  "deprecated": {
+    "source": "https://registry.npmjs.org/inflight",
+    "recorded": "2026-11-18",
+    "selectedVersion": "1.0.6",
+    "status": 200,
+    "packument": {
+      "name": "inflight",
+      "versions": {
+        "1.0.6": {
+          "name": "inflight",
+          "version": "1.0.6",
+          "deprecated": "This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.",
+          "dist": {
+            "shasum": "49bd6331d7d02d0c09bc910a1075ba8165b56df9",
+            "tarball": "https://registry.npmjs.org/inflight/-/inflight-1.0.6.tgz",
+            "integrity": "sha512-k92I/b08q4wvFscXCLvqfsHCrjrF7yiXsQuIVvVE7N82W3+aqpzuUdBbfhWcy/FZR3/4IgflMgKLOsvPDrGCJA==",
+            "signatures": [
+              {
+                "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA",
+                "sig": "MEUCIHeTY8VavURUkUCnD17oIqsNuSlwTwP/yQOChuwV87WDAiEAhw/ZF24OrzMti41jlv8EM7Cq/KEVSteKCUh9MJ5Oo7s="
+              }
+            ]
+          }
+        }
+      },
+      "time": {
+        "modified": "2024-05-23T03:14:32.244Z",
+        "created": "2014-05-05T03:04:32.021Z",
+        "1.0.6": "2016-10-13T03:53:29.524Z"
+      }
+    }
+  },
+  "unpublished": {
+    "source": "https://registry.npmjs.org/coa",
+    "recorded": "2026-11-18",
+    "selectedVersion": "2.0.3",
+    "status": 200,
+    "packument": {
+      "name": "coa",
+      "versions": {},
+      "time": {
+        "modified": "2022-06-13T06:24:05.720Z",
+        "created": "2011-07-19T22:07:50.546Z",
+        "2.0.3": "2021-11-04T13:02:34.339Z"
+      }
+    }
+  },
+  "missing": {
+    "source": "https://registry.npmjs.org/@charter-agreement-protocol%2fmissing-release-state-fixture-20261118",
+    "recorded": "2026-11-18",
+    "status": 404,
+    "packument": {
+      "error": "Not found"
+    }
+  }
+}

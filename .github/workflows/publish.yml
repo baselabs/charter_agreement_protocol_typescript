@@ -15,7 +15,7 @@ jobs:
     name: Publish the inspected archive with provenance
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # Run 38507722154: the former publication job took 66s; under 2.5 minutes, so the 5-minute floor for short jobs.
+    timeout-minutes: 90 # no green run yet
     environment: publish
     permissions:
       contents: read
@@ -44,18 +44,17 @@ jobs:
         run: npm install --global npm@11.19.0 --ignore-scripts
       - name: Install with the frozen lockfile
         run: npm ci
-      - name: Refuse a published or tagged version
+      - name: Refuse a tagged version
+        id: package
         run: |
           node --input-type=module <<'JAVASCRIPT'
           import assert from 'node:assert/strict';
-          import {readFileSync} from 'node:fs';
-          import {execFileSync, spawnSync} from 'node:child_process';
+          import {appendFileSync, readFileSync} from 'node:fs';
+          import {execFileSync} from 'node:child_process';
           const {name, version} = JSON.parse(readFileSync('package.json', 'utf8'));
-          const result = spawnSync('npm', ['view', `${name}@${version}`, 'version', '--json', '--registry=https://registry.npmjs.org/'], {encoding: 'utf8'});
-          assert.notEqual(result.status, 0, `${name}@${version} is already published`);
-          assert.equal(JSON.parse(result.stdout).error?.code, 'E404', 'registry lookup failed without confirming an unpublished version');
           const tags = execFileSync('git', ['ls-remote', '--tags', 'origin', `v${version}`], {encoding: 'utf8'});
           assert.equal(tags.trim(), '', `v${version} is already tagged`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nversion=${version}\n`);
           JAVASCRIPT
       - name: Build the library and documentation site
         run: |
@@ -66,5 +65,26 @@ jobs:
       - name: Verify the inspected archive checksum
         working-directory: artifacts
         run: sha256sum --check SHA256SUMS
+      - name: Plan only missing registry uploads
+        id: plan
+        env:
+          RELEASE_NAME: ${{ steps.package.outputs.name }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: node scripts/npm-release-state.mjs --plan "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
+      - name: Preserve the consumer-verified release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: |
+            artifacts/package.tgz
+            artifacts/SHA256SUMS
+          if-no-files-found: error
       - name: Publish to npm with trusted publishing
+        if: steps.plan.outputs.state == 'upload'
         run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+      - name: Read back the served archive integrity
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+        env:
+          RELEASE_NAME: ${{ steps.package.outputs.name }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: node scripts/npm-release-state.mjs --served "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz

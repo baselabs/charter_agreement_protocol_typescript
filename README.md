@@ -261,13 +261,39 @@ Send infra one message with the repository, full commit, version, what goes out,
 and the green `qualified` run. Infra obtains owner approval and dispatches
 [publish.yml](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/publish.yml)
 from the default branch. The default branch accepts only commits with a green
-`qualified` run. The protected `publish` job refuses an existing registry version
-or version tag, builds
-the library and documentation site, inspects the archive, and stages those
-exact bytes with `npm stage publish --provenance` through OIDC. No stored npm
-token is used. The package becomes public only after the owner approves the
-staged release on npmjs.com with 2FA. Infra reads the publication back before creating `v<version>` on the
-published commit. For a paired release, publish and verify the verifier first.
+`qualified` run. The protected `publish` job refuses an existing version tag,
+a package name the registry lacks, a deprecated or unpublished version, and
+served bytes that differ from the inspected archive. A first publication is
+the owner's decision. The job builds the library and documentation site,
+inspects the archive, and stages missing bytes with
+`npm stage publish --provenance` through OIDC. No stored npm token is used.
+The package becomes public only after the owner approves the staged release
+on npmjs.com with 2FA.
+
+A held release is finished by dispatching `publish.yml` again on the same
+commit after approval. It stages only what is missing, skips an identical
+served version, and refuses differing bytes or a retired version. npm's OIDC
+credentials cannot read pending staged versions: a dispatch while approval
+is still pending may attempt to stage again, which npm refuses without
+replacing the staged version. Approve the pending stage before dispatching
+again.
+
+The consumer-verified `package.tgz` and `SHA256SUMS` leave the job as one
+`release-assets` artifact. After a successful registry read-back, the
+maintainers' release process tags the published commit as `v<version>`,
+compares the archive with npm's bytes, and creates that version's GitHub
+release with those files. No workflow creates a release or runs on a tag.
+For a paired release, publish and verify the verifier first.
+
+To verify a release, download `package.tgz` and `SHA256SUMS` from the matching
+[`v<version>` GitHub release](https://github.com/baselabs/charter_agreement_protocol_typescript/releases),
+then run `sha256sum --check SHA256SUMS` in their directory. Check that the
+archive's SHA-512 matches npm's `dist.integrity`, and inspect its source and
+npm provenance for that exact version (replace `<version>` below):
+
+```console
+npm view '@charter-agreement-protocol/verifier@<version>' repository.url dist.integrity dist.attestations
+```
 
 Site typechecking and building are required by `qualified`. Infra dispatches
 [pages.yml](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/pages.yml)
