@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { releaseState } from "./scripts/npm-release-state.mjs";
 
@@ -55,6 +55,28 @@ test("a registry response for another name or version is refused", () => {
   const recorded = structuredClone(fixtures.verifier);
   recorded.packument.versions[recorded.selectedVersion].version = "99.0.0";
   assert.throws(() => releaseState(input(fixtures.verifier), recorded), /invalid version manifest/);
+});
+
+test("every workflow uses bash with pipefail and preserves failing command status", () => {
+  const directory = new URL("./.github/workflows/", import.meta.url);
+  const paths = readdirSync(directory).filter((path) => /\.ya?ml$/.test(path));
+  assert.ok(paths.length > 0);
+  const ci = readFileSync(new URL("ci.yml", directory), "utf8");
+  assert.match(ci, /^        run: npm audit --audit-level=high$/m);
+  for (const path of paths) {
+    const source = readFileSync(new URL(path, directory), "utf8");
+    assert.match(source, /^defaults:\n  run:\n    shell: bash\n/m, path);
+    for (const [defaults] of source.matchAll(/^    defaults:\n(?:^      .*\n|^\n)*/gm)) {
+      assert.match(defaults, /^        shell: bash$/m, path);
+      assert.match(defaults, /^        working-directory:/m, path);
+    }
+    for (const [, image] of source.matchAll(/^    container: ([^\n]+)$/gm)) {
+      assert.match(image, /:[^@\s]+@sha256:[0-9a-f]{64}$/, path);
+    }
+    assert.doesNotMatch(source, /\|\|\s*true\b/, path);
+    assert.doesNotMatch(source, /^\s*(?:run: )?(?:echo|for)\b[^\n]*\$\(/m, path);
+    assert.ok(!source.includes("<("), path);
+  }
 });
 
 const workflow = readFileSync(new URL("./.github/workflows/publish.yml", import.meta.url), "utf8");
