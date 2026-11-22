@@ -249,16 +249,16 @@ and writes the verified tarball to `artifacts/package.tgz`.
 ## Releases
 
 The maintainers' release process runs covering checks on the build box where
-configured, never on the maintainers' Mac. This public repository has no build-box
+configured, never on a workstation. This public repository has no build-box
 checkout: its qualification runs on pinned GitHub-hosted runners at landing.
 Prepare the version commit with matching `package.json` and `package-lock.json`
 versions, stamp the changelog, and update the documented release and site badge.
-Land through `kimosabe-land --repo . --sha <full commit>`; it qualifies the commit
+Land the full commit through the maintainers' landing tool; it qualifies the commit
 on `kci/**` before moving the default branch. Do not push the default branch or
 version tags directly.
 
-Send infra one message with the repository, full commit, version, what goes out,
-and the green `qualified` run. Infra obtains owner approval and dispatches
+Send the release operator one message with the repository, full commit, version, what goes out,
+and the green `qualified` run. The release operator obtains owner approval and dispatches
 [publish.yml](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/publish.yml)
 from the default branch. The default branch accepts only commits with a green
 `qualified` run. The protected `publish` job refuses an existing version tag,
@@ -295,7 +295,7 @@ npm provenance for that exact version (replace `<version>` below):
 npm view '@charter-agreement-protocol/verifier@<version>' repository.url dist.integrity dist.attestations
 ```
 
-Site typechecking and building are required by `qualified`. Infra dispatches
+Site typechecking and building are required by `qualified`. The release operator dispatches
 [pages.yml](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/pages.yml)
 from the default branch to build and deploy the static site through GitHub's
 `github-pages` environment. A default-branch push or version tag starts neither workflow.
