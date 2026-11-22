@@ -1,7 +1,6 @@
 node_modules/
 dist/
 *.tgz
-/.forge/
 
 site-dist/
 .playwright-mcp/

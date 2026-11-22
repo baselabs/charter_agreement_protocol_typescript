@@ -84,6 +84,7 @@ jobs:
             artifacts/package.tgz
             artifacts/SHA256SUMS
           if-no-files-found: error
+          retention-days: 7
       - name: Publish to npm with trusted publishing
         if: steps.plan.outputs.state == 'upload'
         run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/

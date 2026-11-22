@@ -99,6 +99,7 @@ test("the consumer files leave as one pinned release-assets artifact before stag
   assert.match(assets, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\.6\.2/);
   assert.match(assets, /^          name: release-assets$/m);
   assert.match(assets, /^          if-no-files-found: error$/m);
+  assert.match(assets, /^          retention-days: 7$/m);
   assert.match(assets, /^            artifacts\/package\.tgz$/m);
   assert.match(assets, /^            artifacts\/SHA256SUMS$/m);
   assert.ok(steps.indexOf(oneStep(/run: npm run check:package/)) < steps.indexOf(assets));
