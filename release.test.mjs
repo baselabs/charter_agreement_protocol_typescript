@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { releaseState } from "./scripts/npm-release-state.mjs";
 
@@ -76,6 +77,41 @@ test("every workflow uses bash with pipefail and preserves failing command statu
     assert.doesNotMatch(source, /\|\|\s*true\b/, path);
     assert.doesNotMatch(source, /^\s*(?:run: )?(?:echo|for)\b[^\n]*\$\(/m, path);
     assert.ok(!source.includes("<("), path);
+  }
+});
+
+test("CI reads exact runtime versions only through the pinned shared reader", () => {
+  const reader = new URL("./scripts/toolchain.sh", import.meta.url);
+  assert.equal(createHash("sha256").update(readFileSync(reader)).digest("hex"),
+    "b29bfeb6ec4ec8f5b7e3ac3c963f04b6d3c73483172e5bd59ea40f20b102f1eb");
+  assert.equal(statSync(reader).mode & 0o777, 0o755);
+  const directory = new URL("./.github/workflows/", import.meta.url);
+  const paths = readdirSync(directory).filter((path) => /\.ya?ml$/.test(path));
+  assert.ok(paths.length > 0);
+  for (const path of paths) {
+    const source = readFileSync(new URL(path, directory), "utf8");
+    assert.doesNotMatch(source, /\b(?:node-|bun-)?version-file:/, path);
+    assert.doesNotMatch(source, /\bawk\b/, path);
+    assert.doesNotMatch(source, /\b(?:bash|sh)\s+[^\n]*scripts\/toolchain\.sh/, path);
+    assert.doesNotMatch(source, /\b(?:elixir|otp|node|bun|golang|elixir-version|otp-version|node-version|bun-version|go-version|EXPECTED_ELIXIR|EXPECTED_OTP|EXPECTED_NODE|EXPECTED_BUN|EXPECTED_GO):\s*["']?[0-9]/, path);
+    for (const line of source.split("\n").filter((line) => !line.trimStart().startsWith("#") && line.includes(".tool-versions"))) {
+      assert.ok(line.includes("scripts/toolchain.sh "), path);
+    }
+    for (const [job] of source.matchAll(/^  [\w-]+:\n.*?(?=^  [\w-]+:\n|(?![\s\S]))/gms)) {
+      if (!/uses: (?:erlef\/setup-beam|actions\/setup-node|actions\/setup-go|oven-sh\/setup-bun)@/.test(job)) continue;
+      assert.match(job, /run: scripts\/toolchain\.sh /, path);
+      assert.match(job, /scripts\/toolchain\.sh --installed /, path);
+      for (const [setup, tool] of [["erlef/setup-beam@", "elixir"], ["erlef/setup-beam@", "erlang"], ["actions/setup-node@", "nodejs"], ["actions/setup-go@", "golang"]]) {
+        if (job.includes(setup)) assert.ok(job.includes(`"${tool}=$`), path);
+      }
+      if (job.includes("oven-sh/setup-bun@")) {
+        assert.ok(job.includes("EXPECTED_BUN: ${{ steps.toolchain.outputs.bun }}"), path);
+        assert.ok(job.includes('test "$actual_bun" = "$EXPECTED_BUN"'), path);
+      }
+      for (const [, value] of job.matchAll(/^          (?:elixir|otp|node|bun|go)-version: ([^\n]+)$/gm)) {
+        assert.ok(value.startsWith("${{ "), path);
+      }
+    }
   }
 });
 

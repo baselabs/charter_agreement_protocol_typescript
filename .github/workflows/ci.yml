@@ -16,53 +16,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  toolchain:
+    name: Read runtime toolchains
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # the five-minute floor; no green run has been measured yet
+    outputs:
+      node_matrix: ${{ steps.matrix.outputs.node_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the shared reader
+        run: scripts/toolchain.sh --self-test
+      - name: Read defaults and compatibility lanes
+        id: versions
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+      - name: Compose the qualification matrix
+        id: matrix
+        env:
+          NODE: ${{ steps.versions.outputs.nodejs }}
+          NODE_LANES: ${{ steps.versions.outputs.nodejs_lanes }}
+        run: |
+          python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import json, os
+          lanes = [{"lane": "primary", "node": os.environ["NODE"]}]
+          lanes.extend({"lane": "minimum", "node": node} for node in json.loads(os.environ["NODE_LANES"]))
+          print("node_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
+          PYTHON
+
   verify:
+    needs: toolchain
     name: typecheck, test, build (${{ matrix.lane }})
     runs-on: ubuntu-24.04
     timeout-minutes: 5 # Run 41587842713: source checks took 68s; under 2.5 minutes, so the 5-minute floor for short jobs.
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - lane: primary
-            node: ""
-          - lane: minimum
-            node: "24.8.0"
+      matrix: ${{ fromJSON(needs.toolchain.outputs.node_matrix) }}
+
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Read the exact Node pin
-        id: runtime
-        env:
-          COMPATIBILITY_NODE: ${{ matrix.node }}
-        run: |
-          version="${COMPATIBILITY_NODE:-$(awk '$1 == "nodejs" {print $2}' .tool-versions)}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Node requires an exact pin"; exit 1; }
-          echo "node=$version" >> "$GITHUB_OUTPUT"
-      - name: Set up the pinned Node runtime
+      - name: Read runtime versions
+        id: toolchain
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ steps.runtime.outputs.node }}
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
-      - name: Refuse a different Node version
+
+      - name: Refuse Node runtime drift
         env:
-          EXPECTED_NODE: ${{ steps.runtime.outputs.node }}
-        run: |
-          actual_node=$(node --version)
-          test "$actual_node" = "v$EXPECTED_NODE" || { echo "::error::Node must be exactly $EXPECTED_NODE"; exit 1; }
-      - name: Set up Bun from the tool versions
+          EXPECTED_NODE: ${{ matrix.node }}
+        run: scripts/toolchain.sh --installed "nodejs=$EXPECTED_NODE"
+
+      - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version-file: .tool-versions
+          bun-version: ${{ steps.toolchain.outputs.bun }}
           no-cache: true
-      - name: Refuse a different Bun version
+
+      - name: Refuse Bun runtime drift
+        env:
+          EXPECTED_BUN: ${{ steps.toolchain.outputs.bun }}
         run: |
-          expected="$(awk '$1 == "bun" {print $2}' .tool-versions)"
           actual_bun=$(bun --version)
-          test "$actual_bun" = "$expected" || { echo "::error::Bun must be exactly $expected"; exit 1; }
+          test "$actual_bun" = "$EXPECTED_BUN" || { echo "::error::Bun must be exactly $EXPECTED_BUN"; exit 1; }
+
       - name: Pin archive tooling
         run: npm install --global npm@11.19.0 --ignore-scripts
       - name: Install with the frozen lockfile
@@ -89,39 +113,47 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Set up Node from the tool versions
+      - name: Read runtime versions
+        id: toolchain
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .tool-versions
+          node-version: ${{ steps.toolchain.outputs.nodejs }}
           package-manager-cache: false
-      - name: Refuse a different Node version
-        run: |
-          expected="$(awk '$1 == "nodejs" {print $2}' .tool-versions)"
-          actual_node=$(node --version)
-          test "$actual_node" = "v$expected" || { echo "::error::Node must be exactly $expected"; exit 1; }
-      - name: Set up the Elixir reference runtime
+
+      - name: Refuse Node runtime drift
+        env:
+          EXPECTED_NODE: ${{ steps.toolchain.outputs.nodejs }}
+        run: scripts/toolchain.sh --installed "nodejs=$EXPECTED_NODE"
+
+      - name: Set up BEAM
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          version-file: .tool-versions
+          elixir-version: ${{ steps.toolchain.outputs.elixir }}
+          otp-version: ${{ steps.toolchain.outputs.otp }}
           version-type: strict
-      - name: Refuse a different BEAM runtime
-        run: |
-          expected_otp="$(awk '$1 == "erlang" {print $2}' .tool-versions)"
-          expected_elixir="$(awk '$1 == "elixir" {print $2}' .tool-versions)"
-          actual_otp="$(elixir -e 'release = :erlang.system_info(:otp_release); IO.write(String.trim(File.read!(Path.join([List.to_string(:code.root_dir()), "releases", List.to_string(release), "OTP_VERSION"]))))')"
-          test "$actual_otp" = "$expected_otp" || { echo "::error::OTP must be exactly $expected_otp"; exit 1; }
-          actual_elixir=$(elixir --short-version)
-          test "$actual_elixir" = "$expected_elixir" || { echo "::error::Elixir must be exactly $expected_elixir"; exit 1; }
-      - name: Set up Bun from the tool versions
+
+      - name: Refuse BEAM runtime drift
+        env:
+          EXPECTED_ELIXIR: ${{ steps.toolchain.outputs.elixir }}
+          EXPECTED_OTP: ${{ steps.toolchain.outputs.otp }}
+        run: scripts/toolchain.sh --installed "elixir=$EXPECTED_ELIXIR" "erlang=$EXPECTED_OTP"
+
+      - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version-file: .tool-versions
+          bun-version: ${{ steps.toolchain.outputs.bun }}
           no-cache: true
-      - name: Refuse a different Bun version
+
+      - name: Refuse Bun runtime drift
+        env:
+          EXPECTED_BUN: ${{ steps.toolchain.outputs.bun }}
         run: |
-          expected="$(awk '$1 == "bun" {print $2}' .tool-versions)"
           actual_bun=$(bun --version)
-          test "$actual_bun" = "$expected" || { echo "::error::Bun must be exactly $expected"; exit 1; }
+          test "$actual_bun" = "$EXPECTED_BUN" || { echo "::error::Bun must be exactly $EXPECTED_BUN"; exit 1; }
+
       - name: Install with the frozen lockfile
         run: npm ci
       - name: Build the verifier
@@ -139,16 +171,21 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Set up Node from the tool versions
+      - name: Read runtime versions
+        id: toolchain
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .tool-versions
+          node-version: ${{ steps.toolchain.outputs.nodejs }}
           package-manager-cache: false
-      - name: Refuse a different Node version
-        run: |
-          expected="$(awk '$1 == "nodejs" {print $2}' .tool-versions)"
-          actual_node=$(node --version)
-          test "$actual_node" = "v$expected" || { echo "::error::Node must be exactly $expected"; exit 1; }
+
+      - name: Refuse Node runtime drift
+        env:
+          EXPECTED_NODE: ${{ steps.toolchain.outputs.nodejs }}
+        run: scripts/toolchain.sh --installed "nodejs=$EXPECTED_NODE"
+
       - name: Install with the frozen lockfile
         run: npm ci
       - name: Typecheck the site
@@ -158,7 +195,7 @@ jobs:
 
   qualified:
     if: always()
-    needs: [verify, reference, site]
+    needs: [toolchain, verify, reference, site]
     runs-on: ubuntu-24.04
     timeout-minutes: 5 # Run 44190196993: slowest green 4s; under 2.5 minutes, so the 5-minute floor.
     steps:

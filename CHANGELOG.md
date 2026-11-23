@@ -5,6 +5,9 @@ documented here.
 
 ## [Unreleased]
 
+- Read CI runtime defaults and compatibility lanes only through the shared
+  toolchain reader, with exact installed-version checks.
+
 - Resumes approved npm releases on the same commit, refusing missing package
   names, retired versions and differing archive bytes. Preserves verified
   consumer files for the maintainers' GitHub release and reads npm integrity back.
