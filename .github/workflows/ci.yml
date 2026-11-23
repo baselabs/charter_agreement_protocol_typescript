@@ -19,7 +19,7 @@ jobs:
   toolchain:
     name: Read runtime toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # the five-minute floor; no green run has been measured yet
+    timeout-minutes: 5 # Run 45090495342: slowest green 6s; under 2.5 minutes, so the 5-minute floor.
     outputs:
       node_matrix: ${{ steps.matrix.outputs.node_matrix }}
     steps:
