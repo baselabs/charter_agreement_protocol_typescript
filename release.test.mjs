@@ -83,7 +83,7 @@ test("every workflow uses bash with pipefail and preserves failing command statu
 test("CI reads exact runtime versions only through the pinned shared reader", () => {
   const reader = new URL("./scripts/toolchain.sh", import.meta.url);
   assert.equal(createHash("sha256").update(readFileSync(reader)).digest("hex"),
-    "b29bfeb6ec4ec8f5b7e3ac3c963f04b6d3c73483172e5bd59ea40f20b102f1eb");
+    "25bbfa023b7f031256428b498fe300fcc460988fea81277072355e4c0d933764");
   assert.equal(statSync(reader).mode & 0o777, 0o755);
   const directory = new URL("./.github/workflows/", import.meta.url);
   const paths = readdirSync(directory).filter((path) => /\.ya?ml$/.test(path));
@@ -101,12 +101,8 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
       if (!/uses: (?:erlef\/setup-beam|actions\/setup-node|actions\/setup-go|oven-sh\/setup-bun)@/.test(job)) continue;
       assert.match(job, /run: scripts\/toolchain\.sh /, path);
       assert.match(job, /scripts\/toolchain\.sh --installed /, path);
-      for (const [setup, tool] of [["erlef/setup-beam@", "elixir"], ["erlef/setup-beam@", "erlang"], ["actions/setup-node@", "nodejs"], ["actions/setup-go@", "golang"]]) {
+      for (const [setup, tool] of [["erlef/setup-beam@", "elixir"], ["erlef/setup-beam@", "erlang"], ["actions/setup-node@", "nodejs"], ["actions/setup-go@", "golang"], ["oven-sh/setup-bun@", "bun"]]) {
         if (job.includes(setup)) assert.ok(job.includes(`"${tool}=$`), path);
-      }
-      if (job.includes("oven-sh/setup-bun@")) {
-        assert.ok(job.includes("EXPECTED_BUN: ${{ steps.toolchain.outputs.bun }}"), path);
-        assert.ok(job.includes('test "$actual_bun" = "$EXPECTED_BUN"'), path);
       }
       for (const [, value] of job.matchAll(/^          (?:elixir|otp|node|bun|go)-version: ([^\n]+)$/gm)) {
         assert.ok(value.startsWith("${{ "), path);
