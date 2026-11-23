@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { releaseState } from "./scripts/npm-release-state.mjs";
@@ -84,7 +85,9 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
   const reader = new URL("./scripts/toolchain.sh", import.meta.url);
   assert.equal(createHash("sha256").update(readFileSync(reader)).digest("hex"),
     "25bbfa023b7f031256428b498fe300fcc460988fea81277072355e4c0d933764");
-  assert.equal(statSync(reader).mode & 0o777, 0o755);
+  // The committed mode, not the checkout's: a checkout's permission bits follow its umask.
+  assert.match(execFileSync("git", ["ls-files", "--stage", "--", "scripts/toolchain.sh"],
+    { cwd: new URL("./", import.meta.url), encoding: "utf8" }), /^100755 /);
   const directory = new URL("./.github/workflows/", import.meta.url);
   const paths = readdirSync(directory).filter((path) => /\.ya?ml$/.test(path));
   assert.ok(paths.length > 0);
