@@ -126,7 +126,7 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
 const workflow = readFileSync(new URL("./.github/workflows/publish.yml", import.meta.url), "utf8");
 const publish = workflow.split(/^(?=\S| {2}\S)/m).find((block) => block.startsWith("  publish:\n"));
 assert.ok(publish, "expected a publish job");
-const steps = publish.match(/^      - name: .*(?:\n(?!      - name:)[^\n]*)*/gm) ?? [];
+const steps = publish.match(/^      - [^\n]*(?:\n(?!      - )[^\n]*)*/gm) ?? [];
 const oneStep = (pattern) => {
   const found = steps.filter((step) => pattern.test(step));
   assert.equal(found.length, 1, `expected one step matching ${pattern}`);
@@ -183,8 +183,10 @@ test("the exact archive is planned after inspection, staged only for upload, the
   const checksum = oneStep(/run: sha256sum --check SHA256SUMS/);
   assert.ok(steps.indexOf(inspection) < steps.indexOf(checksum));
   assert.ok(steps.indexOf(checksum) < steps.indexOf(changelog));
-  assert.ok(steps.indexOf(changelog) < steps.indexOf(plan));
-  assert.ok(steps.indexOf(changelog) < steps.indexOf(oneStep(/uses: actions\/upload-artifact@/)));
+  const releaseStep = /actions\/(?:attest[\w-]*|upload-artifact)@|gh attestation\b|scripts\/build_release_sbom\.sh|npm-release-state\.mjs --plan\b|npm (?:stage )?publish\b/;
+  for (const step of steps.slice(0, steps.indexOf(changelog))) {
+    assert.doesNotMatch(step, releaseStep);
+  }
   assert.ok(steps.indexOf(plan) < steps.indexOf(stage));
   assert.ok(steps.indexOf(stage) < steps.indexOf(served));
   const tag = oneStep(/'ls-remote', '--tags', 'origin', `v\$\{version\}`/);
