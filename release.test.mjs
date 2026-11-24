@@ -81,6 +81,15 @@ test("every workflow uses bash with pipefail and preserves failing command statu
   }
 });
 
+test("qualification requires workflow syntax and secret scanning", () => {
+  const ci = readFileSync(new URL("./.github/workflows/ci.yml", import.meta.url), "utf8");
+  const needs = ci.match(/^  qualified:\n(?:^    [^\n]*\n)*?^    needs: \[([^\n]+)\]$/m);
+  assert.ok(needs, "qualified must declare its dependencies");
+  const jobs = needs[1].split(", ");
+  assert.ok(jobs.includes("workflow-syntax"));
+  assert.ok(jobs.includes("secret-scan"));
+});
+
 test("CI reads exact runtime versions only through the pinned shared reader", () => {
   const reader = new URL("./scripts/toolchain.sh", import.meta.url);
   assert.equal(createHash("sha256").update(readFileSync(reader)).digest("hex"),

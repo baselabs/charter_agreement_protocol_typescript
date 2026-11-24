@@ -44,6 +44,71 @@ jobs:
           print("node_matrix=" + json.dumps({"include": lanes}, separators=(",", ":")))
           PYTHON
 
+  workflow-syntax:
+    timeout-minutes: 5 # no green run yet
+    name: Workflow syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read runtime versions
+        id: toolchain
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ steps.toolchain.outputs.golang }}
+          cache: false
+
+      - name: Refuse Go runtime drift
+        env:
+          EXPECTED_GO: ${{ steps.toolchain.outputs.golang }}
+        run: scripts/toolchain.sh --installed "golang=$EXPECTED_GO"
+
+      # actionlint pinned to its release commit for v1.7.12, verified first-hand
+      # against the rhysd/actionlint tags API. `go run` fetches the module by
+      # commit, content-addressed through the Go checksum database.
+      - name: Run actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
+
+  secret-scan:
+    timeout-minutes: 5 # no green run yet
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      # A shallow checkout omits commits that the secret scan must inspect.
+      - name: Check out source (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Read runtime versions
+        id: toolchain
+        run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ steps.toolchain.outputs.golang }}
+          cache: false
+
+      - name: Refuse Go runtime drift
+        env:
+          EXPECTED_GO: ${{ steps.toolchain.outputs.golang }}
+        run: scripts/toolchain.sh --installed "golang=$EXPECTED_GO"
+
+      # gitleaks pinned to its release commit for v8.30.1, verified first-hand
+      # against the gitleaks/gitleaks tags API. `go run` fetches the module by
+      # commit, content-addressed through the Go checksum database. Scans the
+      # complete commit history, not just the head tree.
+      - name: Run gitleaks over full history
+        run: go run github.com/zricethezav/gitleaks/v8@83d9cd684c87d95d656c1458ef04895a7f1cbd8e git --config .gitleaks.toml --redact --no-banner
+
   verify:
     needs: toolchain
     name: typecheck, test, build (${{ matrix.lane }})
@@ -191,7 +256,7 @@ jobs:
 
   qualified:
     if: always()
-    needs: [toolchain, verify, reference, site]
+    needs: [toolchain, workflow-syntax, secret-scan, verify, reference, site]
     runs-on: ubuntu-24.04
     timeout-minutes: 5 # Run 44190196993: slowest green 4s; under 2.5 minutes, so the 5-minute floor.
     steps:
