@@ -45,7 +45,7 @@ jobs:
           PYTHON
 
   workflow-syntax:
-    timeout-minutes: 5 # no green run yet
+    timeout-minutes: 5 # Run 45295886840: slowest green 25s; under 2.5 minutes, so the 5-minute floor.
     name: Workflow syntax
     runs-on: ubuntu-24.04
     steps:
@@ -76,7 +76,7 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca
 
   secret-scan:
-    timeout-minutes: 5 # no green run yet
+    timeout-minutes: 5 # Run 45295886840: slowest green 45s; under 2.5 minutes, so the 5-minute floor.
     name: Secret scan
     runs-on: ubuntu-24.04
     steps:
