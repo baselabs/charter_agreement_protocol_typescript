@@ -124,7 +124,9 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
 });
 
 const workflow = readFileSync(new URL("./.github/workflows/publish.yml", import.meta.url), "utf8");
-const steps = workflow.match(/^      - name: .*(?:\n(?!      - name:)[^\n]*)*/gm) ?? [];
+const publish = workflow.split(/^(?=\S| {2}\S)/m).find((block) => block.startsWith("  publish:\n"));
+assert.ok(publish, "expected a publish job");
+const steps = publish.match(/^      - name: .*(?:\n(?!      - name:)[^\n]*)*/gm) ?? [];
 const oneStep = (pattern) => {
   const found = steps.filter((step) => pattern.test(step));
   assert.equal(found.length, 1, `expected one step matching ${pattern}`);
@@ -172,18 +174,23 @@ test("the exact archive is planned after inspection, staged only for upload, the
   assert.ok(dedented.includes(archive));
   const canonical = dedented.replace(versionBinding, "")
     .replace(archive, "path/to/package-archive")
-    .replace(/\n+$/, "") + "\n```\n";
+    .replace(/\n+$/, "") + "\n";
 
-  // The dedented step and closing fence from infra 6f19bd49, baselabs/docs/ci.md:360–403.
+  // The dedented YAML from infra 6f19bd49, baselabs/docs/ci.md:360–402.
   assert.equal(createHash("sha256").update(canonical).digest("hex"),
-    "72b342781e036f0587a3708c00db7d4d5d9260ff07503f30ae505870f5c46d1e");
-  assert.ok(steps.indexOf(oneStep(/run: npm run check:package/)) < steps.indexOf(changelog));
-  assert.ok(steps.indexOf(oneStep(/run: sha256sum --check SHA256SUMS/)) < steps.indexOf(changelog));
+    "2a912ae3e07700555d8827da491b8875207341808b4a6c1137c07129f0cbfa30");
+  const inspection = oneStep(/run: npm run check:package/);
+  const checksum = oneStep(/run: sha256sum --check SHA256SUMS/);
+  assert.ok(steps.indexOf(inspection) < steps.indexOf(checksum));
+  assert.ok(steps.indexOf(checksum) < steps.indexOf(changelog));
   assert.ok(steps.indexOf(changelog) < steps.indexOf(plan));
   assert.ok(steps.indexOf(changelog) < steps.indexOf(oneStep(/uses: actions\/upload-artifact@/)));
   assert.ok(steps.indexOf(plan) < steps.indexOf(stage));
   assert.ok(steps.indexOf(stage) < steps.indexOf(served));
   const tag = oneStep(/'ls-remote', '--tags', 'origin', `v\$\{version\}`/);
+  assert.match(tag, /^        id: package$/m);
+  assert.ok(steps.indexOf(tag) < steps.indexOf(inspection));
+  assert.ok(tag.includes("JSON.parse(readFileSync('package.json', 'utf8'))"));
   assert.match(tag, /assert\.equal\(tags\.trim\(\), '', `v\$\{version\} is already tagged`\)/);
   assert.match(tag, /appendFileSync\(process\.env\.GITHUB_OUTPUT, `name=\$\{name\}\\nversion=\$\{version\}\\n`\)/);
 });
