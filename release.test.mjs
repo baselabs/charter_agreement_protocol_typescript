@@ -164,7 +164,23 @@ test("the exact archive is planned after inspection, staged only for upload, the
     assert.match(step, /"\$RELEASE_NAME" "\$RELEASE_VERSION" \.\/artifacts\/package\.tgz/);
   }
   assert.match(stage, /npm stage publish \.\/artifacts\/package\.tgz --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
-  assert.ok(steps.indexOf(oneStep(/run: sha256sum --check SHA256SUMS/)) < steps.indexOf(plan));
+  const changelog = oneStep(/^      - name: Refuse a package whose changelog is not stamped for its version$/m);
+  const versionBinding = "  env:\n    VERSION: ${{ steps.package.outputs.version }}\n";
+  const dedented = changelog.replaceAll(/^ {6}/gm, "");
+  const archive = "./artifacts/package.tgz";
+  assert.ok(dedented.includes(versionBinding));
+  assert.ok(dedented.includes(archive));
+  const canonical = dedented.replace(versionBinding, "")
+    .replace(archive, "path/to/package-archive")
+    .replace(/\n+$/, "") + "\n```\n";
+
+  // The dedented step and closing fence from infra 6f19bd49, baselabs/docs/ci.md:360–403.
+  assert.equal(createHash("sha256").update(canonical).digest("hex"),
+    "72b342781e036f0587a3708c00db7d4d5d9260ff07503f30ae505870f5c46d1e");
+  assert.ok(steps.indexOf(oneStep(/run: npm run check:package/)) < steps.indexOf(changelog));
+  assert.ok(steps.indexOf(oneStep(/run: sha256sum --check SHA256SUMS/)) < steps.indexOf(changelog));
+  assert.ok(steps.indexOf(changelog) < steps.indexOf(plan));
+  assert.ok(steps.indexOf(changelog) < steps.indexOf(oneStep(/uses: actions\/upload-artifact@/)));
   assert.ok(steps.indexOf(plan) < steps.indexOf(stage));
   assert.ok(steps.indexOf(stage) < steps.indexOf(served));
   const tag = oneStep(/'ls-remote', '--tags', 'origin', `v\$\{version\}`/);
