@@ -168,6 +168,8 @@ test("the exact archive is planned after inspection, staged only for upload, the
   assert.match(stage, /npm stage publish \.\/artifacts\/package\.tgz --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
   const changelog = oneStep(/^      - name: Refuse a package whose changelog is not stamped for its version$/m);
   const archive = "./artifacts/package.tgz";
+  const invocation = /python3[ \t]+-I[ \t]+-[ \t]+(["']?)(?:\.\/|\$GITHUB_WORKSPACE\/)?artifacts\/package\.tgz\1[ \t]+[^\n]*<</g;
+  assert.equal([...workflow.matchAll(invocation)].length, 1);
   const canonical = changelog.replaceAll(/^ {6}/gm, "")
     .replace(archive, "path/to/package-archive");
 
