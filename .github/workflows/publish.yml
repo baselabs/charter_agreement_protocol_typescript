@@ -65,6 +65,7 @@ jobs:
           const tags = execFileSync('git', ['ls-remote', '--tags', 'origin', `v${version}`], {encoding: 'utf8'});
           assert.equal(tags.trim(), '', `v${version} is already tagged`);
           appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nversion=${version}\n`);
+          appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\n`);
           JAVASCRIPT
       - name: Build the library and documentation site
         run: |
@@ -76,8 +77,6 @@ jobs:
         working-directory: artifacts
         run: sha256sum --check SHA256SUMS
       - name: Refuse a package whose changelog is not stamped for its version
-        env:
-          VERSION: ${{ steps.package.outputs.version }}
         shell: bash
         run: |
           python3 -I - ./artifacts/package.tgz "$VERSION" <<'PY'

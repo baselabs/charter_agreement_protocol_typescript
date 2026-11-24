@@ -126,7 +126,7 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
 const workflow = readFileSync(new URL("./.github/workflows/publish.yml", import.meta.url), "utf8");
 const publish = workflow.split(/^(?=\S| {2}\S)/m).find((block) => block.startsWith("  publish:\n"));
 assert.ok(publish, "expected a publish job");
-const steps = publish.match(/^      - [^\n]*(?:\n(?!      - )[^\n]*)*/gm) ?? [];
+const steps = publish.match(/^      - [^\n]*\n(?: {8}[^\n]*\n|\n(?=\n* {8}))*/gm) ?? [];
 const oneStep = (pattern) => {
   const found = steps.filter((step) => pattern.test(step));
   assert.equal(found.length, 1, `expected one step matching ${pattern}`);
@@ -167,14 +167,9 @@ test("the exact archive is planned after inspection, staged only for upload, the
   }
   assert.match(stage, /npm stage publish \.\/artifacts\/package\.tgz --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
   const changelog = oneStep(/^      - name: Refuse a package whose changelog is not stamped for its version$/m);
-  const versionBinding = "  env:\n    VERSION: ${{ steps.package.outputs.version }}\n";
-  const dedented = changelog.replaceAll(/^ {6}/gm, "");
   const archive = "./artifacts/package.tgz";
-  assert.ok(dedented.includes(versionBinding));
-  assert.ok(dedented.includes(archive));
-  const canonical = dedented.replace(versionBinding, "")
-    .replace(archive, "path/to/package-archive")
-    .replace(/\n+$/, "") + "\n";
+  const canonical = changelog.replaceAll(/^ {6}/gm, "")
+    .replace(archive, "path/to/package-archive");
 
   // The dedented YAML from infra 6f19bd49, baselabs/docs/ci.md:360–402.
   assert.equal(createHash("sha256").update(canonical).digest("hex"),
@@ -192,7 +187,8 @@ test("the exact archive is planned after inspection, staged only for upload, the
   const tag = oneStep(/'ls-remote', '--tags', 'origin', `v\$\{version\}`/);
   assert.match(tag, /^        id: package$/m);
   assert.ok(steps.indexOf(tag) < steps.indexOf(inspection));
-  assert.ok(tag.includes("JSON.parse(readFileSync('package.json', 'utf8'))"));
+  assert.ok(tag.includes("const {name, version} = JSON.parse(readFileSync('package.json', 'utf8'));"));
+  assert.ok(tag.includes("appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\\n`);"));
   assert.match(tag, /assert\.equal\(tags\.trim\(\), '', `v\$\{version\} is already tagged`\)/);
   assert.match(tag, /appendFileSync\(process\.env\.GITHUB_OUTPUT, `name=\$\{name\}\\nversion=\$\{version\}\\n`\)/);
 });
