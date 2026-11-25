@@ -3525,7 +3525,7 @@ function assembleUnderLimits(input: SigningInput, signature: Buffer, limits: Lim
   // The input is a struct the producer minted: the message must BE the
   // protected/payload framing (a caller-modified copy is invalid, never
   // silently assembled).
-  if (typeof input.protectedSegment !== "string" || typeof input.payloadSegment !== "string" ||
+  if (typeof input.alg !== "string" || typeof input.protectedSegment !== "string" || typeof input.payloadSegment !== "string" ||
       !Buffer.isBuffer(input.message) || input.message.toString("utf8") !== `${input.protectedSegment}.${input.payloadSegment}`) {
     return { ok: false, code: "signing_input_invalid" };
   }

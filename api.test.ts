@@ -455,6 +455,13 @@ test("assembleCompact enforces the registry row and re-decodes the framing", () 
   const short = assembleCompact(input, Buffer.alloc(63));
   assert.ok(short.ok === false && short.code === "signature_invalid");
   const assembled = assembleCompact(input, Buffer.alloc(64, 7));
+  const incomplete: Partial<SigningInput> = { ...input };
+  for (const field of ["alg", "protectedSegment", "payloadSegment", "message"] as const) {
+    const malformed = { ...incomplete };
+    delete malformed[field];
+    assert.deepEqual(publicApi.assembleCompact(malformed as SigningInput, Buffer.alloc(64)),
+      { ok: false, code: "signing_input_invalid" });
+  }
   assert.ok(assembled.ok);
   const decoded = decodeArtifact(assembled.compact);
   assert.ok(decoded.ok);

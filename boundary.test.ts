@@ -352,6 +352,15 @@ test("set-aware producers frame legacy claims before checking list types", () =>
   }
 });
 
+test("the acceptance builders reject a set with a missing artifact list", () => {
+  const input = fixture("signing-prepare", "signing-ed25519-acceptance");
+  const set = { ...input.context.set };
+  delete set.terminations;
+  assert.deepEqual(api.acceptanceSigningInput(input.kid, input.claims, set), { ok: false, code: "invalid_type" });
+  assert.deepEqual(api.prepareSigning("acceptance", input.kid, input.claims, input.public_key, set),
+    { ok: false, code: "invalid_type" });
+});
+
 test("standalone envelope decoding reports revision-eight signature lengths", () => {
   for (const kind of ["acceptance", "termination"] as const) {
     const { compact } = fixture(`${kind}-verify`, `quorum-${kind}-envelope-signature-length`);

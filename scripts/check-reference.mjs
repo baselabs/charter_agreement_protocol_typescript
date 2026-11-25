@@ -11,8 +11,9 @@ const reference = JSON.parse(readFileSync(join(root, "reference.json"), "utf8"))
 assert.ok(["charter_agreement_protocol", "charter_agreement_signer"].includes(reference.package));
 assert.match(reference.version, /^\d+\.\d+\.\d+$/);
 assert.match(reference.archive_sha256, /^[a-f0-9]{64}$/);
-assert.ok(process.argv.slice(2).every((value) => value === "--report"), "unknown reference-check argument");
-assert.ok(!process.argv.includes("--report") || reference.package === "charter_agreement_protocol");
+assert.ok(process.argv.slice(2).every((value) => ["--report", "--reverse-differential"].includes(value)), "unknown reference-check argument");
+assert.ok(process.argv.length <= 3);
+assert.ok(process.argv.length === 2 || reference.package === "charter_agreement_protocol");
 assert.equal(reference.corpus_path, "priv/conformance");
 assert.match(reference.corpus_source.commit, /^[a-f0-9]{40}$/);
 
@@ -44,11 +45,17 @@ function verifyCorpusSource(scratch) {
     assert.deepEqual(readFileSync(join(vendored, path)), blob, path);
   }
   console.log(`Canonical Elixir source ${source.commit}: ${files.length} exact Git blob(s)`);
+  if (reference.package === "charter_agreement_protocol") {
+    return JSON.parse(git("cat-file", "blob", `FETCH_HEAD:priv/release-metadata.json`));
+  }
 }
 
-const scratch = mkdtempSync(join(tmpdir(), "charter-reference-"));
-try {
-  verifyCorpusSource(scratch);
+async function reverse(scratch, sourceMetadata) {
+  const { checkReverseDifferential } = await import("./check-reverse-differential.mjs");
+  await checkReverseDifferential(root, scratch, sourceMetadata);
+}
+
+async function verifyReference(scratch, sourceMetadata) {
   const url = `https://repo.hex.pm/tarballs/${reference.package}-${reference.version}.tar`;
   const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
   assert.equal(response.status, 200, `reference download: ${response.status}`);
@@ -76,6 +83,9 @@ try {
       }
     }
     assert.equal(releasedIds.size, index.total_cases);
+    if (!process.argv.includes("--report")) {
+      await reverse(scratch, sourceMetadata);
+    }
     if (process.argv.includes("--report")) {
       const sdk = join(scratch, "sdk");
       mkdirSync(sdk);
@@ -106,6 +116,16 @@ try {
     assert.deepEqual(readFileSync(join(root, "conformance/signer_cases.json")), read("signer_cases.json"));
     assert.equal(JSON.parse(read("signer_cases.json")).cases.length, 121);
     console.log("Published Elixir signer reference: all 121 rows byte-identical");
+  }
+}
+
+const scratch = mkdtempSync(join(tmpdir(), "charter-reference-"));
+try {
+  const sourceMetadata = verifyCorpusSource(scratch);
+  if (process.argv.includes("--reverse-differential")) {
+    await reverse(scratch, sourceMetadata);
+  } else {
+    await verifyReference(scratch, sourceMetadata);
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
