@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "IuAU6i017LH13gBfvrYeeEILVJ-_InE38xsFpyKlWm0";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "Z4lk4KnmxnO0xwuWZhikkb4354Nb3TVK9XA1ZFNzERs";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -840,24 +840,29 @@ function descriptorChain(compacts: string[], settings: Settings = DEFAULT_SETTIN
   const roots = entries.filter((entry) => entry.payload.descriptor_number === 1);
   if (roots.length !== 1 || new Set(entries.map((entry) => entry.digest)).size !== entries.length) return fail("descriptor_chain_invalid");
   const root = descriptorFromCompact(roots[0].compact, null, settings);
-  if (!root.ok) return historyFailure([root.code]);
-  const descriptors = [root.value];
+  if (!root.ok) return root;
+  const pending = [root.value];
+  const descriptors: typeof pending = [];
   const children = new Map<string, typeof entries>();
   for (const entry of entries) {
     const prev = entry.payload.prev_descriptor_digest;
     if (prev) children.set(prev, [...(children.get(prev) ?? []), entry]);
   }
-  for (let i = 0; i < descriptors.length; i++) {
-    const siblings = children.get(descriptors[i].digest) ?? [];
-    const results = siblings.map((entry) => descriptorFromCompact(entry.compact, descriptors[i], settings));
+  while (pending.length > 0) {
+    const predecessor = pending.pop()!;
+    descriptors.push(predecessor);
+    const siblings = children.get(predecessor.digest) ?? [];
+    const results = siblings.map((entry) => descriptorFromCompact(entry.compact, predecessor, settings));
     const failures = results.filter((result) => !result.ok).map((result) => result.code);
     if (failures.length > 0) return historyFailure(failures);
-    for (const result of results) if (result.ok) descriptors.push(result.value);
+    // Complete each child's branch before evaluating the next child's descendants.
+    for (const result of results.reverse()) if (result.ok) pending.push(result.value);
   }
   if (descriptors.length !== entries.length) return fail("descriptor_chain_invalid");
   const siblings = [...children.values()].filter((group) => group.length > 1).flat().map((entry) => entry.digest);
   const fork = siblings.length > 0;
-  descriptors.sort((a, b) => a.payload.descriptor_number - b.payload.descriptor_number || a.digest.localeCompare(b.digest));
+  descriptors.sort((a, b) => a.payload.descriptor_number - b.payload.descriptor_number ||
+    (a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0));
   const positions = Object.fromEntries(descriptors.map((one) => [one.digest, fork ? "contested" : (children.has(one.digest) ? "superseded" : "head")]));
   for (const descriptor of descriptors) Object.assign(descriptor, { descriptor_position: positions[descriptor.digest] });
   const fork_evidence = fork ? factsRecord({ kind: "sibling_descriptors", sibling_descriptors: [...new Set(siblings)].sort() }) : null;
@@ -1458,20 +1463,6 @@ function revisionWithProfile(text: unknown, settings: Settings): ReturnType<type
   return admission ? fail(admission) : revision;
 }
 
-function boundedArtifacts(lists: unknown[], limits: Limits): string | null {
-  if (!lists.every(Array.isArray)) return "invalid_type";
-  let bytes = 0;
-  for (const list of lists as string[][]) {
-    for (let i = 0; i < list.length; i++) {
-      if (i >= limits.max_artifact_set_items) return "limit_exceeded";
-      if (typeof list[i] !== "string") return "invalid_type";
-    }
-    bytes += list.reduce((total, text) => total + Buffer.byteLength(text), 0);
-    if (bytes > limits.max_artifact_set_bytes) return "limit_exceeded";
-  }
-  return null;
-}
-
 function chainWithOptions(input: AnyRecord, options: VerificationOptions = {}): ReturnType<typeof chainFromInput> {
   const settings = resolveOptions(options);
   return settings.ok ? chainFromInput(input, settings.value) : settings;
@@ -1520,13 +1511,14 @@ function revisionAssent(revision: RevisionRecord, matches: AnyRecord[], inherite
 }
 
 function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; signedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string; assignmentStatuses: Record<string, { status: string; missingAssentRoles: string[] }> }> {
-  if (!isRecord(input)) return fail("chain_invalid");
-  const bounded = boundedArtifacts([input.revisions, input.acceptances, input.descriptors, input.terminations], settings.limits);
-  if (bounded) return fail(bounded);
-  const descriptors = descriptorViews(input.descriptors, settings);
+  if (!isRecord(input)) return fail("invalid_type");
+  const snapshot = copyChainArtifacts(input, settings.limits);
+  if (!snapshot.ok) return snapshot;
+  const view = snapshot.value;
+  const descriptors = descriptorViews(view.descriptors, settings);
   if (!descriptors.ok) return descriptors;
   const revisions = [];
-  for (const text of input.revisions) {
+  for (const text of view.revisions) {
     const revision = revisionFromText(text, settings.limits);
     if (!revision.ok) return revision;
     revisions.push(revision.value);
@@ -1568,8 +1560,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   }
   if (descriptors.value.histories.some((history) => !named.has(history.descriptors[0].payload.party_id ?? history.descriptors[0].digest))) return fail("chain_invalid");
   const acceptances: any[] = [];
-  const coordinates = new Set();
-  for (const compact of ((input.acceptances as string[]) || [])) {
+  for (const compact of view.acceptances) {
     const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
     if (!decoded.ok) return decoded;
     const routed = signingContextFromSet(byDigest, descriptors.value, decoded.value.payload.revision_digest, decoded.value.payload.party_descriptor_digest);
@@ -1577,11 +1568,11 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const { revision, chain } = routed.value;
     const verified = acceptanceFromCompact(compact, revision, chain, settings);
     if (!verified.ok) return verified;
-    const coordinate = `${verified.value.claims.revision_digest}\0${verified.value.claims.party_descriptor_digest}\0${verified.value.claims.party_role}`;
-    if (coordinates.has(coordinate)) return fail("chain_invalid");
-    coordinates.add(coordinate);
     acceptances.push(verified.value);
   }
+  const coordinates = new Set(acceptances.map(({ claims }) =>
+    `${claims.revision_digest}\0${claims.party_descriptor_digest}\0${claims.party_role}`));
+  if (coordinates.size !== acceptances.length) return fail("chain_invalid");
   const votesByRevision = new Map<string, AnyRecord[]>();
   for (const vote of acceptances) {
     const digest = vote.claims.revision_digest;
@@ -1616,7 +1607,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
         (revision.value.supersedes ?? []).some((digest: string) => !signed.has(digest))) return fail("chain_invalid");
   }
   const terminations: any[] = [];
-  for (const compact of ((input.terminations as string[]) || [])) {
+  for (const compact of view.terminations) {
     const decoded = decodeJws(compact, settings.limits, "cap+termination");
     if (!decoded.ok) return decoded;
     const routed = signingContextFromSet(byDigest, descriptors.value, decoded.value.payload.governing_revision_digest, decoded.value.payload.party_descriptor_digest);
@@ -2539,6 +2530,9 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
   }
   try {
     if (mode === "input" && (input === null || typeof input !== "object")) return ok(input);
+    if (mode === "input" && members === CHAIN_MEMBERS && isRecord(input)) {
+      return copyChainArtifacts(input, limits);
+    }
     const result = copy(input, 0, mode === "input" && Array.isArray(input), members);
     while (frames.length) {
       const frame = frames[frames.length - 1];
@@ -2605,8 +2599,32 @@ function retainedInput(value: unknown, members: readonly string[]): Result<unkno
   for (const name of members) {
     if (Object.prototype.propertyIsEnumerable.call(value, name)) retained[name] = value[name];
   }
-  if (members === CHAIN_MEMBERS && !CHAIN_MEMBERS.every((name) => Array.isArray(retained[name]))) return fail("invalid_type");
   return ok(retained);
+}
+
+function copyChainArtifacts(input: AnyRecord, limits: Limits): Result<ChainInput> {
+  const lists = CHAIN_MEMBERS.map((name) => input[name]);
+  if (!lists.every(Array.isArray)) return fail("invalid_type");
+  const copied: ChainInput = { revisions: [], acceptances: [], descriptors: [], terminations: [] };
+  let bytes = 0;
+  for (const [index, name] of CHAIN_MEMBERS.entries()) {
+    const list = lists[index];
+    const length = list.length;
+    if (!Number.isInteger(length) || length < 0 || length > 0xffff_ffff) return fail("invalid_type");
+    // Reject an oversized proxy-reported length before reading any elements.
+    // For actual arrays, the first invalid element can precede the item bound.
+    if (length > LIMIT_MAXIMUMS.max_artifact_set_items &&
+        length !== Object.getOwnPropertyDescriptor(list, "length")?.value) return fail("limit_exceeded");
+    for (let item = 0; item < length; item++) {
+      if (item >= limits.max_artifact_set_items) return fail("limit_exceeded");
+      const text = list[item];
+      if (typeof text !== "string") return fail("invalid_type");
+      bytes += Buffer.byteLength(text);
+      copied[name].push(text);
+    }
+    if (bytes > limits.max_artifact_set_bytes) return fail("limit_exceeded");
+  }
+  return ok(copied);
 }
 
 function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1, inputMembers: Record<number, readonly string[]> = {}): Result<[...T, SigningOptions]> {
