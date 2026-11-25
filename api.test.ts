@@ -1171,16 +1171,20 @@ test("descriptor publication helpers return typed errors for malformed or oversi
   assert.deepEqual(publicApi.descriptorNextKeyCommitment(keys, options), { ok: false, code: "limit_exceeded" });
 });
 
-test("signed revision-8 framing is confined to party descriptors", () => {
-  const document = JSON.parse(readFileSync(new URL("./conformance/cases/descriptor_publication-verify.json", import.meta.url), "utf8"));
-  const selected = document.cases.find((one: any) => one.id === "descriptor-publication-opened");
-  const [compact] = JSON.parse(selected.input.text).descriptors;
-  const [encoded, payload, signature] = compact.split(".");
-  const header = Buffer.from(encoded, "base64url").toString("utf8");
-
-  for (const type of ["cap+acceptance", "cap+termination", "cap+receipt"]) {
-    const changed = Buffer.from(header.replace("cap+party", type)).toString("base64url");
-    assert.deepEqual(publicApi.decodeArtifact([changed, payload, signature].join(".")),
-      { ok: false, code: "protected_header_invalid" });
+test("revision-8 framing admits descriptors, acceptances and termination notices", () => {
+  const publication = corpusCase("descriptor_publication-verify.json", "descriptor-publication-opened");
+  const [descriptor] = JSON.parse(publication.input.text).descriptors;
+  const acceptance = corpusCase("acceptance-verify.json", "assignment-assignor-pairing").input.compact;
+  const termination = corpusCase("termination-verify.json", "quorum-termination-pairing").input.compact;
+  for (const [type, compact] of [
+    ["cap+party", descriptor], ["cap+acceptance", acceptance], ["cap+termination", termination],
+  ]) {
+    const decoded = publicApi.decodeArtifact(compact);
+    assert.ok(decoded.ok, type);
+    assert.equal(decoded.facts.protocol_revision, 8);
+    assert.equal(decoded.facts.typ, type);
   }
+
+  const receipt = corpusCase("receipt-verify.json", "receipt-rejects-revision-eight-envelope").input.compact;
+  assert.deepEqual(publicApi.decodeArtifact(receipt), { ok: false, code: "protected_header_invalid" });
 });

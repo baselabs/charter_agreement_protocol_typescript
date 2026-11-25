@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "EIax4Ke24qt7ujEbFadp6_lFlidTfkyj-vp_y_3eh-w";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "m0lyG1Uk49ESNy6ZvhUaSwP35vX80oHvJvJ2WDO0hC4";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
