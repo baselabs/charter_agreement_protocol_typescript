@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "RbrZIuj4H4I1eqIxP7PL7tb7TJU37rQOakQfDt0PGM0";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "t8P-uG4t5SbJqOl5TcYlgZ7IOEfRawQDYfHWYFYl9VQ";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -1820,7 +1820,8 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
     if (!claimedRevision) return fail("receipt_claims_mismatch");
     const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
     if (admission) return fail(admission);
-    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch: "not_evaluated", optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]);
+    const additions = context.revision.value.protocol_revision === 8 ? ["signature", "ownership"] : ["signature"];
+    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch: "not_evaluated", optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, additions);
     return preparedArtifact(decoded.value, [], facts, "signature_invalid", true);
   }
   // The envelope is admitted before any key is looked up, so an
@@ -2945,7 +2946,7 @@ export function verifyReceipt(compact: string, context: AnyRecord | string, opti
       chain_conflict: verified.value.chainConflict,
       deployment_digest_matched: verified.value.deploymentMatched,
       optional_extensions_retained: verified.value.optionalExtensions,
-    }, typeof context === "string" ? ["signature"] : []),
+    }, verified.value.not_verified),
   };
 }
 
@@ -3245,6 +3246,7 @@ export function prepareSigning(
     const revision = revisionWithProfile(context, settings.value);
     if (!revision.ok) return revision;
     prepared = prepareReceipt(provisional, { kind: "revision", revision: revision.value }, settings.value);
+    if (prepared.ok && revision.value.value.protocol_revision === 8) return fail("signing_refused");
     verifyWith = { kind: "receipt", context };
   } else {
     const chain = chainFromInput(context as ChainInput, settings.value);
@@ -3310,12 +3312,15 @@ function buildSigningInput(
 ): ProducerResult {
   const kind = operation === "party_replacement" ? "acceptance" : operation;
   if (typeof algorithm === "undefined") algorithm = defaultEmissionName();
-  if (typeof algorithm !== "string" || !(algorithm in emissions())) {
-    return { ok: false, code: "signing_input_invalid" };
+  if (typeof algorithm !== "string" || typeof kid !== "string" ||
+      !claims || typeof claims !== "object" || Array.isArray(claims)) {
+    return fail("signing_input_invalid");
   }
-  if (!claims || typeof claims !== "object" || Array.isArray(claims)) {
-    return { ok: false, code: "signing_input_invalid" };
+  if (kind === "acceptance" &&
+      (operation === "party_replacement") !== Object.hasOwn(claims, "replacement_role")) {
+    return fail("signing_refused");
   }
+  if (!(algorithm in emissions())) return fail("signing_input_invalid");
   const record = claims as AnyRecord;
   try {
     if (jsonValueError(record)) return { ok: false, code: "signing_input_invalid" };
@@ -3327,7 +3332,7 @@ function buildSigningInput(
   if (typeof revision !== "number" || !Number.isInteger(revision) || (revision !== emissions()[algorithm as string] && !(revision === 8 && kind !== "receipt"))) {
     return { ok: false, code: "signing_input_invalid" };
   }
-  if (typeof kid !== "string" || kid.length === 0 || kid.length > 128 || !/^[A-Za-z0-9._~-]+$/.test(kid)) {
+  if (kid.length === 0 || kid.length > 128 || !/^[A-Za-z0-9._~-]+$/.test(kid)) {
     return { ok: false, code: "signing_input_invalid" };
   }
   const row = ALG_ROWS.find((one) => one.name === algorithm);
@@ -3360,11 +3365,6 @@ function buildSigningInput(
   const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
   const decoded = decodeSigningArtifact(provisional, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
-  if (kind === "acceptance" &&
-      (operation === "party_replacement") !== (typeof record.replacement_role === "string")) {
-    return fail("signing_refused");
-  }
-
 
   return { ok: true, input: { alg: algorithm as string, protectedSegment, payloadSegment, message } };
 }
@@ -3525,12 +3525,14 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
   // R1 claims-truth: the named revision exists and every coordinate binds.
   const revision = chain.revisions.find((one: any) => one.digest === claims.revision_digest);
   if (!revision) return refused();
+  const partyMatches = acceptanceBindingMatches(revision, claims);
+  if (claims.replacement_role !== undefined && !partyMatches) return fail("acceptance_claims_mismatch");
   const charterId = revision.value.charter_id || revision.digest;
   if (claims.charter_id !== charterId ||
       claims.revision_number !== revision.value.revision_number ||
       (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined) ||
       (claims.protocol_revision === 8) !== (revision.value.protocol_revision === 8) ||
-      !acceptanceBindingMatches(revision, claims)) {
+      !partyMatches) {
     return refused();
   }
   const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);

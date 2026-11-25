@@ -59,7 +59,7 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
 test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
-  assert.equal(corpus.cases.length, 656);
+  assert.equal(corpus.cases.length, 662);
   assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 18);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
@@ -126,6 +126,44 @@ test("ordinary and replacement operations require the corresponding marker on bo
     assert.deepEqual(api.prepareSigning(wrong, kid, claims, public_key, set, { algorithm }),
       { ok: false, code: "signing_refused" });
   }
+});
+
+test("bare revision eight receipts disclose ownership and refuse preparation", () => {
+  const bare = fixture("receipt-verify", "receipt-bare-revision-eight-descriptive");
+  const held = fixture("receipt-verify", "assignment-receipt-new-holder");
+  const descriptive = api.verifyReceipt(bare.compact, bare.revision_text);
+  assert.ok(descriptive.ok);
+  assert.ok(descriptive.facts.not_verified.includes("signature"));
+  assert.ok(descriptive.facts.not_verified.includes("ownership"));
+
+  const verified = api.verifyReceipt(held.compact, held.chain);
+  assert.ok(verified.ok);
+  assert.equal(verified.facts.not_verified.includes("signature"), false);
+  assert.equal(verified.facts.not_verified.includes("ownership"), false);
+
+  const input = fixture("signing-prepare", "signing-receipt-bare-revision-eight-refused");
+  assert.deepEqual(api.prepareSigning("receipt", input.kid, input.claims, input.public_key, bare.revision_text),
+    { ok: false, code: "signing_refused" });
+  const checked = api.prepareSigning("receipt", input.kid, input.claims, input.public_key, held.chain);
+  assert.ok(checked.ok);
+  assert.equal(checked.plan.key, "matched");
+});
+
+test("replacement inputs distinguish missing intent from an incorrect assignor", () => {
+  for (const [id, code] of [
+    ["signing-assignment-empty-claims", "signing_refused"],
+    ["signing-assignment-wrong-assignor-binding", "acceptance_claims_mismatch"],
+  ] as const) {
+    const { kid, claims, context: { set } } = fixture("signing-prepare", id);
+    assert.deepEqual(api.partyReplacementSigningInput(kid, claims, set), { ok: false, code });
+  }
+  const { kid, claims, public_key, context: { set } } =
+    fixture("signing-prepare", "signing-assignment-departing-party");
+  const result = api.prepareSigning("party_replacement", kid, claims, public_key, set);
+  assert.ok(result.ok);
+  assert.equal(result.plan.kind, "party_replacement");
+  const header = JSON.parse(Buffer.from(result.plan.input.protectedSegment, "base64url").toString());
+  assert.equal(header.typ, "cap+acceptance");
 });
 
 test("browser descriptor publication helpers preserve typed limits and public facts", async () => {
