@@ -162,6 +162,25 @@ test("the release guard recognizes the real scoped package manifest", () => {
   }
 });
 
+test("the release guard selects the npm dist-tag from the version", () => {
+  const selection = jobs.release.match(/^ {10}case "\$version" in\n(?:^ {12}[^\n]+\n)+^ {10}esac$/m);
+  assert.ok(selection, "the release guard must select a dist-tag");
+  assert.ok(jobs.release.includes("printf 'dist_tag=%s\\n' \"$dist_tag\" >> \"$GITHUB_OUTPUT\""));
+  assert.ok(jobs.release.includes("dist_tag: ${{ steps.validate.outputs.dist_tag }}"));
+
+  for (const [version, expected] of [
+    ["1.1.0", "latest"],
+    ["1.1.0-rc.1", "next"],
+    ["1.1.0-beta.2", "next"],
+  ]) {
+    const output = execFileSync("bash", [
+      "-euo", "pipefail", "-c", `version=$1\n${selection[0]}\nprintf '%s' "$dist_tag"`,
+      "release-dist-tag", version,
+    ], { encoding: "utf8" });
+    assert.equal(output, expected, version);
+  }
+});
+
 test("served tarballs must come from the credential-free npm registry origin", () => {
   const url = "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz";
   assert.equal(registryTarballURL(url).href, url);
@@ -207,7 +226,8 @@ test("the exact archive is planned after inspection, staged only for upload, the
     assert.match(step, /RELEASE_VERSION: \$\{\{ needs\.release\.outputs\.version \}\}/);
     assert.match(step, /"\$RELEASE_NAME" "\$RELEASE_VERSION" "\.\/artifacts\/\$ARCHIVE_NAME"/);
   }
-  assert.match(stage, /npm stage publish "\.\/artifacts\/\$ARCHIVE_NAME" --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
+  assert.ok(stage.includes("DIST_TAG: ${{ needs.release.outputs.dist_tag }}"));
+  assert.match(stage, /npm stage publish "\.\/artifacts\/\$ARCHIVE_NAME" --tag "\$DIST_TAG" --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
 
   const attest = oneStep(/name: Attest the release source commit/);
   assert.match(attest, /subject-path: artifacts\/\$\{\{ needs\.release\.outputs\.archive \}\}/);

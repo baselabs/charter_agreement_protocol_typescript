@@ -29,6 +29,7 @@ jobs:
       checks: read
     outputs:
       version: ${{ steps.validate.outputs.version }}
+      dist_tag: ${{ steps.validate.outputs.dist_tag }}
       name: ${{ steps.validate.outputs.name }}
       archive: ${{ steps.validate.outputs.archive }}
       docs: ${{ steps.validate.outputs.docs }}
@@ -59,6 +60,11 @@ jobs:
             exit 1
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          printf 'dist_tag=%s\n' "$dist_tag" >> "$GITHUB_OUTPUT"
           printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
           archive_name="${name#@}"
           archive_name="${archive_name/\//-}-$version"
@@ -241,7 +247,8 @@ jobs:
         if: needs.build.outputs.state == 'upload'
         env:
           ARCHIVE_NAME: ${{ needs.release.outputs.archive }}
-        run: npm stage publish "./artifacts/$ARCHIVE_NAME" --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+          DIST_TAG: ${{ needs.release.outputs.dist_tag }}
+        run: npm stage publish "./artifacts/$ARCHIVE_NAME" --tag "$DIST_TAG" --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
 
   read-back:
     needs: [release, build, upload]
