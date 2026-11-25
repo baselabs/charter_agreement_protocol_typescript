@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import * as candidate from "../dist/index.js";
+import * as candidate from "../index.ts";
 
 const PACKAGE = "@charter-agreement-protocol/verifier";
 const VERSION = "1.0.0";
@@ -17,9 +17,12 @@ const BASELINE = "npm:" + VERSION;
 const INTEGRITY = "sha512-fjiqnSgXzCFM1cYMWmIurcLc7OObwpQzmd9TNy8uzoPS4cxMKZ3o4kXcH90DRv9WYtOn/PLu3ffkjOa8bJe3GA==";
 const ENTRY_POINTS = ["corpus_runner", "public_api"];
 
-const verdict = ({ status, error_code }) => status === "valid" ? "valid" : error_code;
-const outcome = (result) => result.ok ? "valid" : result.code;
 const qualified = (entryPoint, id) => entryPoint + "/" + id;
+const observation = (operation, value) => ({ operation, value });
+const observedCase = ({ status, error_code, output }) => status === "valid" ? valid(output) : error_code;
+const valid = (output) => ({ status: "valid", output });
+const isValid = (value) => value?.status === "valid";
+const same = (left, right) => candidate.canonical(left) === candidate.canonical(right);
 
 export async function checkReverseDifferential(root, scratch, metadata) {
   const { api: published, frozenRoot, runCase } = await installBaseline(scratch);
@@ -37,7 +40,7 @@ export async function checkReverseDifferential(root, scratch, metadata) {
   const checked = checkedCorpus(candidate, cases, candidate.runConformanceCase);
   const observed = new Map(cases.map((one) => [
     qualified("corpus_runner", one.id),
-    baselineCorpusOutcome(one, supported, runCase),
+    observation(one.surface, baselineCorpusOutcome(one, supported, runCase)),
   ]));
   recordPublicProbes(checked, candidate, cases);
   recordPublicProbes(observed, published, cases);
@@ -80,7 +83,7 @@ function checkedCorpus(api, cases, runCase) {
   return new Map(cases.map((one) => {
     const actual = runCase(one);
     assert.equal(api.canonical(actual), api.canonical(one.expect), one.id);
-    return [qualified("corpus_runner", one.id), verdict(actual)];
+    return [qualified("corpus_runner", one.id), observation(one.surface, observedCase(actual))];
   }));
 }
 
@@ -89,17 +92,19 @@ function baselineCorpusOutcome(one, supported, runCase) {
   if (one.surface === "descriptor_publication.verify") return "unsupported";
   assert.ok(supported.has(one.surface), "missing published dispatch for " + one.surface);
   if (one.surface === "signing.prepare" && one.input?.kind === "party_replacement") return "unsupported";
-  return verdict(runCase(one));
+  return observedCase(runCase(one));
 }
 
 function recordPublicProbes(observed, api, cases) {
   const inputFor = (id) => cases.find((one) => one.id === id).input;
   const example = inputFor("signing-ed25519-party_descriptor");
-  observed.set(qualified("public_api", "api-assemble-missing-alg"), missingAlgorithm(api, example));
+  observed.set(qualified("public_api", "api-assemble-missing-alg"),
+    observation("assemble_compact", missingAlgorithm(api, example)));
 
   for (const id of ["chain-item-type-before-item-limit", "chain-item-type-before-list-byte-limit"]) {
     const input = inputFor(id);
-    observed.set(qualified("public_api", id), outcome(api.verifyChain(input, { limits: input.limits })));
+    const result = api.verifyChain(input, { limits: input.limits });
+    observed.set(qualified("public_api", id), observation("verify_chain", chainOutcome(result)));
   }
 }
 
@@ -108,10 +113,26 @@ function missingAlgorithm(api, example) {
   assert.ok(framed.ok);
   const input = { ...framed.input };
   delete input.alg;
-  return outcome(api.assembleCompact(input, Buffer.alloc(64)));
+  const result = api.assembleCompact(input, Buffer.alloc(64));
+  return result.ok ? valid({ compact: result.compact }) : result.code;
 }
 
-function direction(from, to) {
+function chainOutcome(result) {
+  if (!result.ok) return result.code;
+  const { charterId, topology, acceptedDigests, supersededDigests } = result.facts;
+  return valid({
+    charter_id: charterId, topology,
+    accepted_revision_digests: acceptedDigests, superseded_revision_digests: supersededDigests,
+  });
+}
+
+function direction(from, to, outputs) {
+  if (outputs !== undefined) {
+    if (from === "valid" && to === "valid" && outputs && Object.keys(outputs).length === 2 &&
+        Object.hasOwn(outputs, "before") && Object.hasOwn(outputs, "after") &&
+        !same(outputs.before, outputs.after)) return "green_to_green";
+    return null;
+  }
   const typed = (value) => typeof value === "string" && value.length > 0 &&
     !["valid", "raised", "unsupported"].includes(value);
   if (from === "unsupported" && (to === "valid" || typed(to))) return "baseline_unsupported";
@@ -122,31 +143,42 @@ function direction(from, to) {
   return null;
 }
 
-function compare(row, observed, checked) {
-  assert.deepEqual([...observed.keys()].sort(), [...checked.keys()].sort());
+function change(before, after) {
+  if (isValid(before) && isValid(after)) {
+    return ["valid", "valid", { before: before.output, after: after.output }];
+  }
+  return [isValid(before) ? "valid" : before, isValid(after) ? "valid" : after];
+}
+
+export function compare(row, observed, checked) {
+  const operations = (entries) => [...entries].map(([id, { operation }]) => [id, operation]).sort();
+  assert.deepEqual(operations(observed), operations(checked), "case IDs or operations do not match");
   const expected = new Map();
   for (const transition of row.transitions) {
+    assert.ok(typeof transition.operation === "string" && transition.operation.length > 0);
     assert.ok(transition.witnesses.length > 0, transition.description);
-    for (const { baselines, cases, entry_point, from, to } of transition.witnesses) {
+    for (const { baselines, cases, entry_point, from, to, outputs } of transition.witnesses) {
       assert.ok(cases.length > 0 && baselines.length > 0 && baselines.every((name) => [BASELINE, "hex:1.0.0"].includes(name)));
       assert.ok(ENTRY_POINTS.includes(entry_point), "missing witness entry point");
-      assert.equal(direction(from, to), transition.direction, transition.description);
+      assert.equal(direction(from, to, outputs), transition.direction, transition.description);
       if (!baselines.includes(BASELINE)) continue;
       for (const id of cases) {
         const key = qualified(entry_point, id);
+        assert.equal(checked.get(key)?.operation, transition.operation,
+          "witness " + key + " does not name operation " + transition.operation);
         assert.ok(!expected.has(key), "duplicate witness " + key);
-        expected.set(key, [from, to]);
+        expected.set(key, outputs === undefined ? [from, to] : [from, to, outputs]);
       }
     }
   }
-  const differences = new Map([...observed].flatMap(([id, before]) => {
-    const after = checked.get(id);
-    return before === after ? [] : [[id, [before, after]]];
+  const differences = new Map([...observed].flatMap(([id, { value: before }]) => {
+    const { value: after } = checked.get(id);
+    return same(before, after) ? [] : [[id, change(before, after)]];
   }));
   const drift = [...new Set([...differences.keys(), ...expected.keys()])].sort().flatMap((id) => {
     const actual = differences.get(id);
     const recorded = expected.get(id);
-    return actual?.[0] === recorded?.[0] && actual?.[1] === recorded?.[1] ? [] : [{ id, recorded, actual }];
+    return actual && recorded && same(actual, recorded) ? [] : [{ id, recorded, actual }];
   });
   assert.equal(drift.length, 0, "reverse differential " + BASELINE + "\n" + JSON.stringify(drift, null, 2));
   return differences.size;

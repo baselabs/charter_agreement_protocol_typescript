@@ -104,7 +104,7 @@ async function verifyReference(scratch, sourceMetadata) {
         System.halt(status)
       `);
       execFileSync("elixir", [runner], { stdio: "inherit" });
-      const { reportFor } = await import("../dist/index.js");
+      const { reportFor } = await import("../index.ts");
       const actual = reportFor(join(root, "conformance"));
       assert.equal(actual.exitStatus, 0);
       const current = JSON.parse(actual.bytes).results.filter((one) => releasedIds.has(one.id));

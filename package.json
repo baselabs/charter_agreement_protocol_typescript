@@ -41,8 +41,8 @@
     "prepack": "npm run build",
     "typecheck:web": "tsc -p tsconfig.web.json",
     "build:site": "node web/build.mjs",
-    "check:reference": "node scripts/check-reference.mjs",
-    "check:reverse-differential": "node scripts/check-reference.mjs --reverse-differential",
+    "check:reference": "node --experimental-strip-types --no-warnings scripts/check-reference.mjs",
+    "check:reverse-differential": "node --experimental-strip-types --no-warnings scripts/check-reference.mjs --reverse-differential",
     "check:package": "node scripts/check-package.mjs",
     "check": "npm run typecheck && npm run typecheck:web && npm run test && npm run self-checks && npm run build:site && npm run check:reference && npm run check:package"
   },

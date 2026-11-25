@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { compare } from "./scripts/check-reverse-differential.mjs";
 import { registryTarballURL, releaseState } from "./scripts/npm-release-state.mjs";
 
 // Selected fields recorded from the public registry; source URLs and dates are
@@ -12,6 +13,46 @@ const input = (fixture) => {
   const { packument, selectedVersion: version } = fixture;
   return { name: packument.name, version, integrity: packument.versions[version]?.dist.integrity };
 };
+
+test("reverse differential rejects swapped descriptor and signing witnesses", () => {
+  const entries = [
+    ["descriptor-publication-successor", "party_descriptor.verify"],
+    ["descriptor-publication-sign-successor", "signing.prepare"],
+  ];
+  const pair = { baselines: ["npm:1.0.0"], entry_point: "corpus_runner", from: "protected_header_invalid", to: "valid" };
+  const transitions = entries.map(([id, operation]) => ({
+    operation, direction: "red_to_green", witnesses: [{ ...pair, cases: [id] }],
+  }));
+  const observations = (value) => new Map(entries.map(([id, operation]) =>
+    [`corpus_runner/${id}`, { operation, value }]));
+  const before = observations("protected_header_invalid");
+  const after = observations({ status: "valid", output: {} });
+  assert.equal(compare({ transitions }, before, after), 2);
+
+  const [descriptor, signing] = transitions;
+  const swapped = [
+    { ...descriptor, witnesses: signing.witnesses },
+    { ...signing, witnesses: descriptor.witnesses },
+  ];
+  assert.throws(() => compare({ transitions: swapped }, before, after),
+    /does not name operation party_descriptor\.verify/);
+});
+
+test("reverse differential checks both successful projections", () => {
+  const id = "legacy-unsigned-predecessor-leaves-no-governing-revision";
+  const operation = "governing_revision";
+  const outputs = { before: { governing_revisions: ["revision"] }, after: { governing_revisions: ["none"] } };
+  const transitions = [{
+    operation, direction: "green_to_green",
+    witnesses: [{ entry_point: "corpus_runner", baselines: ["npm:1.0.0"], cases: [id], from: "valid", to: "valid", outputs }],
+  }];
+  const observed = (output) => new Map([[`corpus_runner/${id}`, { operation, value: { status: "valid", output } }]]);
+  const before = observed(outputs.before);
+  const after = observed(outputs.after);
+  assert.equal(compare({ transitions }, before, after), 1);
+  assert.throws(() => compare({ transitions: [] }, before, after), /legacy-unsigned-predecessor/);
+  assert.throws(() => compare({ transitions }, before, observed({})), /legacy-unsigned-predecessor/);
+});
 
 test("a missing package name requires the owner's first-publication decision", () => {
   const name = decodeURIComponent(new URL(fixtures.missing.source).pathname.slice(1));
