@@ -12,6 +12,9 @@ documented here.
 - Verify revision-8 party quorums, declared assignments, and receipt ownership.
   Prepare assignor acceptances through the same checked signing path.
 
+- Require an accepted predecessor for every charter successor. A signed legacy
+  successor of an unsigned genesis remains proposed and cannot govern.
+
 - Retain bounded signing contexts across key callbacks while preserving
   preparation error order. Bound algorithm profiles before reading entries
   and copy byte views without invoking caller conversion methods.
