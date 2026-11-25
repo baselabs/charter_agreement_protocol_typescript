@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "Z4lk4KnmxnO0xwuWZhikkb4354Nb3TVK9XA1ZFNzERs";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "VXoEwnA-AsDOI2I3HxwL9xHI6uwKgaBso6weEeZEmkg";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -2606,7 +2606,7 @@ function copyChainArtifacts(input: AnyRecord, limits: Limits): Result<ChainInput
   const lists = CHAIN_MEMBERS.map((name) => input[name]);
   if (!lists.every(Array.isArray)) return fail("invalid_type");
   const copied: ChainInput = { revisions: [], acceptances: [], descriptors: [], terminations: [] };
-  let bytes = 0;
+  let remainingBytes = limits.max_artifact_set_bytes;
   for (const [index, name] of CHAIN_MEMBERS.entries()) {
     const list = lists[index];
     const length = list.length;
@@ -2619,10 +2619,12 @@ function copyChainArtifacts(input: AnyRecord, limits: Limits): Result<ChainInput
       if (item >= limits.max_artifact_set_items) return fail("limit_exceeded");
       const text = list[item];
       if (typeof text !== "string") return fail("invalid_type");
-      bytes += Buffer.byteLength(text);
-      copied[name].push(text);
+      if (remainingBytes >= 0) {
+        remainingBytes -= text.length > remainingBytes ? text.length : Buffer.byteLength(text);
+        if (remainingBytes >= 0) copied[name].push(text);
+      }
     }
-    if (bytes > limits.max_artifact_set_bytes) return fail("limit_exceeded");
+    if (remainingBytes < 0) return fail("limit_exceeded");
   }
   return ok(copied);
 }

@@ -8,13 +8,16 @@ for (const shape of ["sparse", "proxy", "message", "other bytes", "ignored keys"
       import * as api from ${JSON.stringify(new URL("./core.ts", import.meta.url).href)};
       const empty = { revisions: [], acceptances: [], descriptors: [], terminations: [] };
       let run;
-      if (${JSON.stringify(shape)} === "sparse" || ${JSON.stringify(shape)} === "proxy") {
-        const list = [];
-        list.length = 2 ** 32 - 1;
-        const source = ${JSON.stringify(shape)} === "proxy" ? new Proxy([], {
-          get(target, key) { if (key === "length") return 2 ** 32 - 1; return Reflect.get(target, key); }
-        }) : list;
-        run = () => api.verifyChain({ ...empty, revisions: source });
+      let indexedReads = 0;
+      if (${JSON.stringify(shape)} === "sparse") {
+        run = () => api.verifyChain({ ...empty, revisions: Array(2 ** 32 - 1) });
+      } else if (${JSON.stringify(shape)} === "proxy") {
+        const list = new Proxy([], { get(target, key) {
+          if (key === "length") return 2 ** 32 - 1;
+          if (key === "0") { indexedReads++; throw new Error("oversized item read"); }
+          return Reflect.get(target, key);
+        } });
+        run = () => api.verifyChain({ ...empty, revisions: list });
       } else if (${JSON.stringify(shape)} === "message") {
         const bytes = new Uint8Array(200 * 1024 * 1024);
         run = () => api.verifySignature(bytes, new Uint8Array(64), "AAAA", "Ed25519");
@@ -25,9 +28,11 @@ for (const shape of ["sparse", "proxy", "message", "other bytes", "ignored keys"
         const note = new Proxy({}, { ownKeys() { throw new Error("unread keys"); } });
         run = () => api.verifyChain({ ...empty, note });
       } else if (${JSON.stringify(shape)} === "set bytes") {
-        const text = "x".repeat(65536);
-        const set = { revisions: Array(1024).fill(text), acceptances: Array(1024).fill(text), descriptors: Array(1024).fill(text), terminations: [] };
-        run = () => api.verifyChain(set);
+        const text = "é".repeat(4 * 1024 * 1024);
+        const revisions = Array(api.MAXIMUM_LIMITS.max_artifact_set_items).fill(text);
+        run = () => api.verifyChain({ ...empty, revisions }, { limits: {
+          max_artifact_set_bytes: text.length, max_artifact_set_items: revisions.length,
+        } });
       } else {
         let claims = {};
         if (${JSON.stringify(shape)} === "shared") {
@@ -41,15 +46,17 @@ for (const shape of ["sparse", "proxy", "message", "other bytes", "ignored keys"
       }
       const start = performance.now();
       const result = run();
-      console.log(JSON.stringify({ result, elapsed: performance.now() - start }));
+      console.log(JSON.stringify({ result, indexedReads, elapsed: performance.now() - start }));
     `;
     const child = spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", script], {
       encoding: "utf8", timeout: 4000,
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
-    const { result, elapsed } = JSON.parse(child.stdout);
+    const { result, indexedReads, elapsed } = JSON.parse(child.stdout);
     assert.deepEqual(result, ["message", "other bytes"].includes(shape) ? false : { ok: false, code:
-      shape === "ignored keys" ? "chain_invalid" : ["wide", "shared", "deep"].includes(shape) ? "signing_input_invalid" : "limit_exceeded" });
+      shape === "sparse" ? "invalid_type" : shape === "ignored keys" ? "chain_invalid" :
+        ["wide", "shared", "deep"].includes(shape) ? "signing_input_invalid" : "limit_exceeded" });
+    if (shape === "proxy") assert.equal(indexedReads, 0);
     assert.ok(elapsed < (["message", "other bytes", "ignored keys"].includes(shape) ? 100 : 1000), `${shape}: ${elapsed}ms`);
     console.log(`${shape}: ${elapsed.toFixed(2)}ms, ${JSON.stringify(result)}`);
   });
