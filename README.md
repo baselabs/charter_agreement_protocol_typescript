@@ -239,7 +239,7 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
 The current corpus contains 773 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/dcb13e69b73b2fb3f9845abcb607ecd8f62a9c8f/priv/conformance).
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/8b26769ee09cf0c779e9d23fd5f4a8aca388f7fd/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -247,7 +247,7 @@ A signed legacy successor of an unsigned genesis can lose governing status
 on replay. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/dcb13e69b73b2fb3f9845abcb607ecd8f62a9c8f/spec/core.md).
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/8b26769ee09cf0c779e9d23fd5f4a8aca388f7fd/spec/core.md).
 Node and the browser bundle run all 773 cases. The browser uses the eighteen
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from

@@ -71,6 +71,34 @@ test("reverse differential keeps the published replacement signing error", () =>
     /signing-assignment-departing-party/);
 });
 
+test("reverse differential reports both observed outcomes for each mismatch", () => {
+  const id = "signing-termination-without-accepted-predecessor";
+  const operation = "signing.prepare";
+  const observed = (value) => new Map([[`corpus_runner/${id}`, { operation, value }]]);
+  const candidate = observed("signing_refused");
+  const recorded = [{
+    operation, direction: "red_to_red",
+    witnesses: [{
+      entry_point: "corpus_runner", baselines: ["npm:1.0.0"], cases: [id],
+      from: "invalid_type", to: "signing_refused",
+    }],
+  }];
+
+  for (const [reason, baseline, transitions] of [
+    ["unrecorded", "invalid_syntax", []],
+    ["no longer firing", "signing_refused", recorded],
+    ["outcome drift", "invalid_syntax", recorded],
+  ]) {
+    assert.throws(() => compare({ transitions }, observed(baseline), candidate), ({ message }) => {
+      assert.ok(message.includes(`"id": "corpus_runner/${id}"`), message);
+      assert.ok(message.includes(`"reason": "${reason}"`), message);
+      assert.ok(message.includes(`"baseline": "${baseline}"`), message);
+      assert.ok(message.includes('"candidate": "signing_refused"'), message);
+      return true;
+    });
+  }
+});
+
 test("a missing package name requires the owner's first-publication decision", () => {
   const name = decodeURIComponent(new URL(fixtures.missing.source).pathname.slice(1));
   assert.throws(() => releaseState({ ...input(fixtures.verifier), name }, fixtures.missing), /a first publication is the owner's decision/);

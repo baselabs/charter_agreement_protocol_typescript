@@ -168,7 +168,14 @@ export function compare(row, observed, checked) {
   const drift = [...new Set([...differences.keys(), ...expected.keys()])].sort().flatMap((id) => {
     const actual = differences.get(id);
     const recorded = expected.get(id);
-    return actual && recorded && same(actual, recorded) ? [] : [{ id, recorded, actual }];
+    if (actual && recorded && same(actual, recorded)) return [];
+    return [{
+      id,
+      reason: !recorded ? "unrecorded" : !actual ? "no longer firing" : "outcome drift",
+      recorded: recorded ?? null,
+      baseline: observed.get(id).value,
+      candidate: checked.get(id).value,
+    }];
   });
   assert.equal(drift.length, 0, "reverse differential " + BASELINE + "\n" + JSON.stringify(drift, null, 2));
   return differences.size;
