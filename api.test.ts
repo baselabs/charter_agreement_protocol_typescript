@@ -1133,3 +1133,17 @@ test("descriptor publication retains the canonical bytes and complete opened pai
   assert.deepEqual(verified.facts.next_descriptor.lineage, [nextCompact, currentCompact]);
   assert.equal(verified.facts.not_verified.length, 12);
 });
+
+test("signed revision-8 framing is confined to party descriptors", () => {
+  const document = JSON.parse(readFileSync(new URL("./conformance/cases/descriptor_publication-verify.json", import.meta.url), "utf8"));
+  const selected = document.cases.find((one: any) => one.id === "descriptor-publication-opened");
+  const [compact] = JSON.parse(selected.input.text).descriptors;
+  const [encoded, payload, signature] = compact.split(".");
+  const header = Buffer.from(encoded, "base64url").toString("utf8");
+
+  for (const type of ["cap+acceptance", "cap+termination", "cap+receipt"]) {
+    const changed = Buffer.from(header.replace("cap+party", type)).toString("base64url");
+    assert.deepEqual(publicApi.decodeArtifact([changed, payload, signature].join(".")),
+      { ok: false, code: "protected_header_invalid" });
+  }
+});

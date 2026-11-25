@@ -529,6 +529,7 @@ function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTy
   if (canonicalTextError(payloadValue.value, payloadBytes.value.toString())) return fail("non_canonical_bytes");
   if (!isRecord(payloadValue.value)) return fail("protected_header_invalid");
   const payload = payloadValue.value as AnyRecord;
+  if (payload.protocol_revision === 8 && header.typ !== "cap+party") return fail("protected_header_invalid");
   if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
   const row = ALG_ROWS.find((one) => one.name === header.alg)!;
   if (signatureBytes.value.length !== row.signatureBytes) return fail("signature_invalid");
