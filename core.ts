@@ -2518,15 +2518,25 @@ const PUBLICATION_MEMBERS = [
   "protocol_revision", "party_id", "current_descriptor_digest", "next_descriptor_digest", "descriptors",
 ];
 
-function validPublicationShape(value: unknown): value is AnyRecord {
-  return isRecord(value) && exactKeys(value, PUBLICATION_MEMBERS) &&
-    value.protocol_revision === 8 && validTaggedDigest(value.party_id) &&
-    validTaggedDigest(value.current_descriptor_digest) && validTaggedDigest(value.next_descriptor_digest) &&
-    Array.isArray(value.descriptors) && value.descriptors.length >= 2 && value.descriptors.length <= 4096 &&
-    value.descriptors.every((compact: unknown) => typeof compact === "string" && compact.length > 0);
+type DescriptorPublication = {
+  protocol_revision: 8;
+  party_id: string;
+  current_descriptor_digest: string;
+  next_descriptor_digest: string;
+  descriptors: string[];
+};
+
+function validPublicationShape(value: unknown): value is DescriptorPublication {
+  if (!isRecord(value) || !exactKeys(value, PUBLICATION_MEMBERS)) return false;
+  const fields: Record<string, unknown> = value;
+  const { protocol_revision, party_id, current_descriptor_digest, next_descriptor_digest, descriptors } = fields;
+  return protocol_revision === 8 && validTaggedDigest(party_id) &&
+    validTaggedDigest(current_descriptor_digest) && validTaggedDigest(next_descriptor_digest) &&
+    Array.isArray(descriptors) && descriptors.length >= 2 && descriptors.length <= 4096 &&
+    descriptors.every((compact: unknown) => typeof compact === "string" && compact.length > 0);
 }
 
-function decodeDescriptorPublication(text: string, limits: Limits): Result<AnyRecord> {
+function decodeDescriptorPublication(text: string, limits: Limits): Result<DescriptorPublication> {
   const parsed = decodeJsonText(text, limits);
   if (!parsed.ok) return fail(parsed.code === "limit_exceeded" ? parsed.code : "descriptor_publication_invalid");
   const value = parsed.value;
