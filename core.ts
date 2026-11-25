@@ -7,8 +7,7 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-// baselabs/charter_agreement_protocol at d5da96ca02215f322fb39c47e4c9af15d19b87b8
-// SHA-256 of priv/conformance/index.json, which binds every case file.
+// The raw index SHA-256 must also match corpus_source in reference.json.
 export const CERTIFIED_INDEX_SHA256_BASE64URL = "4ygWJ7RKHHLFtOxbx8F5RqLH47b4acS70QD8XQi8FY4";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
@@ -1646,7 +1645,7 @@ function signingCaseOptions(input: AnyRecord): SigningOptions {
   return { algorithm: input.algorithm, limits, profile };
 }
 
-function executeArtifactCase(one: ConformanceCase): CaseResult | null {
+function executeArtifactCase(one: Pick<ConformanceCase, "surface" | "input">): CaseResult | null {
   const input = one.input;
   switch (one.surface) {
     case "signing.prepare": {
@@ -1692,21 +1691,36 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
       return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
     }
     case "receipt.verify": {
-      const settings = resolveOptions({ limits: input.limits, profile: input.profile });
-      if (!settings.ok) return invalid(settings.code);
-      if (!Object.hasOwn(input, "revision_text") && !exactKeys(input.chain, [...CHAIN_MEMBERS])) return invalid("invalid_type");
-      if (!Object.hasOwn(input, "revision_text")) {
-        const context = chainWithOptions(input.chain, { limits: input.limits });
+      const bareRevision = Object.hasOwn(input, "revision_text");
+      if (!bareRevision) {
+        if (!exactKeys(input.chain, [...CHAIN_MEMBERS])) return invalid("invalid_type");
+        const context = verifyChain(input.chain, { limits: input.limits });
         if (!context.ok) return invalid(context.code);
       }
-      return project(receiptWithContext(input.compact, Object.hasOwn(input, "revision_text") ? input.revision_text : input.chain, settings.value), (facts) => ({ receipt_digest: facts.digest, revision_number: facts.claims.revision_number, revision_digest: facts.claims.revision_digest, decision: facts.claims.decision, outcome: facts.claims.outcome, chain_conflict: facts.chainConflict, governing_match: facts.governingMatch, deployment_digest_matched: facts.deploymentMatched, optional_extensions_retained: facts.optionalExtensions }));
+      const verified = verifyReceipt(input.compact, bareRevision ? input.revision_text : input.chain, {
+        limits: input.limits, profile: input.profile,
+      });
+      if (!verified.ok) return invalid(verified.code);
+      const facts = verified.facts;
+      return valid({
+        receipt_digest: facts.receipt_digest,
+        revision_number: facts.claims.revision_number,
+        revision_digest: facts.claims.revision_digest,
+        decision: facts.claims.decision,
+        outcome: facts.claims.outcome,
+        chain_conflict: facts.chain_conflict,
+        governing_match: facts.governing_match,
+        deployment_digest_matched: facts.deployment_digest_matched,
+        optional_extensions_retained: facts.optional_extensions_retained,
+      });
     }
     default:
       return null;
   }
 }
 
-export function runConformanceCase(one: ConformanceCase): CaseResult {
+/** Execute one decoded corpus row. Use loadCorpus to authenticate the corpus. */
+export function runConformanceCase(one: Pick<ConformanceCase, "surface" | "input">): CaseResult {
   try {
     if (!isRecord(one) || !isRecord(one.input)) return invalid("invalid_type");
     return executeInputCase(one);
@@ -1790,7 +1804,7 @@ function executeDigestCase(input: AnyRecord): CaseResult {
   return input.tagged === taggedHash(domain as Domain, bytes.value) ? valid({}) : invalid("digest_mismatch");
 }
 
-function executeInputCase(one: ConformanceCase): CaseResult {
+function executeInputCase(one: Pick<ConformanceCase, "surface" | "input">): CaseResult {
   const options = closedCaseOptions(one.input);
   if (!options.ok) return invalid(options.code);
   if (Object.hasOwn(one.input, "kind") && Object.hasOwn(one.input, "value") && !caseKindMatches(one.input)) return invalid("invalid_type");
@@ -1823,56 +1837,63 @@ function executeInputCase(one: ConformanceCase): CaseResult {
     }
 
     case "descriptor_chain.verify": {
-      const chain = descriptorChain(input.compacts);
-      return project(chain, (value) => {
-        return { topology: value.topology, positions: value.positions, sibling_descriptors: value.siblingDescriptors };
-      });
+      const chain = verifyDescriptorChain(input.compacts);
+      if (!chain.ok) return invalid(chain.code);
+      const { topology, positions, siblingDescriptors } = chain.facts;
+      return valid({ topology, positions, sibling_descriptors: siblingDescriptors });
     }
-    case "charter_revision.decode":
-      return project(revisionFromText(input.text), (revision) => {
-        const binding = revision.value.abp_bindings[0];
-        return { revision_digest: revision.digest, revision_number: revision.value.revision_number, precedence_declaration: revision.value.precedence_declaration,
-          abp_binding: binding ? { blueprint_id: binding.blueprint_id, release_number: binding.release_number, content_digest: binding.content_digest, deployment_digest: binding.deployment_digest } : null };
-      });
+    case "charter_revision.decode": {
+      const decoded = decodeCharterRevision(input.text);
+      if (!decoded.ok) return invalid(decoded.code);
+      const { abp_bindings: bindings, revision_number, precedence_declaration } = decoded.revision;
+      const binding = bindings[0];
+      return valid({ revision_digest: decoded.digest, revision_number, precedence_declaration,
+        abp_binding: binding ? { blueprint_id: binding.blueprint_id, release_number: binding.release_number, content_digest: binding.content_digest, deployment_digest: binding.deployment_digest } : null });
+    }
 
     case "acceptance.equivocation": {
-      const chain = descriptorChain(input.descriptor_compacts);
+      const chain = verifyDescriptorChain(input.descriptor_compacts);
       if (!chain.ok || !Array.isArray(input.signed_revisions) || input.signed_revisions.length !== 2) {
         return invalid("acceptance_equivocation_invalid");
       }
       const facts = input.signed_revisions.map((signed) => {
-        const revision = revisionFromText(signed.revision_text);
-        return revision.ok ? acceptanceFromCompact(signed.compact, revision.value, chain.value) : revision;
+        return verifyAcceptance(signed.compact, signed.revision_text, input.descriptor_compacts);
       });
       if (facts.length !== 2 || facts.some((oneFact) => !oneFact.ok)) return invalid("acceptance_equivocation_invalid");
-      const [left, right] = facts.map((oneFact: any) => oneFact.value.claims);
+      const [left, right] = facts.map((oneFact: any) => oneFact.facts.claims);
       const pairable = left.charter_id === right.charter_id && left.revision_number === right.revision_number &&
         left.party_descriptor_digest === right.party_descriptor_digest && left.party_role === right.party_role &&
         left.revision_digest !== right.revision_digest;
       if (!pairable) return invalid("acceptance_equivocation_invalid");
-      return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).value.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.value.claims.revision_digest).sort(), winner: null });
+      return valid({ kind: "acceptance_equivocation", revision_number: (facts[0] as any).facts.claims.revision_number, revision_digests: facts.map((oneFact: any) => oneFact.facts.claims.revision_digest).sort(), winner: null });
     }
 
     case "chain.verify": {
-      const chain = chainWithOptions(input, { limits: input.limits });
-      return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology, accepted_revision_digests: facts.acceptedDigests, superseded_revision_digests: facts.supersededDigests }));
+      const chain = verifyChain(input, { limits: input.limits });
+      if (!chain.ok) return invalid(chain.code);
+      const { charterId, topology, acceptedDigests, supersededDigests } = chain.facts;
+      return valid({ charter_id: charterId, topology, accepted_revision_digests: acceptedDigests, superseded_revision_digests: supersededDigests });
     }
     case "chain.verify_profile": {
       const profile = parseProfile(input.profile);
       if (!profile.ok) return invalid(profile.code);
-      const chain = chainWithOptions(input, { profile: input.profile });
-      return project(chain, (facts) => ({ charter_id: facts.charterId, topology: facts.topology }));
+      const chain = verifyChain(input, { profile: input.profile });
+      if (!chain.ok) return invalid(chain.code);
+      return valid({ charter_id: chain.facts.charterId, topology: chain.facts.topology });
     }
     case "governing_revision": {
-      const chain = chainWithOptions(input, { limits: input.limits });
+      const options = { limits: input.limits };
+      const chain = verifyChain(input, options);
       if (!chain.ok) return invalid(chain.code);
       if (!Array.isArray(input.queries)) return invalid("invalid_type");
       const revisions = [];
       for (const query of input.queries) {
         if (!isRecord(query) || typeof query.at !== "string") return invalid("invalid_type");
-        const at = parseTimestamp(query.at);
-        if (!at) return invalid("timestamp_invalid");
-        revisions.push(governing(chain.value, at));
+        const selected = governingRevision(input, query.at, options);
+        // The view is valid and the query is text; invalid_type here identifies
+        // the timestamp grammar failure in the corpus vocabulary.
+        if (!selected.ok) return invalid(selected.code === "invalid_type" ? "timestamp_invalid" : selected.code);
+        revisions.push(selected.governing);
       }
       return valid({ governing_revisions: revisions });
     }
@@ -2457,6 +2478,8 @@ export function verifyReceipt(compact: string, context: AnyRecord | string, opti
       claims: verified.value.claims,
       governing_match: verified.value.governingMatch,
       chain_conflict: verified.value.chainConflict,
+      deployment_digest_matched: verified.value.deploymentMatched,
+      optional_extensions_retained: verified.value.optionalExtensions,
     }, typeof context === "string" ? ["signature"] : []),
   };
 }

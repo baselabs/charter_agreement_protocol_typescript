@@ -14,8 +14,8 @@ test("byte decoding preserves parser order before UTF-8 errors", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-byte-reader-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     for (const [text, limits, code] of [
       [[0x5b, 0xff], { max_depth: 0 }, "limit_exceeded"],
       [[0x5b, 0x31, 0x5d, 0xff], {}, "trailing_bytes"],
@@ -41,8 +41,8 @@ test("foundation runner surfaces validate their complete inputs", async (t) => {
   try {
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") +
-      "\nexport { execute as executeCase, readCaseJson as parseCaseText };\n");
-    const { executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
+      "\nexport { readCaseJson as parseCaseText };\n");
+    const { runConformanceCase: executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
     const checks: Array<[string, Record<string, any>, api.CaseResult]> = [
       ["canonicalization.encode", { tag: "string_codepoint", value: "+0041" }, { status: "valid", output: { text: '"A"' } }],
       ["canonicalization.encode", { tag: "string_codepoint", value: "D800" }, { status: "invalid", error_code: "invalid_type" }],
@@ -79,8 +79,8 @@ test("runner chain views contain exactly four lists and use top level limits", a
   const scratch = mkdtempSync(join(tmpdir(), "cap-case-views-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     for (const id of ["signing-ed25519-receipt"]) {
       const one = cases.find((one) => one.id === id)!;
       const member = id.endsWith("acceptance") ? "set" : "chain";
@@ -103,8 +103,8 @@ test("runner reads receipt contexts before profile admission and preparation", a
   const scratch = mkdtempSync(join(tmpdir(), "cap-receipt-order-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     const receipt = corpusCases.find((one) => one.id === "receipt-profile-context-algorithm-outside")!;
     for (const limits of [{ max_object_members: 8 }, { max_object_members: 10 }, { max_array_items: 1 }, { max_string_bytes: 50 }]) {
       await t.test(JSON.stringify(limits), () => {
@@ -126,8 +126,8 @@ test("runner matches every certified case with typed results", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-cases-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     assert.equal(corpusCases.length, 553);
     for (const one of corpusCases) await t.test(one.id, () => {
       assert.deepEqual(executeCase(one), one.expect);
@@ -142,8 +142,8 @@ test("case reader preserves float lexemes for integer fields", async () => {
   try {
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") +
-      '\nexport { execute as executeCase, readCaseJson as parseCaseText };\n');
-    const { executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
+      '\nexport { readCaseJson as parseCaseText };\n');
+    const { runConformanceCase: executeCase, parseCaseText } = await import(pathToFileURL(modulePath).href);
     const one = cases.find((one) => one.id === "signing-ed25519-party_descriptor")!;
     const text = JSON.stringify(one).replace('"protocol_revision":2', '"protocol_revision":2.0');
     assert.notEqual(text, JSON.stringify(one));
@@ -161,8 +161,8 @@ test("signing corpus runner matches Elixir kinds contexts and closed options", a
   try {
     const modulePath = join(scratch, "core.ts");
     // Expose the actual private runner in an isolated copy of the source.
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     const byId = (id: string) => {
       const one = cases.find((one) => one.id === id);
       assert.ok(one, id);
@@ -215,8 +215,8 @@ test("corpus runner rejects unknown options before every surface executes", asyn
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-options-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     const index = JSON.parse(readFileSync(new URL("./conformance/index.json", import.meta.url), "utf8"));
     for (const file of index.files) {
       const document = JSON.parse(readFileSync(new URL(`./conformance/${file.path}`, import.meta.url), "utf8"));
@@ -238,8 +238,8 @@ test("receipt corpus runner applies caller limits to its chain context", async (
   const scratch = mkdtempSync(join(tmpdir(), "cap-runner-receipt-"));
   try {
     const modulePath = join(scratch, "core.ts");
-    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
-    const { executeCase } = await import(pathToFileURL(modulePath).href);
+    writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
+    const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
     const receiptCases = JSON.parse(readFileSync(new URL("./conformance/cases/receipt-verify.json", import.meta.url), "utf8")).cases;
     const one = receiptCases.find((one: api.ConformanceCase) => one.id === "receipt-strict-chain-limits");
     assert.ok(one);

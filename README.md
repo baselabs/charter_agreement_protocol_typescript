@@ -59,6 +59,7 @@ cannot verify green.
 | Export | What it does |
 |---|---|
 | `reportFor(root)` | Load + integrity-check + recompute a corpus directory; returns the canonical report bytes and exit status |
+| `runConformanceCase(case)` | Run one decoded corpus case through the public verifier and project its verdict |
 | `loadCorpus(root)` | Integrity-checked corpus load (canonical index, digests, file set, applicability floor, certified index pin) |
 | `selfChecks()` | The self-check battery: SHA-256 known answers, canonical ordering, strict base64url, timestamp and limit invariants |
 | `canonical(value)` | RFC 8785 canonical JSON serialization |
@@ -74,7 +75,7 @@ cannot verify green.
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
 | `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
 | `verifyAcceptance(compact, revisionText, descriptorCompacts, options?)` / `verifyTermination(compact, revisionText, descriptorCompacts, options?)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
-| `verifyChain(chainInput, options?)` / `verifyReceipt(compact, chainInput, options?)` | Full chain-view verification (facts include topology, verified acceptances and termination notices); receipt verification against the verified chain |
+| `verifyChain(chainInput, options?)` / `verifyReceipt(compact, chainInput, options?)` | Full chain-view verification (facts include topology, verified acceptances and termination notices); receipt verification against the verified chain, with `deployment_digest_matched` and `optional_extensions_retained` in its facts |
 | `checkSigningClaims(kind, claims)` | The producer build gate's claims half (the reference `decode_for_signing`): the claims-only schema checks per kind — `descriptor \| acceptance \| termination \| receipt` — shared with the verify paths; holder-side signers run it before any key is used |
 | `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg, options?)` | Framing decode and the strict signature primitive; the latter retains its boolean result with optional limits and algorithm filtering |
 | `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
@@ -222,12 +223,14 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
 The current corpus contains 553 cases in 16 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/d5da96ca02215f322fb39c47e4c9af15d19b87b8/priv/conformance).
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/9ed71344df72635353d3d979659ca5d83aa0a137/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
-The [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/d5da96ca02215f322fb39c47e4c9af15d19b87b8/spec/core.md) defines the lifecycle verdicts.
+The [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/9ed71344df72635353d3d979659ca5d83aa0a137/spec/core.md) defines the lifecycle verdicts.
 Node and the browser bundle run all 553 cases. The browser uses the eight
 explicit capability-limited outcomes for ML-DSA verification.
-`npm run check:reference` checks that the released cases are retained.
+`npm run check:reference` fetches the exact Elixir source commit from
+`reference.json`, compares all vendored files to its Git blobs, and checks
+that the released cases are retained.
 `npm run check:reference -- --report` compares their exact report rows;
 it requires Elixir 1.19/1.20 on OTP 28/29 linked to OpenSSL 3.5 or newer.
 

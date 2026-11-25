@@ -3,5 +3,9 @@
   "version": "1.0.0",
   "archive_sha256": "77a70e80b7f9a71b7e84928a65ad92f984a746cc96d8700f97d436b3dfca5f21",
   "corpus_path": "priv/conformance",
-  "verification_semantics": 6
+  "verification_semantics": 6,
+  "corpus_source": {
+    "commit": "9ed71344df72635353d3d979659ca5d83aa0a137",
+    "index_sha256_base64url": "4ygWJ7RKHHLFtOxbx8F5RqLH47b4acS70QD8XQi8FY4"
+  }
 }

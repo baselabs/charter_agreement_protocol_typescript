@@ -5,6 +5,10 @@ documented here.
 
 ## [Unreleased]
 
+- Expose the receipt deployment match and retained optional extension names
+  through `verifyReceipt`. The browser corpus uses the public verifier and
+  governing revision APIs.
+
 - Pin the canonical CAP corpus by source commit and index SHA-256. Run
   all 553 cases through the browser bundle, including the declared
   limited-substrate outcomes and new receipt and lifecycle verdicts.

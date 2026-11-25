@@ -15,6 +15,7 @@ export {
   capabilities,
   loadCorpus,
   reportFor,
+  runConformanceCase,
   selfChecks,
   decodeJsonText,
   jsonProjection,

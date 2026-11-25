@@ -13,8 +13,42 @@ assert.match(reference.version, /^\d+\.\d+\.\d+$/);
 assert.match(reference.archive_sha256, /^[a-f0-9]{64}$/);
 assert.ok(process.argv.slice(2).every((value) => value === "--report"), "unknown reference-check argument");
 assert.ok(!process.argv.includes("--report") || reference.package === "charter_agreement_protocol");
+assert.equal(reference.corpus_path, "priv/conformance");
+assert.match(reference.corpus_source.commit, /^[a-f0-9]{40}$/);
+
+function verifyCorpusSource(scratch) {
+  const source = reference.corpus_source;
+  const checkout = join(scratch, "source");
+  execFileSync("git", ["init", "--quiet", checkout]);
+  const git = (...args) => execFileSync("git", args, { cwd: checkout, maxBuffer: 32 * 1024 * 1024 });
+  const remote = `https://github.com/baselabs/${reference.package}.git`;
+  git("fetch", "--quiet", "--no-tags", "--depth=1", remote, source.commit);
+  assert.equal(git("rev-parse", "FETCH_HEAD").toString().trim(), source.commit);
+
+  const vendored = join(root, "conformance");
+  let files;
+  if (reference.package === "charter_agreement_protocol") {
+    const index = readFileSync(join(vendored, "index.json"));
+    assert.equal(createHash("sha256").update(index).digest("base64url"), source.index_sha256_base64url);
+    files = ["index.json", ...JSON.parse(index).files.map((one) => one.path)];
+    const sourceFiles = git("ls-tree", "-r", "-z", "--name-only", "FETCH_HEAD", "--", reference.corpus_path)
+      .toString().split("\0").filter(Boolean);
+    assert.deepEqual(sourceFiles.sort(), files.map((path) => `${reference.corpus_path}/${path}`).sort());
+  } else {
+    files = ["signer_cases.json"];
+    const table = readFileSync(join(vendored, files[0]));
+    assert.equal(createHash("sha256").update(table).digest("hex"), source.sha256);
+  }
+  for (const path of files) {
+    const blob = git("cat-file", "blob", `FETCH_HEAD:${reference.corpus_path}/${path}`);
+    assert.deepEqual(readFileSync(join(vendored, path)), blob, path);
+  }
+  console.log(`Canonical Elixir source ${source.commit}: ${files.length} exact Git blob(s)`);
+}
+
 const scratch = mkdtempSync(join(tmpdir(), "charter-reference-"));
 try {
+  verifyCorpusSource(scratch);
   const url = `https://repo.hex.pm/tarballs/${reference.package}-${reference.version}.tar`;
   const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
   assert.equal(response.status, 200, `reference download: ${response.status}`);

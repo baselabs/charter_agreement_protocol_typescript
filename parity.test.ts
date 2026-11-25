@@ -34,10 +34,7 @@ async function bundledVerifier(platform: "browser" | "node" = "browser") {
     const outfile = join(scratch, "verifier.mjs");
     await build({
       ...browserBundleOptions,
-      stdin: {
-        contents: 'export * from "./index.ts"; export { runConformanceCase } from "./core.ts";',
-        resolveDir: new URL(".", import.meta.url).pathname,
-      },
+      entryPoints: ["index.ts"],
       bundle: true, outfile, format: "esm", platform,
       alias: platform === "browser" ? browserBundleOptions.alias : { "node:crypto": "./web/shim/node-crypto.ts" },
     });
