@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,9 +28,20 @@ try {
   if (reference.package === "charter_agreement_protocol") {
     const index = JSON.parse(read("index.json"));
     assert.equal(index.total_cases, 541);
-    const files = ["index.json", ...index.files.map((entry) => entry.path)];
-    for (const path of files) assert.deepEqual(readFileSync(join(root, "conformance", path)), read(path), path);
-    assert.equal(readdirSync(join(root, "conformance/cases")).length, index.files.length);
+    // Keep the released corpus as a compatibility floor while the vendored
+    // source commit and index pin identify the current corpus.
+    const releasedIds = new Set();
+    const caseDocument = (bytes) => JSON.parse(bytes, (_key, value, context) =>
+      typeof value === "number" && context?.source ? { numberToken: context.source } : value);
+    for (const { path } of index.files) {
+      const current = caseDocument(readFileSync(join(root, "conformance", path)));
+      const currentCases = new Map(current.cases.map(({ expect_limited, ...one }) => [one.id, one]));
+      for (const one of caseDocument(read(path)).cases) {
+        assert.deepEqual(currentCases.get(one.id), one, one.id);
+        releasedIds.add(one.id);
+      }
+    }
+    assert.equal(releasedIds.size, index.total_cases);
     if (process.argv.includes("--report")) {
       const sdk = join(scratch, "sdk");
       mkdirSync(sdk);
@@ -52,10 +63,11 @@ try {
       const { reportFor } = await import("../dist/index.js");
       const actual = reportFor(join(root, "conformance"));
       assert.equal(actual.exitStatus, 0);
-      assert.deepEqual(Buffer.from(actual.bytes), readFileSync(result));
-      console.log("Published Elixir/TypeScript reports: byte-identical, 541 cases");
+      const current = JSON.parse(actual.bytes).results.filter((one) => releasedIds.has(one.id));
+      assert.deepEqual(current, JSON.parse(readFileSync(result)).results);
+      console.log(`Published Elixir/TypeScript verdicts match for ${releasedIds.size} cases`);
     }
-    console.log("Elixir reference archive and all 17 corpus files match");
+    console.log(`Released Elixir corpus retained: ${releasedIds.size} cases`);
   } else {
     assert.deepEqual(readFileSync(join(root, "conformance/signer_cases.json")), read("signer_cases.json"));
     assert.equal(JSON.parse(read("signer_cases.json")).cases.length, 121);

@@ -128,7 +128,7 @@ test("runner matches every certified case with typed results", async (t) => {
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8") + "\nexport { execute as executeCase };\n");
     const { executeCase } = await import(pathToFileURL(modulePath).href);
-    assert.equal(corpusCases.length, 541);
+    assert.equal(corpusCases.length, 553);
     for (const one of corpusCases) await t.test(one.id, () => {
       assert.deepEqual(executeCase(one), one.expect);
     });

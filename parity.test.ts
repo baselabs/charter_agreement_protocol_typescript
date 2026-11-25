@@ -10,6 +10,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createContext, runInContext } from "node:vm";
 import * as api from "./index.ts";
+import { browserBundleOptions } from "./web/bundle.ts";
 
 function fixture(file: string, id: string): any {
   const document = JSON.parse(readFileSync(new URL(`./conformance/cases/${file}.json`, import.meta.url), "utf8"));
@@ -32,9 +33,13 @@ async function bundledVerifier(platform: "browser" | "node" = "browser") {
   try {
     const outfile = join(scratch, "verifier.mjs");
     await build({
-      entryPoints: ["index.ts"], bundle: true, outfile, format: "esm", platform, target: "es2022",
-      alias: platform === "browser" ? { "node:crypto": "./web/shim/node-crypto.ts", "node:fs": "./web/shim/node-fs.ts", "node:path": "./web/shim/node-path.ts" } : { "node:crypto": "./web/shim/node-crypto.ts" },
-      inject: ["./web/shim/buffer-global.ts"],
+      ...browserBundleOptions,
+      stdin: {
+        contents: 'export * from "./index.ts"; export { runConformanceCase } from "./core.ts";',
+        resolveDir: new URL(".", import.meta.url).pathname,
+      },
+      bundle: true, outfile, format: "esm", platform,
+      alias: platform === "browser" ? browserBundleOptions.alias : { "node:crypto": "./web/shim/node-crypto.ts" },
     });
     return await import(pathToFileURL(outfile).href);
   } finally {
@@ -52,6 +57,16 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
   assert.deepEqual(browser.verifyDescriptor(pq.compact), { ok: false, code: "algorithm_unsupported_on_substrate" });
   assert.deepEqual(browser.verifyDescriptor(changeClaims(pq.compact, (c) => ({ ...c, extra: true }))), { ok: false, code: "unknown_member" });
   assert.deepEqual(browser.verifyDescriptor(pq.compact, null, { profile: { algorithms: ["Ed25519"] } }), { ok: false, code: "algorithm_outside_profile" });
+});
+
+test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
+  const browser = await bundledVerifier();
+  const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
+  assert.equal(corpus.cases.length, 553);
+  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 8);
+  for (const one of corpus.cases) {
+    assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
+  }
 });
 
 test("real web crypto diagnostics stay outside corpus verdict reports", async () => {

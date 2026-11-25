@@ -176,7 +176,7 @@ substrate cannot verify, keeping that local result outside verdict reports.
   reference repository's gates, together with a randomized differential
   harness and its red-required mutation battery.
 - **The certified corpus** ships in this package (`conformance/`), pinned by
-  a raw index SHA-256 asserted at load.
+  an Elixir source commit and raw index SHA-256 checked at load.
 - **Ed25519 key and R admission.** After `npm run build`, run
   `npm run check:ed25519 -- /path/to/elixir/repository` to compare the source
   and built predicates with Elixir at `911d84b` on 10,000 seeded inputs and
@@ -221,11 +221,15 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The unchanged corpus contains 541 cases in 16 case files. `npm run check:reference`
-compares every corpus file with that archive. `npm run check:reference -- --report`
-also runs the published Elixir package and requires byte-identical reports;
-this needs Elixir 1.19/1.20 on OTP 28/29 linked to OpenSSL 3.5 or newer.
-The Elixir release's historical TypeScript source pin remains immutable.
+The current corpus contains 553 cases in 16 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/d5da96ca02215f322fb39c47e4c9af15d19b87b8/priv/conformance).
+The verifier checks the SHA-256 of the index and every listed case file.
+The [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/d5da96ca02215f322fb39c47e4c9af15d19b87b8/spec/core.md) defines the lifecycle verdicts.
+Node and the browser bundle run all 553 cases. The browser uses the eight
+explicit capability-limited outcomes for ML-DSA verification.
+`npm run check:reference` checks that the released cases are retained.
+`npm run check:reference -- --report` compares their exact report rows;
+it requires Elixir 1.19/1.20 on OTP 28/29 linked to OpenSSL 3.5 or newer.
 
 Use Node >= 24.8.0 and npm; `.tool-versions` pins the development Node.
 The lockfile records TypeScript 7 and the current Node declarations. Qualification
@@ -238,7 +242,7 @@ npm run check
 
 `check` runs strict library and browser typechecks, the full native/browser and
 resource-boundary suites, self-checks, both builds, corpus agreement, the
-reference-byte check, and the packed-consumer documentation/declaration checks.
+released-corpus check, and the packed-consumer documentation/declaration checks.
 CI covers the exact Node in `.tool-versions` and the Node 24.8.0 compatibility
 floor; both lanes require the exact Bun pin for its real substrate behavior.
 The reference job also installs the exact Erlang/OTP and Elixir pins from that

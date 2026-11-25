@@ -7,7 +7,9 @@ const CASE_FORMAT = "charter-agreement-protocol-conformance-cases";
 const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "xiyty9a_VZTgiIYIKqGZQIAhJB-OQZRIcOX_zyNV-VQ";
+// baselabs/charter_agreement_protocol at d5da96ca02215f322fb39c47e4c9af15d19b87b8
+// SHA-256 of priv/conformance/index.json, which binds every case file.
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "4ygWJ7RKHHLFtOxbx8F5RqLH47b4acS70QD8XQi8FY4";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -128,6 +130,7 @@ export type ConformanceCase = {
   class: string;
   input: Record<string, any>;
   expect: CaseResult;
+  expect_limited?: CaseResult;
 };
 export type LoadedCorpus = { index: CorpusIndex; indexBytes: Buffer; cases: ConformanceCase[] };
 export type CaseOutcome = { id: string; surface: string; agree: boolean; expected: CaseResult; actual: CaseResult };
@@ -1703,7 +1706,7 @@ function executeArtifactCase(one: ConformanceCase): CaseResult | null {
   }
 }
 
-function execute(one: ConformanceCase): CaseResult {
+export function runConformanceCase(one: ConformanceCase): CaseResult {
   try {
     if (!isRecord(one) || !isRecord(one.input)) return invalid("invalid_type");
     return executeInputCase(one);
@@ -1955,7 +1958,7 @@ export function loadCorpus(root: string): LoadedCorpus {
 export function reportFor(root: string): ReportOutput {
   const corpus = loadCorpus(root);
   const results = corpus.cases.map((one) => {
-    const actual = execute(one);
+    const actual = runConformanceCase(one);
     if (actual.status === "invalid" && actual.error_code === "algorithm_unsupported_on_substrate") throw new Error("algorithm_unsupported_on_substrate: corpus verification unavailable");
     return { id: one.id, surface: one.surface, agree: canonical(actual as unknown as CanonicalValue) === canonical(one.expect as unknown as CanonicalValue), expected: one.expect, actual };
   });

@@ -153,7 +153,14 @@ function check(root) {
   const observed = new Map();
 
   for (const one of allCases) {
-    if (!exactKeys(one, ["class", "expect", "id", "input", "surface"]) || typeof one.id !== "string" || one.id === "") throw new Error("case shape");
+    const keys = ["class", "expect", "id", "input", "surface"];
+    if (Object.hasOwn(one, "expect_limited")) {
+      keys.push("expect_limited");
+      const limited = one.expect_limited;
+      if (!exactKeys(limited, ["error_code", "status"]) || limited.status !== "invalid" ||
+          limited.error_code !== "algorithm_unsupported_on_substrate") throw new Error("limited expectation");
+    }
+    if (!exactKeys(one, keys) || typeof one.id !== "string" || one.id === "") throw new Error("case shape");
     if (!surfaces.includes(one.surface) || !classes.includes(one.class)) throw new Error("unknown cell");
     if (ids.has(one.id)) throw new Error("duplicate id");
     ids.add(one.id);
