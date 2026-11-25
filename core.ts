@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "WbBb7BEOGDGOUmKQ7oo64tXFFj6vWMSIWd1lAaTx9J8";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "A_LEDCADvWgWJpxItQvIvFg0463hsL_5LsKn9rB8VQY";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -26,7 +26,7 @@ const ALG_ROWS = [
   { name: "ML-DSA-65", minProtocolRevision: 3, keyAlgorithm: "ML-DSA-65", publicKeyBytes: 1952, signatureBytes: 3309 },
   { name: "ML-DSA-87", minProtocolRevision: 3, keyAlgorithm: "ML-DSA-87", publicKeyBytes: 2592, signatureBytes: 4627 },
 ];
-const ACCEPTED_PROTOCOL_REVISIONS = [1, 2, 3];
+const ACCEPTED_PROTOCOL_REVISIONS = [1, 2, 3, 8];
 
 // The per-artifact binding rule: EdDSA at any accepted revision, Ed25519
 // from revision 2, unknown revisions fail closed. Views mix revisions
@@ -37,6 +37,9 @@ function algBinds(alg: string, protocolRevision: number): boolean {
 }
 
 const SEPARATORS = {
+  signer_key: "charter-agreement-protocol/signer-key",
+  descriptor_next_keys: "charter-agreement-protocol/descriptor-next-keys",
+  descriptor_publication_content: "charter-agreement-protocol/descriptor-publication-content",
   party_descriptor_content: "charter-agreement-protocol/party-descriptor-content",
   charter_revision_content: "charter-agreement-protocol/charter-revision-content",
   acceptance_content: "charter-agreement-protocol/acceptance-content",
@@ -53,7 +56,7 @@ const SEPARATORS = {
 
 const SURFACES = [
   "base64url.decode", "json.decode", "canonicalization.encode", "digest.hash",
-  "schema.validate", "party_descriptor.verify", "descriptor_chain.verify",
+  "schema.validate", "party_descriptor.verify", "descriptor_chain.verify", "descriptor_publication.verify",
   "charter_revision.decode", "acceptance.verify", "acceptance.equivocation",
   "termination.verify", "chain.verify", "chain.verify_profile", "governing_revision", "receipt.verify",
   "signing.prepare",
@@ -78,6 +81,7 @@ const REQUIRED = {
   "chain.verify_profile": ["profile_algorithm_outside", "profile_revision_outside", "profile_narrow_valid", "invalid_type"],
   "charter_revision.decode": ["valid", "invalid_encoding", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "non_canonical_bytes", "extension_unknown_critical", "extension_invalid"],
   "descriptor_chain.verify": ["signature_invalid", "chain_invalid", "descriptor_superseded", "descriptor_fork", "invalid_type"],
+  "descriptor_publication.verify": ["valid", "invalid_type", "invalid_constraint", "unknown_member", "non_canonical_bytes", "maximum_plus_one", "signature_invalid", "profile_revision_outside", "profile_algorithm_outside"],
   "digest.hash": ["valid", "invalid_type", "digest_mismatch"],
   "governing_revision": ["precedence_selection", "terminated", "invalid_type"],
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
@@ -731,11 +735,23 @@ function compareTimestamps(left: { ticks: number; fraction: string }, right: { t
 function prepareDescriptor(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+party");
   if (!decoded.ok) return decoded;
-  const payload = decoded.value.payload;
-  const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
-  const grammar = descriptorClaimsError(payload);
+  const grammar = descriptorClaimsError(decoded.value.payload);
   if (grammar) return fail(grammar);
-  const digest = taggedHash("party_descriptor_content", decoded.value.payloadBytes);
+  return prepareDecodedDescriptor(compact, decoded.value, predecessor, settings);
+}
+
+type DecodedDescriptorEnvelope = Extract<ReturnType<typeof decodeJws>, { ok: true }>["value"];
+type PreviousDescriptor = { digest: string; payload: AnyRecord; lineage?: string[] };
+
+function prepareDecodedDescriptor(
+  compact: string,
+  decoded: DecodedDescriptorEnvelope,
+  predecessor: PreviousDescriptor | null,
+  settings: Settings,
+  digest = taggedHash("party_descriptor_content", decoded.payloadBytes),
+) {
+  const { payload } = decoded;
+  const keys = predecessor ? predecessor.payload.verification_keys : payload.verification_keys;
   if (payload.descriptor_number === 1) {
     if (predecessor) return fail("descriptor_chain_invalid");
     if (payload.prev_descriptor_digest !== undefined) return fail("descriptor_invalid");
@@ -745,13 +761,37 @@ function prepareDescriptor(compact: string, predecessor: { digest: string; paylo
   // The envelope is admitted before its kid is looked up, as in the
   // reference, so an out-of-profile artifact whose kid names no key reports
   // the profile code. Acceptances and terminations do the same.
-  const descriptorAdmission = profileError(decoded.value.header.alg, payload.protocol_revision, settings);
+  const descriptorAdmission = profileError(decoded.header.alg, payload.protocol_revision, settings);
   if (descriptorAdmission) return fail(descriptorAdmission);
+  const promise = predecessor?.payload.next_key_commitment;
+  if (promise !== undefined &&
+      (payload.protocol_revision !== 8 || !equalDigest(promise, commitmentDigest(payload.verification_keys)))) {
+    return fail("descriptor_commitment_mismatch");
+  }
   if (!parseTimestamp(payload.effective_from)) {
     return fail("timestamp_invalid");
   }
-  const facts = factsRecord({ ...decoded.value, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.value.header.alg });
-  return preparedArtifact(decoded.value, keys, facts, "descriptor_key_invalid");
+  const facts = factsRecord({ ...decoded, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.header.alg });
+  return preparedArtifact(decoded, keys, facts, "descriptor_key_invalid");
+}
+
+function equalDigest(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let i = 0; i < left.length; i++) difference |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return difference === 0;
+}
+
+function keyThumbprint(key: AnyRecord): string {
+  return taggedHash("signer_key", Buffer.from(canonical({ algorithm: key.algorithm, public_key: key.public_key })));
+}
+
+function activeThumbprints(keys: AnyRecord[]): string[] {
+  return keys.filter((key) => key.status === "active").map(keyThumbprint);
+}
+
+function commitmentDigest(keys: AnyRecord[]): string {
+  return taggedHash("descriptor_next_keys", Buffer.from(canonical(activeThumbprints(keys).sort())));
 }
 
 function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
@@ -969,17 +1009,25 @@ const REVISION_SCHEMA: FieldRule[] = [
   { name: "supersedes", type: "array", required: false, cardinality: [0, 8] }, field("extensions", "object"),
 ];
 
+const VERIFICATION_KEY_FIELDS: FieldRule[] = [
+  field("key_id", "string", (v) => /^[A-Za-z0-9._~-]{1,128}$/.test(v)),
+  field("algorithm", "string", oneOf("Ed25519", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87")),
+  field("public_key", "string", (v) => /^(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{1750}|[A-Za-z0-9_-]{2603}|[A-Za-z0-9_-]{3456})$/.test(v)),
+  field("status", "string", oneOf("active", "retired")),
+];
+
 const DESCRIPTOR_SCHEMA: FieldRule[] = [
   field("protocol_revision", "integer", integerRange(1, 3)), digestField("party_id", false),
   safeIntegerField("descriptor_number"), digestField("prev_descriptor_digest", false),
-  nestedField("verification_keys", "array", [
-    field("key_id", "string", (v) => /^[A-Za-z0-9._~-]{1,128}$/.test(v)),
-    field("algorithm", "string", oneOf("Ed25519", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87")),
-    field("public_key", "string", (v) => /^(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{1750}|[A-Za-z0-9_-]{2603}|[A-Za-z0-9_-]{3456})$/.test(v)),
-    field("status", "string", oneOf("active", "retired")),
-  ], [1, 32]),
+  nestedField("verification_keys", "array", VERIFICATION_KEY_FIELDS, [1, 32]),
   nestedField("attestation_hints", "array", [field("kind", "string", stringBytes(1, 64)), field("uri", "string", stringBytes(1, 2048))], [0, 16]),
   field("extensions", "object"), timeField("effective_from"),
+];
+const COMMITTED_DESCRIPTOR_SCHEMA = [
+  ...DESCRIPTOR_SCHEMA.map((rule) => rule.name === "protocol_revision"
+    ? field("protocol_revision", "integer", integerRange(8, 8))
+    : rule),
+  digestField("next_key_commitment", false),
 ];
 const ACCEPTANCE_SCHEMA: FieldRule[] = [
   field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
@@ -1048,8 +1096,8 @@ function extensionError(envelope: unknown, surface: string): string | null {
   return null;
 }
 
-function validTaggedDigest(value: string): boolean {
-  return digestPattern(value) && strictBase64url(value.slice(8)).ok;
+function validTaggedDigest(value: unknown): value is string {
+  return typeof value === "string" && digestPattern(value) && strictBase64url(value.slice(8)).ok;
 }
 
 function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
@@ -1275,7 +1323,7 @@ function parseProfile(spec: AnyRecord | undefined):
 
 type ParsedProfile = { algorithms: string[]; minRevision: number; maxRevision: number };
 type Settings = { limits: Limits; profile: ParsedProfile };
-const DEFAULT_SETTINGS: Settings = { limits: DEFAULT_LIMITS, profile: { algorithms: ALG_ROWS.map((row) => row.name), minRevision: 1, maxRevision: 3 } };
+const DEFAULT_SETTINGS: Settings = { limits: DEFAULT_LIMITS, profile: { algorithms: ALG_ROWS.map((row) => row.name), minRevision: 1, maxRevision: Math.max(...ACCEPTED_PROTOCOL_REVISIONS) } };
 
 function resolveOptions(options: VerificationOptions = {}): Result<Settings> {
   if (!isRecord(options) || (options.limits !== undefined && !validLimits(options.limits))) return fail("invalid_limits");
@@ -1640,7 +1688,7 @@ function signingCaseOptions(input: AnyRecord): SigningOptions {
   const range = selectedProfile.revisions;
   const profile = {
     algorithms: Object.hasOwn(selectedProfile, "algorithms") ? selectedProfile.algorithms : DEFAULT_SETTINGS.profile.algorithms,
-    revisions: range ? { min: range.min, max: range.max } : { min: 1, max: 3 },
+    revisions: range ? { min: range.min, max: range.max } : { min: 1, max: DEFAULT_SETTINGS.profile.maxRevision },
   };
   return { algorithm: input.algorithm, limits, profile };
 }
@@ -1836,6 +1884,12 @@ function executeInputCase(one: Pick<ConformanceCase, "surface" | "input">): Case
       return valid({ members });
     }
 
+    case "descriptor_publication.verify": {
+      const result = verifyDescriptorPublication(input.text, { limits: input.limits, profile: input.profile });
+      if (!result.ok) return invalid(result.code);
+      const { publication_digest, party_id, current_descriptor_digest, next_descriptor_digest, commitment_status } = result.facts;
+      return valid({ publication_digest, party_id, current_descriptor_digest, next_descriptor_digest, commitment_status });
+    }
     case "descriptor_chain.verify": {
       const chain = verifyDescriptorChain(input.compacts);
       if (!chain.ok) return invalid(chain.code);
@@ -2411,6 +2465,157 @@ export function verifyDescriptor(
   };
 }
 
+/** Identify a closed verification-key declaration by its algorithm and public bytes. */
+export function signerThumbprint(key: unknown): Result<string> {
+  const plain = copyInput(key, MAXIMUM_LIMITS, "json");
+  if (!plain.ok) return plain;
+  const shape = schemaError(plain.value, VERIFICATION_KEY_FIELDS);
+  if (shape) return fail(shape);
+  const grammar = keyGrammarError({ protocol_revision: 8, verification_keys: [plain.value] });
+  return grammar ? fail(grammar) : ok(keyThumbprint(plain.value));
+}
+
+const KEY_SET_FIELDS = [nestedField("verification_keys", "array", VERIFICATION_KEY_FIELDS, [1, 32])];
+
+/** Commit to the complete active successor key set. */
+export function descriptorNextKeyCommitment(keys: unknown, options: VerificationOptions = {}): Result<string> {
+  const plain = plainVerificationInputs(options, [keys], 0);
+  if (!plain.ok) return plain;
+  const [declarations, checkedOptions] = plain.value;
+  const settings = resolveOptions(checkedOptions);
+  if (!settings.ok) return settings;
+  if (!Array.isArray(declarations)) return fail("invalid_type");
+  if (declarations.length > 32) return fail("descriptor_invalid");
+  const value = { verification_keys: declarations };
+  if (jsonValueError(value)) return fail("invalid_type");
+  const decoded = decodeJsonText(canonical(value), settings.value.limits);
+  if (!decoded.ok) return decoded;
+  const shape = schemaError(value, KEY_SET_FIELDS);
+  if (shape) return fail(shape);
+  const grammar = keyGrammarError({ ...value, protocol_revision: 8 });
+  if (grammar) return fail(grammar);
+  const ids = new Set(declarations.map((key) => key.key_id));
+  const active = activeThumbprints(declarations);
+  if (ids.size !== declarations.length || active.length === 0 || new Set(active).size !== active.length) {
+    return fail("descriptor_invalid");
+  }
+  return ok(commitmentDigest(declarations));
+}
+
+const PUBLICATION_MEMBERS = [
+  "protocol_revision", "party_id", "current_descriptor_digest", "next_descriptor_digest", "descriptors",
+];
+
+function decodeDescriptorPublication(text: string, limits: Limits): Result<AnyRecord> {
+  const parsed = decodeJsonText(text, limits);
+  if (!parsed.ok) return fail(parsed.code === "limit_exceeded" ? parsed.code : "descriptor_publication_invalid");
+  const value = parsed.value;
+  if (!isRecord(value) || canonicalTextError(parsed.value, text) || !exactKeys(value, PUBLICATION_MEMBERS) ||
+      value.protocol_revision !== 8 || !validTaggedDigest(value.party_id) ||
+      !validTaggedDigest(value.current_descriptor_digest) || !validTaggedDigest(value.next_descriptor_digest) ||
+      !Array.isArray(value.descriptors) || value.descriptors.length < 2 || value.descriptors.length > 4096 ||
+      !value.descriptors.every((compact: unknown) => typeof compact === "string")) {
+    return fail("descriptor_publication_invalid");
+  }
+  const bounds = boundedArtifacts([value.descriptors], limits);
+  return bounds ? fail(bounds) : ok(value);
+}
+
+/** Encode the closed, unsigned publication under caller limits. */
+export function encodeDescriptorPublication(claims: unknown, options: VerificationOptions = {}): Result<string> {
+  const plain = plainVerificationInputs(options, [claims], 0);
+  if (!plain.ok) return fail(plain.code === "invalid_type" && isRecord(claims) ? "descriptor_publication_invalid" : plain.code);
+  const [value, checkedOptions] = plain.value;
+  const settings = resolveOptions(checkedOptions);
+  if (!settings.ok) return settings;
+  if (!isRecord(value)) return fail("invalid_type");
+  if (value.protocol_revision !== 8) return fail("descriptor_publication_invalid");
+  if (jsonValueError(value)) return fail("descriptor_publication_invalid");
+  const text = canonical(value);
+  const document = decodeDescriptorPublication(text, settings.value.limits);
+  return document.ok ? ok(text) : document;
+}
+
+/** Hash the exact publication bytes. */
+export function descriptorPublicationDigest(text: string): string {
+  return taggedHash("descriptor_publication_content", Buffer.from(text));
+}
+
+/** Verify every signature and select the final direct current and next pair. */
+export function verifyDescriptorPublication(text: unknown, options: VerificationOptions = {}): VerifyResult {
+  const plain = plainVerificationInputs(options, [text]);
+  if (!plain.ok) return plain;
+  const [value, checkedOptions] = plain.value;
+  const settings = resolveOptions(checkedOptions);
+  if (!settings.ok) return settings;
+  if (typeof value !== "string") return fail("invalid_type");
+  const decoded = decodeDescriptorPublication(value, settings.value.limits);
+  if (!decoded.ok) return decoded;
+  const document = decoded.value;
+  const admission = profileError(null, 8, settings.value);
+  if (admission) return fail(admission);
+
+  const entries: (DecodedDescriptorEnvelope & { compact: string; digest: string })[] = [];
+  for (const compact of document.descriptors) {
+    const member = decodeJws(compact, settings.value.limits, "cap+party");
+    if (!member.ok || descriptorClaimsError(member.value.payload)) return fail("descriptor_chain_invalid");
+    entries.push({ ...member.value, compact, digest: taggedHash("party_descriptor_content", member.value.payloadBytes) });
+  }
+
+  const invalid = () => fail("descriptor_publication_invalid");
+  const root = entries[0];
+  const byDigest = new Map(entries.map((entry) => [entry.digest, entry]));
+  if (root.payload.descriptor_number !== 1 || byDigest.size !== entries.length) return invalid();
+  for (let i = 1; i < entries.length; i++) {
+    const entry = entries[i];
+    const previousInOrder = entries[i - 1];
+    const number = entry.payload.descriptor_number;
+    const parent = byDigest.get(entry.payload.prev_descriptor_digest);
+    if (!parent || number !== parent.payload.descriptor_number + 1 || entry.payload.party_id !== root.digest ||
+        number < previousInOrder.payload.descriptor_number ||
+        (number === previousInOrder.payload.descriptor_number && entry.digest < previousInOrder.digest)) return invalid();
+  }
+
+  const verified = new Map<string, Extract<ReturnType<typeof descriptorFromCompact>, { ok: true }>["value"]>();
+  const parents = new Set<string>();
+  for (const entry of entries) {
+    const parent = entry.payload.prev_descriptor_digest;
+    const previous = verified.get(parent);
+    const predecessor = previous ? { digest: previous.digest, payload: previous.payload } : null;
+    const prepared = prepareDecodedDescriptor(entry.compact, entry, predecessor, settings.value, entry.digest);
+    const result = finishPreparedArtifact(prepared, settings.value);
+    if (!result.ok) return result;
+    verified.set(entry.digest, result.value);
+    if (parent !== undefined) parents.add(parent);
+  }
+
+  const next = entries[entries.length - 1];
+  const current = byDigest.get(document.current_descriptor_digest);
+  if (!current) return invalid();
+  const currentTime = parseTimestamp(current.payload.effective_from)!;
+  const nextTime = parseTimestamp(next.payload.effective_from)!;
+  if (parents.size !== entries.length - 1 || document.party_id !== root.digest ||
+      document.current_descriptor_digest !== current.digest || document.next_descriptor_digest !== next.digest ||
+      next.payload.prev_descriptor_digest !== current.digest || compareTimestamps(currentTime, nextTime) >= 0) return invalid();
+
+  const lineage = entries.map((entry) => entry.compact).reverse();
+  const currentDescriptor = { ...verified.get(current.digest)!, lineage: lineage.slice(1) };
+  const nextDescriptor = { ...verified.get(next.digest)!, lineage };
+  return { ok: true, facts: factsRecord({
+    protocol_revision: 8,
+    canonical_bytes: value,
+    publication_digest: descriptorPublicationDigest(value),
+    party_id: root.digest,
+    current_descriptor: currentDescriptor,
+    next_descriptor: nextDescriptor,
+    current_descriptor_digest: current.digest,
+    next_descriptor_digest: next.digest,
+    current_effective_from: current.payload.effective_from,
+    next_effective_from: next.payload.effective_from,
+    commitment_status: current.payload.next_key_commitment === undefined ? "not_present" : "opened",
+  }) };
+}
+
 export function verifyDescriptorChain(compacts: string[], options: VerificationOptions = {}): VerifyResult {
   const plain = plainVerificationInputs(options, [compacts]);
   if (!plain.ok) return plain;
@@ -2567,12 +2772,16 @@ function receiptTimingMatrixError(claims: AnyRecord): string | null {
 }
 
 function descriptorClaimsError(payload: AnyRecord): string | null {
-  const shape = schemaError(payload, DESCRIPTOR_SCHEMA);
+  const shape = schemaError(payload, payload.protocol_revision === 8 ? COMMITTED_DESCRIPTOR_SCHEMA : DESCRIPTOR_SCHEMA);
   if (shape) return shape;
-  if ([payload.party_id, payload.prev_descriptor_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "descriptor_invalid";
+  if ([payload.party_id, payload.prev_descriptor_digest, payload.next_key_commitment].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "descriptor_invalid";
   const grammar = keyGrammarError(payload);
   if (grammar) return grammar;
   if (new Set(payload.verification_keys.map((key: any) => key.key_id)).size !== payload.verification_keys.length || !payload.verification_keys.some((key: any) => key.status === "active")) return "descriptor_invalid";
+  if (payload.protocol_revision === 8) {
+    const thumbprints = activeThumbprints(payload.verification_keys);
+    if (new Set(thumbprints).size !== thumbprints.length) return "descriptor_invalid";
+  }
   const extensions = extensionError(payload.extensions, "party_descriptor");
   if (extensions) return extensions;
   if (!parseTimestamp(payload.effective_from)) return "timestamp_invalid";
@@ -2851,7 +3060,7 @@ function buildSigningInput(
   }
   if (integerTokenError(record, schemaForType(PRODUCER_TYPES[kind]))) return fail("signing_input_invalid");
   const revision = record.protocol_revision;
-  if (typeof revision !== "number" || !Number.isInteger(revision) || revision !== emissions()[algorithm as string]) {
+  if (typeof revision !== "number" || !Number.isInteger(revision) || (revision !== emissions()[algorithm as string] && !(kind === "descriptor" && revision === 8))) {
     return { ok: false, code: "signing_input_invalid" };
   }
   if (typeof kid !== "string" || kid.length === 0 || kid.length > 128 || !/^[A-Za-z0-9._~-]+$/.test(kid)) {

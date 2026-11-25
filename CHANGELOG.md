@@ -5,6 +5,9 @@ documented here.
 
 ## [Unreleased]
 
+- Verify revision-8 descriptor commitments and unsigned current/next
+  publications in Node and browser builds.
+
 - Check the canonical limited-substrate outcomes for receipt preparation
   when the browser cannot verify the supplied ML-DSA chain.
 

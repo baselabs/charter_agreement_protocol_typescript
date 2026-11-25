@@ -1105,3 +1105,31 @@ test("profile checks precede key resolution in signed artifact context", () => {
   const receipt = corpusCase("receipt-verify.json", "receipt-signed-governing-match").input;
   assert.deepEqual(verifyReceipt(replaceHeader(receipt.compact, { kid: "missing-key" }), receipt.chain, { profile: { algorithms: ["EdDSA"] } }), { ok: false, code: "signature_invalid" });
 });
+
+test("descriptor publication retains the canonical bytes and complete opened pair", () => {
+  const cases = JSON.parse(readFileSync(new URL("./conformance/cases/descriptor_publication-verify.json", import.meta.url), "utf8")).cases;
+  const selected = cases.find((one: any) => one.id === "descriptor-publication-opened");
+  assert.ok(selected);
+  const text = selected.input.text;
+  const document = JSON.parse(text);
+  const [currentCompact, nextCompact] = document.descriptors;
+  const current = publicApi.decodePartyDescriptor(currentCompact);
+  const next = publicApi.decodePartyDescriptor(nextCompact);
+  assert.ok(current.ok && next.ok);
+
+  const keys = next.claims.verification_keys;
+  assert.deepEqual(publicApi.signerThumbprint(keys[0]), publicApi.signerThumbprint({ ...keys[0], key_id: "alias", status: "retired" }));
+  assert.deepEqual(publicApi.descriptorNextKeyCommitment(keys), { ok: true, value: current.claims.next_key_commitment });
+  assert.deepEqual(publicApi.descriptorNextKeyCommitment([keys[1], keys[0]]), { ok: true, value: current.claims.next_key_commitment });
+  assert.deepEqual(publicApi.descriptorNextKeyCommitment([keys[0], { ...keys[0], key_id: "alias" }]), { ok: false, code: "descriptor_invalid" });
+  assert.deepEqual(publicApi.encodeDescriptorPublication(document), { ok: true, value: text });
+
+  const verified = publicApi.verifyDescriptorPublication(text);
+  assert.ok(verified.ok);
+  assert.equal(verified.facts.canonical_bytes, text);
+  assert.equal(verified.facts.publication_digest, publicApi.descriptorPublicationDigest(text));
+  assert.equal(verified.facts.commitment_status, "opened");
+  assert.deepEqual(verified.facts.current_descriptor.lineage, [currentCompact]);
+  assert.deepEqual(verified.facts.next_descriptor.lineage, [nextCompact, currentCompact]);
+  assert.equal(verified.facts.not_verified.length, 12);
+});
