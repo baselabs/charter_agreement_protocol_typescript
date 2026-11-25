@@ -8,6 +8,10 @@ documented here.
 - Verify revision-8 party quorums, declared assignments, and receipt ownership.
   Prepare assignor acceptances through the same checked signing path.
 
+- Retain bounded signing contexts across key callbacks while preserving
+  preparation error order. Bound algorithm profiles before reading entries
+  and copy byte views without invoking caller conversion methods.
+
 - Verify revision-8 descriptor commitments and unsigned current/next
   publications in Node and browser builds.
 

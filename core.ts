@@ -185,7 +185,7 @@ interface CorpusEntry { path: string; size: number; }
 type Domain = keyof typeof SEPARATORS;
 
 export function canonical(value: CanonicalValue): string {
-  if (value instanceof Number) return JSON.stringify(value.valueOf());
+  if (value instanceof Number) return JSON.stringify(Number.prototype.valueOf.call(value));
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) {
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) throw new Error("integer_magnitude");
@@ -203,7 +203,7 @@ function rawHash(bytes: Buffer): string {
 }
 
 function taggedHash(domain: Domain, bytes: Buffer): string {
-  const preimage = Buffer.concat([Buffer.from(SEPARATORS[domain]), Buffer.from([0]), Buffer.from(bytes)]);
+  const preimage = Buffer.concat([Buffer.from(SEPARATORS[domain]), Buffer.from([0]), bytes]);
   return `sha-256:${rawHash(preimage)}`;
 }
 
@@ -487,7 +487,7 @@ function jsonWithinLimits(value: any, bytes: Buffer, selected: AnyRecord = {}): 
 
 export function jsonProjection(value: any): Projection {
   if (value === null) return { tag: "null" };
-  if (value instanceof Number) return { tag: "float", value: value.valueOf() };
+  if (value instanceof Number) return { tag: "float", value: Number.prototype.valueOf.call(value) };
   if (Number.isInteger(value)) return { tag: "integer", value };
   if (Array.isArray(value)) return { tag: "array", items: value.map(jsonProjection) };
   if (value && typeof value === "object") return { tag: "object", members: (JSON_MEMBER_ORDER.get(value) ?? Object.keys(value)).map((key) => [key, jsonProjection(value[key])]) };
@@ -1398,7 +1398,7 @@ export function algorithmRegistryDigest(): string {
     ]),
   ) as CanonicalValue;
 
-  return taggedDigest("signature_registry", Buffer.from(canonical(value), "utf8"));
+  return taggedHash("signature_registry", Buffer.from(canonical(value), "utf8"));
 }
 
 // Strict like the reference Profile.new/1: shape errors report invalid_type;
@@ -1412,11 +1412,15 @@ function parseProfile(spec: AnyRecord | undefined):
   if (spec !== undefined && spec.algorithms !== undefined) {
     if (!Array.isArray(spec.algorithms)) return { ok: false, code: "invalid_type" };
     const names = spec.algorithms as unknown[];
-    if (names.length === 0 || new Set(names).size !== names.length) return { ok: false, code: "invalid_profile" };
-    for (const name of names) {
-      if (typeof name !== "string" || !registryNames.includes(name)) return { ok: false, code: "invalid_profile" };
+    const length = names.length;
+    if (!Number.isInteger(length) || length < 1 || length > registryNames.length) return { ok: false, code: "invalid_profile" };
+    const selected = new Set<string>();
+    for (let i = 0; i < length; i++) {
+      const name = names[i];
+      if (typeof name !== "string" || !registryNames.includes(name) || selected.has(name)) return { ok: false, code: "invalid_profile" };
+      selected.add(name);
     }
-    algorithms = names as string[];
+    algorithms = [...selected];
   }
 
   let minRevision = Math.min(...ACCEPTED_PROTOCOL_REVISIONS);
@@ -2427,11 +2431,11 @@ export function emissions(): Record<string, number> {
 }
 
 export function encodeBase64url(bytes: Buffer): string {
-  return bytes.toString("base64url");
+  return copyBytes(bytes).toString("base64url");
 }
 
 export function taggedDigest(domain: string, bytes: Buffer): string {
-  return taggedHash(domain as Domain, bytes);
+  return taggedHash(domain as Domain, copyBytes(bytes));
 }
 
 export function defaultEmissionName(): string {
@@ -2465,6 +2469,12 @@ const ARTIFACT_LIST_MEMBERS = new Set<string>([...CHAIN_MEMBERS, "lineage"]);
 const COPY_LIMIT = Symbol();
 const COPY_CYCLE = Symbol();
 const typedArrayByteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength")!.get!;
+
+function copyBytes(bytes: Uint8Array): Buffer {
+  const plain = Buffer.alloc(typedArrayByteLength.call(bytes));
+  plain.set(bytes);
+  return plain;
+}
 
 function boundedMemberNames(value: object, maximum: number): string[] {
   const names: string[] = [];
@@ -2504,7 +2514,7 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
       const length = typedArrayByteLength.call(value);
       if (length > limits.max_bytes) throw COPY_LIMIT;
       count(length);
-      return Buffer.from(value);
+      return copyBytes(value);
     }
     if (value instanceof Number) {
       const number = Number.prototype.valueOf.call(value);
@@ -2639,6 +2649,9 @@ function plainVerificationInputs<const T extends unknown[]>(options: Verificatio
     });
     const settings = resolveOptions(selected);
     if (!settings.ok) return settings;
+    if (selected?.profile?.algorithms !== undefined) {
+      selected.profile.algorithms = settings.value.profile.algorithms;
+    }
     const copiedOptions = copyInput(selected, { ...MAXIMUM_LIMITS, max_artifact_set_bytes: MAXIMUM_LIMITS.max_bytes }, "input", ["limits", "profile", "algorithm"]);
     if (!copiedOptions.ok) return copiedOptions;
     for (const [index, members] of Object.entries(inputMembers)) {
@@ -3148,6 +3161,9 @@ type SigningContext =
   | { kind: "termination"; revisionText: string; descriptorCompacts: string[] }
   | { kind: "receipt"; context: ChainInput | string };
 type FinishResult = { ok: true; compact: string } | { ok: false; code: string };
+type PrepareResult = { ok: true; plan: SigningPlan } | { ok: false; code: string };
+type PreparationContext = DescriptorPredecessor | null | ChainInput | string;
+type RetainedPreparation = (kid: string, claims: AnyRecord, publicKey: string) => PrepareResult;
 
 let createSigningPlan: (kind: SigningKind, input: SigningInput, key: "matched" | "unnamed", publicKey: string, context: SigningContext, settings: Settings) => SigningPlan;
 let finishSigningPlan: (plan: SigningPlan, signature: Uint8Array) => FinishResult;
@@ -3199,9 +3215,28 @@ export class SigningPlan {
 /** Check everything that can be checked before producing a signature. */
 export function prepareSigning(
   kind: SigningKind, kid: string, claims: AnyRecord, publicKey: string,
-  context: DescriptorPredecessor | null | ChainInput | string,
+  context: PreparationContext,
   options: SigningOptions = {},
-): { ok: true; plan: SigningPlan } | { ok: false; code: string } {
+): PrepareResult {
+  const parameters = signingParameters(kind, context, options);
+  if (!parameters.ok) return parameters;
+  return prepareWithContext(kind, kid, claims, publicKey, parameters.value.options,
+    () => copySigningContext(kind, context, parameters.value.limits));
+}
+
+/** Snapshot a caller's context before awaiting custody, preserving preparation error order. */
+export function retainSigningContext(
+  kind: SigningKind, context: PreparationContext, options: SigningOptions = {},
+): Result<RetainedPreparation> {
+  const parameters = signingParameters(kind, context, options);
+  if (!parameters.ok) return parameters;
+  const retained = copySigningContext(kind, context, parameters.value.limits);
+  return ok<RetainedPreparation>((kid, claims, publicKey) =>
+    prepareWithContext(kind, kid, claims, publicKey, parameters.value.options, () => retained));
+}
+
+function signingParameters(kind: SigningKind, context: PreparationContext, options: SigningOptions):
+  Result<{ options: SigningOptions; limits: Limits }> {
   const optionInputs = plainVerificationInputs(options, []);
   if (!optionInputs.ok) return optionInputs;
   options = optionInputs.value[0];
@@ -3217,6 +3252,25 @@ export function prepareSigning(
   } catch (_error) {
     return fail("invalid_type");
   }
+  const settings = resolveOptions(options);
+  return settings.ok ? ok({ options, limits: settings.value.limits }) : settings;
+}
+
+function copySigningContext(kind: SigningKind, context: PreparationContext, limits: Limits): Result<PreparationContext> {
+  const members = kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS;
+  try {
+    const retained = retainedInput(context, members);
+    if (!retained.ok) return retained;
+    return copyInput(retained.value, kind === "descriptor" ? predecessorCopyLimits(limits) : limits, "input", members);
+  } catch (_error) {
+    return fail("invalid_type");
+  }
+}
+
+function prepareWithContext(
+  kind: SigningKind, kid: string, claims: AnyRecord, publicKey: string, options: SigningOptions,
+  readContext: () => Result<PreparationContext>,
+): PrepareResult {
   const plain = plainVerificationInputs(options, [kind, kid, claims, publicKey], 2);
   if (!plain.ok) return plain;
   [kind, kid, claims, publicKey, options] = plain.value;
@@ -3227,17 +3281,10 @@ export function prepareSigning(
   if (!built.ok) return built;
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
-  try {
-    const retained = retainedInput(context, kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS);
-    if (!retained.ok) return retained;
-    context = retained.value as typeof context;
-  } catch (_error) {
-    return fail("invalid_type");
-  }
-  const copiedContext = copyInput(context, kind === "descriptor" ? predecessorCopyLimits(settings.value.limits) : settings.value.limits, "input", kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS);
+  const copiedContext = readContext();
   if (!copiedContext.ok) return copiedContext;
-  context = copiedContext.value;
-  const provisional = `${built.input.message.toString("utf8")}.${encodeBase64url(Buffer.alloc(row.signatureBytes))}`;
+  const context = copiedContext.value;
+  const provisional = `${built.input.message.toString("utf8")}.${Buffer.alloc(row.signatureBytes).toString("base64url")}`;
   let prepared: Result<PreparedArtifact>;
   let verifyWith: SigningContext;
   if (kind === "descriptor") {
@@ -3360,13 +3407,13 @@ function buildSigningInput(
 
   let payloadSegment: string;
   try {
-    payloadSegment = encodeBase64url(Buffer.from(canonical(record as never), "utf8"));
+    payloadSegment = Buffer.from(canonical(record as never), "utf8").toString("base64url");
   } catch (_error) {
     return { ok: false, code: "signing_input_invalid" };
   }
-  const protectedSegment = encodeBase64url(
-    Buffer.from(canonical({ alg: algorithm, kid, typ: PRODUCER_TYPES[kind] } as never), "utf8"),
-  );
+  const protectedSegment = Buffer.from(
+    canonical({ alg: algorithm, kid, typ: PRODUCER_TYPES[kind] } as never), "utf8",
+  ).toString("base64url");
   const message = Buffer.from(`${protectedSegment}.${payloadSegment}`, "utf8");
   const signatureSegmentLength = Math.ceil((row.signatureBytes * 4) / 3);
   if (message.length + 1 + signatureSegmentLength > limits.max_bytes) {
@@ -3382,7 +3429,7 @@ function buildSigningInput(
   // The provisional check: a zero signature at the row's exact length must
   // frame and bind.
   const zeroSignature = Buffer.alloc(row.signatureBytes);
-  const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
+  const provisional = `${protectedSegment}.${payloadSegment}.${zeroSignature.toString("base64url")}`;
   const decoded = decodeSigningArtifact(provisional, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
 
@@ -3468,7 +3515,7 @@ function assembleUnderLimits(input: SigningInput, signature: Buffer, limits: Lim
   const row = ALG_ROWS.find((one) => one.name === input.alg);
   if (!row) return { ok: false, code: "algorithm_unsupported" };
   if (signature.length !== row.signatureBytes) return { ok: false, code: "signature_invalid" };
-  const compact = `${input.message.toString("utf8")}.${encodeBase64url(signature)}`;
+  const compact = `${input.message.toString("utf8")}.${signature.toString("base64url")}`;
   if (Buffer.byteLength(compact) > limits.max_bytes) return { ok: false, code: "signing_input_invalid" };
   const decoded = decodeSigningArtifact(compact, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };

@@ -88,6 +88,7 @@ cannot verify green.
 | `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
 | `acceptanceSigningInput(kid, claims, chainInput, alg?)` / `partyReplacementSigningInput(kid, claims, chainInput, alg?)` / `terminationSigningInput(kid, claims, chainInput, alg?)` | Set-aware producers. The replacement producer frames the departing party's marked acceptance. |
 | `prepareSigning(kind, kid, claims, publicKey, context, options?)` | Check framing, claims, context, profile, limits, and the holder's own signing key before signing; return a `SigningPlan` |
+| `retainSigningContext(kind, context, options?)` | Validate options and context shape, then capture a bounded context before awaiting custody. On success, `value(kid, claims, publicKey)` prepares with the same result and error order as `prepareSigning`. |
 | `finishSigning(plan, signature)` | Assemble under the plan's limits and run public verification with its retained context |
 | `SigningPlan` / `SigningKind` | The plan class exposes `kind`, `input`, and `key` (`matched` or `unnamed`); kinds are `descriptor`, `acceptance`, `party_replacement`, `termination`, and `receipt` |
 | `assembleCompact(signingInput, signature)` | Assemble a validated signing input and its exact raw signature (registry-row length, framing re-decode, size gate) |
@@ -238,13 +239,13 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
 The current corpus contains 670 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/6d2a8d09a3a4d81177e9f322bb57155c5126f965/priv/conformance).
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/bb726995e1485b105792c61b3c21afddcabf9a09/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/6d2a8d09a3a4d81177e9f322bb57155c5126f965/spec/core.md).
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/bb726995e1485b105792c61b3c21afddcabf9a09/spec/core.md).
 Node and the browser bundle run all 670 cases. The browser uses the eighteen
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from

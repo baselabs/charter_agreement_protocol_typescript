@@ -73,6 +73,7 @@ export {
   decodePartyDescriptor,
   descriptorDigest,
   prepareSigning,
+  retainSigningContext,
   finishSigning,
   SigningPlan,
   type SigningKind,

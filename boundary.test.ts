@@ -240,3 +240,79 @@ test("a reported array length rejects before reading its items", () => {
   assert.equal(lengths, 1);
   assert.equal(items, 0);
 });
+
+test("an oversized algorithm profile rejects before iteration or indexed reads", () => {
+  let lengths = 0;
+  let entries = 0;
+  const algorithms = new Proxy<string[]>([], { get(target, member) {
+    if (member === "length") { lengths++; return 2 ** 32; }
+    entries++;
+    if (member === Symbol.iterator) return target[Symbol.iterator].bind(target);
+    throw new Error("oversized algorithm entry read");
+  } });
+  assert.deepEqual(api.prepareSigning("descriptor", signing.kid, {}, signing.public_key, null,
+    { profile: { algorithms } }), { ok: false, code: "invalid_profile" });
+  assert.equal(lengths, 1);
+  assert.equal(entries, 0);
+});
+
+test("byte APIs use the view's elements without caller conversion hooks", () => {
+  let hooks = 0;
+  const wrapped = (bytes: Buffer) => Object.defineProperties(Buffer.from(bytes), {
+    length: { get() { hooks++; return 0; } },
+    valueOf: { value() { hooks++; return Buffer.alloc(0); } },
+    toString: { value() { hooks++; return ""; } },
+  });
+  assert.equal(api.encodeBase64url(wrapped(signature)), encodedSignature);
+  assert.equal(api.taggedDigest("party_descriptor_content", wrapped(message)),
+    api.taggedDigest("party_descriptor_content", message));
+  assert.ok(api.verifySignature(wrapped(message), wrapped(signature), publicKey, "EdDSA"));
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, 42)]),
+    format: "der", type: "pkcs8",
+  });
+  const signingKey = createPublicKey(privateKey).export({ format: "jwk" }).x!;
+  const claims = { ...signing.claims, verification_keys: [
+    { ...signing.claims.verification_keys[0], public_key: signingKey },
+  ] };
+  const prepared = api.prepareSigning("descriptor", signing.kid, claims, signingKey, null);
+  assert.ok(prepared.ok);
+  const produced = sign(null, prepared.plan.input.message, privateKey);
+  const finished = api.finishSigning(prepared.plan, produced);
+  assert.ok(finished.ok);
+  assert.deepEqual(api.finishSigning(prepared.plan, wrapped(produced)), finished);
+  assert.equal(hooks, 0);
+});
+
+test("JSON number projections use the boxed numeric value without conversion hooks", () => {
+  const number = Object.defineProperty(new Number(1.5), "valueOf", { value() {
+    throw new Error("number conversion hook");
+  } });
+  assert.equal(api.canonical(number), "1.5");
+  assert.deepEqual(api.jsonProjection(number), { tag: "float", value: 1.5 });
+});
+
+test("retained preparation owns its context and keeps claims and keys ahead of list faults", () => {
+  const { kid, claims, public_key: key, context: { set } } = fixture("signing-prepare", "signing-assignment-departing-party");
+  const revisions = [...set.revisions];
+  const captured = api.retainSigningContext("party_replacement", { ...set, revisions });
+  assert.ok(captured.ok);
+  revisions.length = 0;
+  assert.ok(captured.value(kid, claims, key).ok);
+
+  const view = { ...set, revisions: [42] as never };
+  const invalid = api.retainSigningContext("party_replacement", view);
+  assert.ok(invalid.ok);
+  for (const [input, publicKey, code] of [
+    [{}, key, "signing_refused"], [claims, "AAAA", "signing_key_invalid"], [claims, key, "invalid_type"],
+  ] as const) {
+    assert.deepEqual(api.prepareSigning("party_replacement", kid, input, publicKey, view), { ok: false, code });
+    assert.deepEqual(invalid.value(kid, input, publicKey), { ok: false, code });
+  }
+});
+
+test("a malformed legacy acceptance precedes duplicate coordinates", () => {
+  const vote = chain.acceptances[0];
+  assert.deepEqual(api.verifyChain({ ...chain, acceptances: [vote, vote, "malformed"] }),
+    { ok: false, code: "compact_invalid" });
+});
