@@ -260,18 +260,21 @@ version tags directly.
 Send the release operator one message with the repository, full commit, version, what goes out,
 and the green `qualified` run. The release operator obtains owner approval and dispatches
 [publish.yml](https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/.github/workflows/publish.yml)
-from the default branch. The default branch accepts only commits with a green
-`qualified` run. The protected `publish` job refuses an existing version tag,
-a package name the registry lacks, a deprecated or unpublished version, and
-served bytes that differ from the inspected archive. A first publication is
-the owner's decision. The job builds the library and documentation site,
-inspects the archive, and stages missing bytes with
+from the default branch with the full qualified SHA as `release_commit`.
+The first job checks default-branch history, the successful `qualified` check and
+the absence of a version tag before checkout. The build uses that commit and the
+registry script comes from the workflow revision. The build refuses a package
+name the registry lacks, a deprecated or unpublished version, and served bytes
+that differ from the inspected archive. A first publication is the owner's
+decision. The build produces the library and documentation site and inspects
+the archive. The protected upload job verifies the archive checksum and stages
+missing bytes with
 `npm stage publish --provenance` through OIDC. No stored npm token is used.
 The package becomes public only after the owner approves the staged release
 on npmjs.com with 2FA.
 
-A held release is finished by dispatching `publish.yml` again on the same
-commit after approval. It stages only what is missing, skips an identical
+A held release is finished by dispatching `publish.yml` again with the same
+`release_commit` after approval. It stages only what is missing, skips an identical
 served version, and refuses differing bytes or a retired version. npm's OIDC
 credentials cannot read pending staged versions: a dispatch while approval
 is still pending may attempt to stage again, which npm refuses without

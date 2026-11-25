@@ -111,10 +111,14 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
     }
     for (const [job] of source.matchAll(/^  [\w-]+:\n.*?(?=^  [\w-]+:\n|(?![\s\S]))/gms)) {
       if (!/uses: (?:erlef\/setup-beam|actions\/setup-node|actions\/setup-go|oven-sh\/setup-bun)@/.test(job)) continue;
-      assert.match(job, /run: scripts\/toolchain\.sh /, path);
-      assert.match(job, /scripts\/toolchain\.sh --installed /, path);
-      for (const [setup, tool] of [["erlef/setup-beam@", "elixir"], ["erlef/setup-beam@", "erlang"], ["actions/setup-node@", "nodejs"], ["actions/setup-go@", "golang"], ["oven-sh/setup-bun@", "bun"]]) {
-        if (job.includes(setup)) assert.ok(job.includes(`"${tool}=$`), path);
+      if (path === "publish.yml" && /^  (?:upload|read-back):\n/.test(job)) {
+        assert.ok(job.includes("node-version: ${{ needs.build.outputs.nodejs }}"), path);
+      } else {
+        assert.match(job, /run: scripts\/toolchain\.sh /, path);
+        assert.match(job, /scripts\/toolchain\.sh --installed /, path);
+        for (const [setup, tool] of [["erlef/setup-beam@", "elixir"], ["erlef/setup-beam@", "erlang"], ["actions/setup-node@", "nodejs"], ["actions/setup-go@", "golang"], ["oven-sh/setup-bun@", "bun"]]) {
+          if (job.includes(setup)) assert.ok(job.includes(`"${tool}=$`), path);
+        }
       }
       for (const [, value] of job.matchAll(/^          (?:elixir|otp|node|bun|go)-version: ([^\n]+)$/gm)) {
         assert.ok(value.startsWith("${{ "), path);
@@ -124,9 +128,13 @@ test("CI reads exact runtime versions only through the pinned shared reader", ()
 });
 
 const workflow = readFileSync(new URL("./.github/workflows/publish.yml", import.meta.url), "utf8");
-const publish = workflow.split(/^(?=\S| {2}\S)/m).find((block) => block.startsWith("  publish:\n"));
-assert.ok(publish, "expected a publish job");
-const steps = publish.match(/^      - [^\n]*\n(?: {8}[^\n]*\n|\n(?=\n* {8}))*/gm) ?? [];
+const jobs = Object.fromEntries(workflow.split(/^(?= {2}\S)/m)
+  .flatMap((block) => {
+    const match = /^ {2}(release|build|upload|read-back):\n/.exec(block);
+    return match ? [[match[1], block]] : [];
+  }));
+const jobSteps = (job) => job.match(/^      - [^\n]*\n(?: {8}[^\n]*\n|\n(?=\n* {8}))*/gm) ?? [];
+const steps = [jobs.build, jobs.upload, jobs["read-back"]].flatMap(jobSteps);
 const oneStep = (pattern) => {
   const found = steps.filter((step) => pattern.test(step));
   assert.equal(found.length, 1, `expected one step matching ${pattern}`);
@@ -135,13 +143,13 @@ const oneStep = (pattern) => {
 
 test("publication is dispatch-only and leaves releases to the maintainers", () => {
   assert.match(workflow, /^on:\n  workflow_dispatch:\s*\n/m);
-  assert.doesNotMatch(workflow, /^\s*(push|tags|release):/m);
+  assert.doesNotMatch(workflow, /^  (push|tags):/m);
   assert.doesNotMatch(workflow, /gh\s+release\s+create|actions\/create-release|softprops\/action-gh-release|ncipollo\/release-action|createRelease|POST[^\n]*\/releases/);
   assert.match(workflow, /^    timeout-minutes: 90 # no green run yet$/m);
 });
 
-test("the consumer files leave as one pinned release-assets artifact before staging", () => {
-  const assets = oneStep(/uses: actions\/upload-artifact@/);
+test("read-back publishes one pinned consumer release-assets artifact", () => {
+  const assets = oneStep(/^          name: release-assets$/m);
   assert.match(assets, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\.6\.2/);
   assert.match(assets, /^          name: release-assets$/m);
   assert.match(assets, /^          if-no-files-found: error$/m);
@@ -150,19 +158,18 @@ test("the consumer files leave as one pinned release-assets artifact before stag
   assert.match(assets, /^            artifacts\/SHA256SUMS$/m);
   assert.ok(steps.indexOf(oneStep(/run: npm run check:package/)) < steps.indexOf(assets));
   assert.ok(steps.indexOf(oneStep(/run: sha256sum --check SHA256SUMS/)) < steps.indexOf(assets));
-  assert.ok(steps.indexOf(assets) < steps.indexOf(oneStep(/run: npm stage publish /)));
+  assert.ok(steps.indexOf(oneStep(/run: npm stage publish /)) < steps.indexOf(assets));
 });
 
 test("the exact archive is planned after inspection, staged only for upload, then read back", () => {
-  const plan = oneStep(/node scripts\/npm-release-state\.mjs --plan /);
+  const plan = oneStep(/node "\$RUNNER_TEMP\/release-workflow\/npm-release-state\.mjs" --plan /);
   const stage = oneStep(/run: npm stage publish /);
-  const served = oneStep(/node scripts\/npm-release-state\.mjs --served /);
+  const served = oneStep(/node "\$GITHUB_WORKSPACE\/release-workflow\/scripts\/npm-release-state\.mjs" --served /);
   assert.match(plan, /^        id: plan$/m);
-  assert.match(stage, /^        if: steps\.plan\.outputs\.state == 'upload'$/m);
-  assert.match(served, /^        if: \$\{\{ !cancelled\(\) && steps\.plan\.outcome == 'success' \}\}$/m);
+  assert.match(stage, /^        if: needs\.build\.outputs\.state == 'upload'$/m);
   for (const step of [plan, served]) {
-    assert.match(step, /RELEASE_NAME: \$\{\{ steps\.package\.outputs\.name \}\}/);
-    assert.match(step, /RELEASE_VERSION: \$\{\{ steps\.package\.outputs\.version \}\}/);
+    assert.match(step, /RELEASE_NAME: \$\{\{ needs\.release\.outputs\.name \}\}/);
+    assert.match(step, /RELEASE_VERSION: \$\{\{ needs\.release\.outputs\.version \}\}/);
     assert.match(step, /"\$RELEASE_NAME" "\$RELEASE_VERSION" \.\/artifacts\/package\.tgz/);
   }
   assert.match(stage, /npm stage publish \.\/artifacts\/package\.tgz --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
@@ -186,11 +193,38 @@ test("the exact archive is planned after inspection, staged only for upload, the
   }
   assert.ok(steps.indexOf(plan) < steps.indexOf(stage));
   assert.ok(steps.indexOf(stage) < steps.indexOf(served));
-  const tag = oneStep(/'ls-remote', '--tags', 'origin', `v\$\{version\}`/);
-  assert.match(tag, /^        id: package$/m);
-  assert.ok(steps.indexOf(tag) < steps.indexOf(inspection));
-  assert.ok(tag.includes("const {name, version} = JSON.parse(readFileSync('package.json', 'utf8'));"));
-  assert.ok(tag.includes("appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\\n`);"));
-  assert.match(tag, /assert\.equal\(tags\.trim\(\), '', `v\$\{version\} is already tagged`\)/);
-  assert.match(tag, /appendFileSync\(process\.env\.GITHUB_OUTPUT, `name=\$\{name\}\\nversion=\$\{version\}\\n`\)/);
+});
+
+test("qualification guards the release checkout and workflow-owned scripts", () => {
+  assert.match(workflow, /workflow_dispatch:\n    inputs:\n      release_commit:\n        description: [^\n]+\n        required: true\n        type: string\n/);
+  const guard = jobs.release;
+  const actorFilter = `    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)`;
+  for (const job of Object.values(jobs)) assert.ok(job.includes(actorFilter));
+  assert.equal([...workflow.matchAll(/^    environment:/gm)].length, 1);
+  assert.match(guard, /checks: read/);
+  assert.ok(guard.includes('.conclusion == "success"'));
+  assert.ok(guard.includes("| .head_sha"));
+  assert.ok(guard.includes("GH_TOKEN: ${{ github.token }}"));
+  const checks = ["refs/heads/$DEFAULT_BRANCH", "^[0-9a-f]{40}$", "/compare/", "check-runs?check_name=qualified", "/contents/package.json?ref=$RELEASE_COMMIT", "matching-refs/tags/"];
+  let previous = -1;
+  for (const marker of checks) {
+    const position = guard.indexOf(marker);
+    assert.ok(position > previous, marker);
+    previous = position;
+  }
+  assert.doesNotMatch(guard, /actions\/checkout|npm run build/);
+  assert.match(jobs.build, /^    needs: release$/m);
+  assert.match(jobs.upload, /^    needs: \[release, build\]$/m);
+  assert.match(jobs["read-back"], /^    needs: \[release, build, upload\]$/m);
+  assert.match(jobs.upload, /^    environment: publish$/m);
+  assert.doesNotMatch(jobs.build + jobs["read-back"], /^    environment:/m);
+  assert.doesNotMatch(jobs.build + jobs["read-back"], /id-token: write|secrets\./);
+  assert.doesNotMatch(jobs.upload, /actions\/checkout@|npm ci|npm run |scripts\/toolchain\.sh/);
+  assert.match(jobs.upload, /sha256sum --check --strict SHA256SUMS/);
+  assert.match(jobs.upload, /npm stage publish .*--ignore-scripts/);
+  assert.ok(jobs.build.includes("ref: ${{ inputs.release_commit }}"));
+  assert.ok(jobs.build.includes("VERSION: ${{ needs.release.outputs.version }}"));
+  assert.match(jobs.build, /git show "\$GITHUB_SHA:scripts\/npm-release-state\.mjs"/);
+  assert.ok(jobs["read-back"].includes("ref: ${{ github.sha }}"));
+  assert.ok(jobs.build.indexOf("actions/checkout@") < jobs.build.indexOf("npm run build:site"));
 });

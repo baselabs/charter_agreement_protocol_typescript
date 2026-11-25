@@ -2,6 +2,11 @@ name: Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Qualified release commit (40 lowercase hexadecimal characters)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,15 +20,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish the inspected archive with provenance
+  release:
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      name: ${{ steps.validate.outputs.name }}
+    steps:
+      - name: Validate the qualified release commit
+        id: validate
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || { echo "::error::Publication requires the default branch"; exit 1; }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_commit must be 40 lowercase hexadecimal characters"; exit 1; }
+          repo="repos/$GITHUB_REPOSITORY"
+          merge_base=$(gh api "$repo/compare/$RELEASE_COMMIT...$DEFAULT_BRANCH" --jq '.merge_base_commit.sha')
+          test "$merge_base" = "$RELEASE_COMMIT" || { echo "::error::release_commit is outside the default branch history"; exit 1; }
+          gh api --paginate "$repo/commits/$RELEASE_COMMIT/check-runs?check_name=qualified&status=completed&filter=all&per_page=100" \
+            --jq '.check_runs[] | select(.name == "qualified" and .conclusion == "success" and .app.slug == "github-actions") | .head_sha' |
+            grep -Fx "$RELEASE_COMMIT" >/dev/null || { echo "::error::release_commit has no successful qualified check"; exit 1; }
+          package=$(gh api "$repo/contents/package.json?ref=$RELEASE_COMMIT" --jq '.content' | base64 --decode)
+          version=$(jq -er '.version | strings' <<< "$package")
+          name=$(jq -er '.name | strings' <<< "$package")
+          [[ "$name" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "::error::release_commit does not declare the expected package name format"; exit 1; }
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::release_commit does not declare a release version"; exit 1; }
+          tags=$(gh api "$repo/git/matching-refs/tags/v$version" --jq '.[].ref')
+          if grep -Fx "refs/tags/v$version" <<< "$tags" >/dev/null; then
+            echo "::error::This release version is already tagged"
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
     timeout-minutes: 90 # no green run yet
-    environment: publish
     permissions:
       contents: read
-      id-token: write
+    env:
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      VERSION: ${{ needs.release.outputs.version }}
+    outputs:
+      nodejs: ${{ steps.toolchain.outputs.nodejs }}
+      state: ${{ steps.plan.outputs.state }}
     steps:
       - name: Refuse a ref outside the default branch
         env:
@@ -33,8 +81,15 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_commit }}
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Load release scripts from the workflow revision
+        run: |
+          mkdir "$RUNNER_TEMP/release-workflow"
+          git show "$GITHUB_SHA:scripts/npm-release-state.mjs" > "$RUNNER_TEMP/release-workflow/npm-release-state.mjs"
+
       - name: Read runtime versions
         id: toolchain
         run: scripts/toolchain.sh .tool-versions >> "$GITHUB_OUTPUT"
@@ -54,19 +109,6 @@ jobs:
         run: npm install --global npm@11.19.0 --ignore-scripts
       - name: Install with the frozen lockfile
         run: npm ci
-      - name: Refuse a tagged version
-        id: package
-        run: |
-          node --input-type=module <<'JAVASCRIPT'
-          import assert from 'node:assert/strict';
-          import {appendFileSync, readFileSync} from 'node:fs';
-          import {execFileSync} from 'node:child_process';
-          const {name, version} = JSON.parse(readFileSync('package.json', 'utf8'));
-          const tags = execFileSync('git', ['ls-remote', '--tags', 'origin', `v${version}`], {encoding: 'utf8'});
-          assert.equal(tags.trim(), '', `v${version} is already tagged`);
-          appendFileSync(process.env.GITHUB_OUTPUT, `name=${name}\nversion=${version}\n`);
-          appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\n`);
-          JAVASCRIPT
       - name: Build the library and documentation site
         run: |
           npm run build
@@ -123,10 +165,86 @@ jobs:
       - name: Plan only missing registry uploads
         id: plan
         env:
-          RELEASE_NAME: ${{ steps.package.outputs.name }}
-          RELEASE_VERSION: ${{ steps.package.outputs.version }}
-        run: node scripts/npm-release-state.mjs --plan "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
-      - name: Preserve the consumer-verified release files
+          RELEASE_NAME: ${{ needs.release.outputs.name }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: node "$RUNNER_TEMP/release-workflow/npm-release-state.mjs" --plan "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
+      - name: Pass inspected archives to the upload job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: inspected-release
+          path: |
+            artifacts/package.tgz
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  upload:
+    needs: [release, build]
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    environment: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ needs.build.outputs.nodejs }}
+          package-manager-cache: false
+
+      - name: Download inspected release archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: inspected-release
+          path: artifacts
+
+      - name: Verify inspected archive checksums
+        working-directory: artifacts
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Pin archive tooling
+        run: npm install --global npm@11.19.0 --ignore-scripts
+      - name: Publish to npm with trusted publishing
+        if: needs.build.outputs.state == 'upload'
+        run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+
+  read-back:
+    needs: [release, build, upload]
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: release-workflow
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ needs.build.outputs.nodejs }}
+          package-manager-cache: false
+
+      - name: Download inspected release archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: inspected-release
+          path: artifacts
+
+      - name: Verify inspected archive checksums
+        working-directory: artifacts
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Read back the served archive integrity
+        env:
+          RELEASE_NAME: ${{ needs.release.outputs.name }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: node "$GITHUB_WORKSPACE/release-workflow/scripts/npm-release-state.mjs" --served "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
+
+      - name: Upload consumer release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets
@@ -135,12 +253,3 @@ jobs:
             artifacts/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
-      - name: Publish to npm with trusted publishing
-        if: steps.plan.outputs.state == 'upload'
-        run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
-      - name: Read back the served archive integrity
-        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
-        env:
-          RELEASE_NAME: ${{ steps.package.outputs.name }}
-          RELEASE_VERSION: ${{ steps.package.outputs.version }}
-        run: node scripts/npm-release-state.mjs --served "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
