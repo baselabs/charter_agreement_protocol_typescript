@@ -60,7 +60,7 @@ test("browser bundle runs every certified case with its explicit substrate verdi
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
   assert.equal(corpus.cases.length, 553);
-  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 8);
+  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 10);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
   }

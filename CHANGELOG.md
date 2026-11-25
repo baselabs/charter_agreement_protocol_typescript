@@ -5,6 +5,9 @@ documented here.
 
 ## [Unreleased]
 
+- Check the canonical limited-substrate outcomes for receipt preparation
+  when the browser cannot verify the supplied ML-DSA chain.
+
 - Expose the receipt deployment match and retained optional extension names
   through `verifyReceipt`. The browser corpus uses the public verifier and
   governing revision APIs.
