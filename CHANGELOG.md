@@ -5,6 +5,10 @@ documented here.
 
 ## [Unreleased]
 
+- Breaking TypeScript change: `SigningKind` and `SigningPlan.kind` include
+  `"party_replacement"`. Exhaustive switches over either type need a branch
+  for the new operation.
+
 - Verify revision-8 party quorums, declared assignments, and receipt ownership.
   Prepare assignor acceptances through the same checked signing path.
 
@@ -23,7 +27,7 @@ documented here.
   governing revision APIs.
 
 - Pin the canonical CAP corpus by source commit and index SHA-256. Run
-  all 713 cases through the browser bundle, including the declared
+  all 773 cases through the browser bundle, including the declared
   limited-substrate outcomes and new receipt and lifecycle verdicts.
 
 - Read CI runtime defaults and compatibility lanes only through the shared

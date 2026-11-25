@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "Ggt_areMitPAlEnp36YW1BB-eIf2WiGcwiBhLsnsytY";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "EIax4Ke24qt7ujEbFadp6_lFlidTfkyj-vp_y_3eh-w";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -3268,7 +3268,17 @@ function copySigningContext(kind: SigningKind, context: PreparationContext, limi
   try {
     const retained = retainedInput(context, members);
     if (!retained.ok) return retained;
-    return copyInput(retained.value, kind === "descriptor" ? predecessorCopyLimits(limits) : limits, "input", members);
+    const copied = copyInput(retained.value, kind === "descriptor" ? predecessorCopyLimits(limits) : limits, "input", members);
+    if (kind !== "descriptor" || !copied.ok || copied.value === null) return copied;
+    const previous = copied.value;
+    if (!Array.isArray(previous.lineage)) return fail("invalid_type");
+    // Keep the position of a bad entry for the verifier's lineage walk.
+    previous.lineage = previous.lineage.map((entry: unknown) => typeof entry === "string" ? entry : null);
+    for (const field of ["digest", "descriptor_digest"]) {
+      const digest = previous[field];
+      if (digest !== null && digest !== undefined && typeof digest !== "string") previous[field] = "";
+    }
+    return copied;
   } catch (_error) {
     return fail("invalid_type");
   }

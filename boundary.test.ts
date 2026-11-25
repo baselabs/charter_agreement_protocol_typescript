@@ -351,3 +351,14 @@ test("set-aware producers frame legacy claims before checking list types", () =>
     assert.deepEqual(build(kid, claims, context), { ok: false, code: "invalid_type" });
   }
 });
+
+test("standalone envelope decoding reports revision-eight signature lengths", () => {
+  for (const kind of ["acceptance", "termination"] as const) {
+    const { compact } = fixture(`${kind}-verify`, `quorum-${kind}-envelope-signature-length`);
+    assert.deepEqual(api.decodeArtifact(compact), { ok: false, code: "signature_invalid" });
+    const [, payload, signature] = compact.split(".");
+    const header = Buffer.from(`{"alg":"unknown","kid":"k","typ":"cap+${kind}"}`).toString("base64url");
+    const badHeader = `${header}.${payload}.${signature}`;
+    assert.deepEqual(api.decodeArtifact(badHeader), { ok: false, code: "protected_header_invalid" });
+  }
+});
