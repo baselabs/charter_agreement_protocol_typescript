@@ -252,7 +252,7 @@ test("receipt corpus runner applies caller limits to its chain context", async (
 });
 
 test("public signing preparation matches artifact corpus projections independently", async (t) => {
-  assert.equal(cases.length, 107);
+  assert.equal(cases.length, 109);
   for (const one of cases.filter((one) => !one.id.startsWith("signing-unknown-") && !Object.hasOwn(one.input, "value") &&
     (!one.input.context?.chain || Object.keys(one.input.context.chain).length === 4))) await t.test(one.id, () => {
     const input = one.input;
