@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "A_LEDCADvWgWJpxItQvIvFg0463hsL_5LsKn9rB8VQY";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "vAtSVoJTym4X7zDzNDnzVgknWn6hiooo1cgCymewoDM";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -529,7 +529,7 @@ function decodeJws(compact: unknown, limits: Limits = DEFAULT_LIMITS, expectedTy
   if (canonicalTextError(payloadValue.value, payloadBytes.value.toString())) return fail("non_canonical_bytes");
   if (!isRecord(payloadValue.value)) return fail("protected_header_invalid");
   const payload = payloadValue.value as AnyRecord;
-  if (payload.protocol_revision === 8 && header.typ !== "cap+party") return fail("protected_header_invalid");
+  if (payload.protocol_revision === 8 && !["cap+party", "cap+acceptance", "cap+termination"].includes(header.typ)) return fail("protected_header_invalid");
   if (typeof payload.protocol_revision !== "number" || !Number.isInteger(payload.protocol_revision) || !algBinds(header.alg, payload.protocol_revision)) return fail("protected_header_invalid");
   const row = ALG_ROWS.find((one) => one.name === header.alg)!;
   if (signatureBytes.value.length !== row.signatureBytes) return fail("signature_invalid");
@@ -879,7 +879,7 @@ function descriptorViews(compacts: string[], settings: Settings = DEFAULT_SETTIN
     const id = decoded.value.payload.party_id ?? taggedHash("party_descriptor_content", decoded.value.payloadBytes);
     groups.set(id, [...(groups.get(id) ?? []), compact]);
   }
-  if (groups.size !== 2) return fail("chain_invalid");
+  if (groups.size < 2) return fail("chain_invalid");
   const histories = [];
   for (const id of [...groups.keys()].sort()) {
     const chain = descriptorChain(groups.get(id)!, settings);
@@ -1010,6 +1010,34 @@ const REVISION_SCHEMA: FieldRule[] = [
   { name: "supersedes", type: "array", required: false, cardinality: [0, 8] }, field("extensions", "object"),
 ];
 
+const QUORUM_FIELDS: FieldRule[] = [
+  { name: "roles", type: "array", required: true, cardinality: [0, 64] },
+  field("threshold", "integer", integerRange(0, 64)),
+];
+const QUORUM_REVISION_SCHEMA: FieldRule[] = [
+  ...REVISION_SCHEMA.map((rule) => {
+    if (rule.name === "protocol_revision") return field("protocol_revision", "integer", integerRange(8, 8));
+    if (rule.name === "parties") {
+      return nestedField("parties", "array", [
+        digestField("party_descriptor_digest"), roleField("role"),
+        field("participation", "string", oneOf("acceptor", "arbiter")),
+      ], [2, 64]);
+    }
+    if (rule.name === "termination_rules") {
+      return nestedField("termination_rules", "object", [
+        ...(rule.nested ?? []), nestedField("quorum", "object", QUORUM_FIELDS),
+      ]);
+    }
+    return rule;
+  }),
+  nestedField("acceptance_quorum", "object", QUORUM_FIELDS),
+  { ...nestedField("party_replacements", "array", [
+    roleField("role"), digestField("assignor_party_id"),
+    digestField("assignor_descriptor_digest"), digestField("assignee_descriptor_digest"),
+    nestedField("assent_quorum", "object", QUORUM_FIELDS),
+  ], [0, 64]), required: false },
+];
+
 const VERIFICATION_KEY_FIELDS: FieldRule[] = [
   field("key_id", "string", (v) => /^[A-Za-z0-9._~-]{1,128}$/.test(v)),
   field("algorithm", "string", oneOf("Ed25519", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87")),
@@ -1040,6 +1068,14 @@ const TERMINATION_SCHEMA: FieldRule[] = [
   digestField("governing_revision_digest"), digestField("party_descriptor_digest"),
   roleField("party_role"), roleField("reason_code"), timeField("effective_at"), timeField("issued_at"), digestField("detail_digest", false),
 ];
+const quorumRevisionField = (rule: FieldRule) => rule.name === "protocol_revision"
+  ? field("protocol_revision", "integer", integerRange(8, 8))
+  : rule;
+const QUORUM_ACCEPTANCE_SCHEMA = [
+  ...ACCEPTANCE_SCHEMA.map(quorumRevisionField),
+  field("replacement_role", "string", stringBytes(1, 128), false),
+];
+const QUORUM_TERMINATION_SCHEMA = TERMINATION_SCHEMA.map(quorumRevisionField);
 const RECEIPT_SCHEMA: FieldRule[] = [
   field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
   safeIntegerField("revision_number"), digestField("revision_digest"), roleField("issuing_party_role"), roleField("agent_party_role"), digestField("deployment_digest"),
@@ -1101,16 +1137,83 @@ function validTaggedDigest(value: unknown): value is string {
   return typeof value === "string" && digestPattern(value) && strictBase64url(value.slice(8)).ok;
 }
 
+type QuorumRule = { roles: string[]; threshold: number };
+type QuorumParty = { role: string; party_descriptor_digest: string; participation?: string };
+type PartyReplacement = {
+  role: string;
+  assignor_party_id: string;
+  assignor_descriptor_digest: string;
+  assignee_descriptor_digest: string;
+  assent_quorum: QuorumRule;
+};
+
+function orderedRoles(roles: string[]): boolean {
+  return roles.every((role, index) => index === 0 || Buffer.compare(
+    Buffer.from(roles[index - 1]), Buffer.from(role),
+  ) < 0);
+}
+
+function validQuorum(rule: QuorumRule, eligible: string[], minimum: number): boolean {
+  return rule.roles.every((role) => typeof role === "string" && eligible.includes(role)) &&
+    orderedRoles(rule.roles) && rule.threshold >= minimum && rule.threshold <= rule.roles.length;
+}
+
+function replacements(value: AnyRecord): PartyReplacement[] {
+  return value.party_replacements ?? [];
+}
+
+function validQuorumRevision(value: AnyRecord, roles: string[]): boolean {
+  const records = replacements(value);
+  const changed = records.map((record) => record.role);
+  const acceptance: QuorumRule = value.acceptance_quorum;
+  const acceptors = (value.parties as QuorumParty[])
+    .filter((party) => party.participation === "acceptor").map((party) => party.role);
+  const remaining = acceptance.roles.filter((role) => !changed.includes(role));
+  const minimum = changed.length === roles.length ? 0 : 1;
+  return orderedRoles(roles) &&
+    validQuorum(acceptance, acceptors, 1) &&
+    validQuorum(value.termination_rules.quorum, roles, 1) &&
+    orderedRoles(changed) &&
+    records.every((record) => acceptance.roles.includes(record.role) &&
+      validQuorum(record.assent_quorum, remaining, minimum) &&
+      [record.assignor_party_id, record.assignor_descriptor_digest, record.assignee_descriptor_digest]
+        .every(validTaggedDigest));
+}
+
+function acceptanceRule(revision: RevisionRecord): QuorumRule {
+  const parties = revision.value.parties as QuorumParty[];
+  return revision.value.acceptance_quorum ?? { roles: parties.map((party) => party.role), threshold: parties.length };
+}
+
+function terminationRule(revision: RevisionRecord): QuorumRule {
+  const parties = revision.value.parties as QuorumParty[];
+  return revision.value.termination_rules.quorum ?? { roles: parties.map((party) => party.role), threshold: 1 };
+}
+
+function quorumMet(rule: QuorumRule, roles: string[]): boolean {
+  const votes = new Set(roles);
+  return rule.roles.filter((role) => votes.has(role)).length >= rule.threshold;
+}
+
+function acceptanceBindingMatches(revision: RevisionRecord, claims: AnyRecord): boolean {
+  if (claims.replacement_role === undefined) return refusalPartyMatches(revision, claims);
+  return claims.replacement_role === claims.party_role &&
+    replacements(revision.value).some((record) => record.role === claims.replacement_role &&
+      record.assignor_descriptor_digest === claims.party_descriptor_digest);
+}
+
 function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Result<{ value: AnyRecord; bytes: Buffer; digest: string }> {
   if (typeof text !== "string") return fail("invalid_type");
   const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
-  const integerError = integerTokenError(decoded.value, REVISION_SCHEMA);
+  const schema = isRecord(decoded.value) && decoded.value.protocol_revision === 8
+    ? QUORUM_REVISION_SCHEMA : REVISION_SCHEMA;
+  const integerError = integerTokenError(decoded.value, schema);
   if (integerError) return fail(integerError);
   const encoding = canonicalTextError(decoded.value, text);
   if (encoding) return fail(encoding);
   const value = decoded.value as AnyRecord;
-  const shape = schemaError(value, REVISION_SCHEMA);
+  const shape = schemaError(value, schema);
   if (shape) return fail(shape);
   const digests = [value.charter_id, value.prev_revision_digest, value.legal_text.content_digest, value.attribution_declaration.detail_digest, ...value.parties.map((party: any) => party.party_descriptor_digest)].filter((v) => v !== undefined);
   if (digests.some((v) => !validTaggedDigest(v))) return fail("revision_invalid");
@@ -1127,14 +1230,15 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   if (!EXTENSION_PROFILES.some((profile) => profile.namespace === value.receipt_profile && profile.surface === "receipt" && profile.state === "active" && profile.criticality === "optional")) return fail("revision_invalid");
   if (value.revision_number === 1 ? (value.charter_id !== undefined || value.prev_revision_digest !== undefined || supersedes.length !== 0) : (value.charter_id === undefined || value.prev_revision_digest === undefined)) return fail("revision_invalid");
   if (until && compareTimestamps(from, until) >= 0) return fail("revision_invalid");
-  const roles = value.parties.map((party: any) => party.role);
+  const roles = (value.parties as QuorumParty[]).map((party) => party.role);
+  if (value.protocol_revision === 8 && !validQuorumRevision(value, roles)) return fail("revision_invalid");
   if (new Set(value.parties.map((party: any) => party.party_descriptor_digest)).size !== value.parties.length) return fail("revision_invalid");
   if (new Set(roles).size !== roles.length || value.abp_bindings.some((binding: any) => !roles.includes(binding.party_role))) return fail("revision_invalid");
   const bytes = Buffer.from(text);
   return ok(factsRecord({ value, bytes, digest: taggedHash("charter_revision_content", bytes), protocol_revision: value.protocol_revision }));
 }
 
-function prepareAcceptance(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+function prepareAcceptance(compact: string, revision: RevisionRecord, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
   if (!decoded.ok) return decoded;
   const claims = decoded.value.payload;
@@ -1142,8 +1246,7 @@ function prepareAcceptance(compact: string, revision: { value: AnyRecord; digest
   if (acceptanceShape) return fail(acceptanceShape);
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   const expectedCharter = revision.value.charter_id || revision.digest;
-  const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
-  const mismatch = claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || claims.party_role !== party?.role || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
+  const mismatch = (claims.protocol_revision === 8) !== (revision.value.protocol_revision === 8) || claims.charter_id !== expectedCharter || claims.revision_number !== revision.value.revision_number || claims.revision_digest !== revision.digest || !acceptanceBindingMatches(revision, claims) || (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined);
   if (mismatch) return fail("acceptance_claims_mismatch");
   if (!descriptor) return fail("acceptance_claims_mismatch");
   const acceptanceAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
@@ -1152,7 +1255,7 @@ function prepareAcceptance(compact: string, revision: { value: AnyRecord; digest
   return preparedArtifact(decoded.value, descriptor.payload.verification_keys, facts, "acceptance_invalid");
 }
 
-function acceptanceFromCompact(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
+function acceptanceFromCompact(compact: string, revision: RevisionRecord, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   return finishPreparedArtifact(prepareAcceptance(compact, revision, chain, settings), settings);
 }
 
@@ -1165,7 +1268,8 @@ function prepareTermination(compact: string, revision: { value: AnyRecord; diges
   const descriptor = chain.descriptors.find((one) => one.digest === claims.party_descriptor_digest);
   const expectedCharter = revision.value.charter_id || revision.digest;
   const party = revision.value.parties.find((one: any) => one.party_descriptor_digest === claims.party_descriptor_digest);
-  if (claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
+  if ((claims.protocol_revision === 8) !== (revision.value.protocol_revision === 8) ||
+      claims.charter_id !== expectedCharter || claims.governing_revision_digest !== revision.digest || claims.party_role !== party?.role || !revision.value.termination_rules.reason_codes.includes(claims.reason_code)) return fail("termination_claims_mismatch");
   if (!descriptor) return fail("termination_claims_mismatch");
   const terminationAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (terminationAdmission) return fail(terminationAdmission);
@@ -1366,7 +1470,49 @@ function chainWithOptions(input: AnyRecord, options: VerificationOptions = {}): 
   return settings.ok ? chainFromInput(input, settings.value) : settings;
 }
 
-function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string }> {
+function validPartyTransition(
+  revision: RevisionRecord, previous: RevisionRecord | undefined, owners: Map<string, string>,
+): boolean {
+  if (revision.value.protocol_revision !== 8) return previous?.value.protocol_revision !== 8;
+  const parties = revision.value.parties as QuorumParty[];
+  const records = replacements(revision.value);
+  if (!parties.every((party) => owners.has(party.party_descriptor_digest))) return false;
+  if (!previous) return records.length === 0;
+
+  const old = previous.value.parties as QuorumParty[];
+  const oldOwners = new Set(old.map((party) => owners.get(party.party_descriptor_digest)));
+  return old.length === parties.length && parties.every((party) => {
+    const predecessor = old.find((binding) => binding.role === party.role);
+    if (!predecessor || (predecessor.participation ?? "acceptor") !== party.participation) return false;
+    const record = records.find((one) => one.role === party.role);
+    const from = owners.get(predecessor.party_descriptor_digest);
+    const to = owners.get(party.party_descriptor_digest);
+    if (from === undefined || to === undefined) return false;
+    if (from === to) return record === undefined;
+    return record !== undefined && !oldOwners.has(to) &&
+      record.assignor_party_id === from &&
+      record.assignor_descriptor_digest === predecessor.party_descriptor_digest &&
+      record.assignee_descriptor_digest === party.party_descriptor_digest;
+  });
+}
+
+function revisionAssent(revision: RevisionRecord, matches: AnyRecord[], inherited?: RevisionRecord) {
+  const records = replacements(revision.value);
+  const changed = new Set(records.map((record) => record.role));
+  const incoming = matches.filter((one) => one.claims.replacement_role === undefined)
+    .map((one) => one.claims.party_role as string);
+  const outgoing = matches.filter((one) => one.claims.replacement_role !== undefined)
+    .map((one) => one.claims.party_role as string);
+  const prior = outgoing.concat(incoming.filter((role) => !changed.has(role)));
+  const quorum = quorumMet(acceptanceRule(revision), incoming) &&
+    (revision.value.protocol_revision !== 8 || inherited === undefined || quorumMet(acceptanceRule(inherited), prior));
+  const missing = records.length === 0 ? [] : (revision.value.parties as QuorumParty[])
+    .map((party) => party.role)
+    .filter((role) => !incoming.includes(role) || (changed.has(role) && !outgoing.includes(role)));
+  return { quorum, missing };
+}
+
+function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string; assignmentStatuses: Record<string, { status: string; missingAssentRoles: string[] }> }> {
   if (!isRecord(input)) return fail("chain_invalid");
   const bounded = boundedArtifacts([input.revisions, input.acceptances, input.descriptors, input.terminations], settings.limits);
   if (bounded) return fail(bounded);
@@ -1403,11 +1549,14 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
       }
     }
   }
-  const owners = new Map(descriptors.value.descriptors.map((one) => [one.digest, one.payload.party_id ?? one.digest]));
+  if (descriptors.value.histories.length !== 2 &&
+      revisions.every((revision) => revision.value.protocol_revision !== 8)) return fail("chain_invalid");
+  const owners = new Map<string, string>(descriptors.value.descriptors.map((one) => [one.digest, one.payload.party_id ?? one.digest]));
   const named = new Set<string>();
   for (const revision of revisions) {
     const parties = revision.value.parties.map((party: AnyRecord) => owners.get(party.party_descriptor_digest)).filter((id: string | undefined) => id !== undefined);
-    if (new Set(parties).size !== parties.length) return fail("chain_invalid");
+    if (new Set(parties).size !== parties.length ||
+        !validPartyTransition(revision, byDigest.get(revision.value.prev_revision_digest), owners)) return fail("chain_invalid");
     for (const id of parties) named.add(id);
   }
   if (descriptors.value.histories.some((history) => !named.has(history.descriptors[0].payload.party_id ?? history.descriptors[0].digest))) return fail("chain_invalid");
@@ -1426,17 +1575,42 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     coordinates.add(coordinate);
     acceptances.push(verified.value);
   }
-  const accepted = revisions.filter((revision) => {
-    const expected = new Set(revision.value.parties.map((party: any) => `${party.party_descriptor_digest}\0${party.role}`));
-    const actual = new Set(acceptances
-      .filter((one) => one.claims.revision_digest === revision.digest)
-      .map((one) => `${one.claims.party_descriptor_digest}\0${one.claims.party_role}`));
-    if (actual.size !== expected.size) return false;
-    for (const entry of [...expected] as string[]) if (!actual.has(entry)) return false;
-    return true;
-  });
-  const acceptedSet = new Set(accepted.map((one) => one.digest));
-  if (accepted.some((one) => (one.value.supersedes ?? []).some((digest: string) => !acceptedSet.has(digest)))) return fail("chain_invalid");
+  const votesByRevision = new Map<string, AnyRecord[]>();
+  for (const vote of acceptances) {
+    const digest = vote.claims.revision_digest;
+    const votes = votesByRevision.get(digest) ?? [];
+    votes.push(vote);
+    votesByRevision.set(digest, votes);
+  }
+  const acceptedSet = new Set<string>();
+  const signed = new Set<string>();
+  const inherited = new Map<string, RevisionRecord | undefined>();
+  const assignmentStatuses: Record<string, { status: string; missingAssentRoles: string[] }> = {};
+  const byRevisionNumber = [...revisions].sort((left, right) =>
+    left.value.revision_number - right.value.revision_number);
+  for (const revision of byRevisionNumber) {
+    const value = revision.value;
+    const previous = inherited.get(value.prev_revision_digest);
+    const rawPrevious = byDigest.get(value.prev_revision_digest);
+    const matches = votesByRevision.get(revision.digest) ?? [];
+    const { quorum, missing } = revisionAssent(revision, matches, previous ?? rawPrevious);
+    const ready = quorum && missing.length === 0;
+    const revisionEight = value.protocol_revision === 8;
+    if (ready) signed.add(revision.digest);
+    const eligible = ready && (!revisionEight || previous === rawPrevious);
+    if (eligible) acceptedSet.add(revision.digest);
+    inherited.set(revision.digest, eligible ? revision : previous);
+    if (replacements(value).length > 0) {
+      assignmentStatuses[revision.digest] = { status: missing.length === 0 ? "accepted" : "pending", missingAssentRoles: missing };
+    }
+  }
+  const accepted = revisions.filter((one) => acceptedSet.has(one.digest));
+  for (const revision of revisions) {
+    const revisionEight = revision.value.protocol_revision === 8;
+    const targets = revisionEight ? signed : acceptedSet;
+    if (targets.has(revision.digest) &&
+        (revision.value.supersedes ?? []).some((digest: string) => !targets.has(digest))) return fail("chain_invalid");
+  }
   const terminations: any[] = [];
   for (const compact of ((input.terminations as string[]) || [])) {
     const decoded = decodeJws(compact, settings.limits, "cap+termination");
@@ -1471,7 +1645,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   };
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
-  return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId }));
+  return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId, assignmentStatuses }));
 }
 
 // Both set verification and pre-sign checks route through this lookup.
@@ -1496,10 +1670,21 @@ function effectiveAt(revision: { value: AnyRecord }, at: { ticks: number; fracti
 }
 
 function governing(chain: any, at: { ticks: number; fraction: string }): string {
-  const closed = chain.terminations.some((notice: any) => {
-    const effective = parseTimestamp(notice.claims.effective_at)!;
-    return compareTimestamps(effective, at) <= 0 &&
-      selectGoverning(chain, effective) === notice.claims.governing_revision_digest;
+  const groups = new Map<string, { digest: string; effective: { ticks: number; fraction: string }; roles: string[] }>();
+  for (const notice of chain.terminations) {
+    const claims = notice.claims;
+    const effective = parseTimestamp(claims.effective_at)!;
+    const digest = claims.governing_revision_digest;
+    const key = JSON.stringify([digest, claims.reason_code, effective.ticks, effective.fraction]);
+    const group = groups.get(key) ?? { digest, effective, roles: [] };
+    group.roles.push(claims.party_role);
+    groups.set(key, group);
+  }
+  const revisions = new Map<string, RevisionRecord>(chain.revisions.map((one: RevisionRecord) => [one.digest, one]));
+  const closed = [...groups.values()].some(({ digest, effective, roles }) => {
+    const revision = revisions.get(digest);
+    return revision !== undefined && compareTimestamps(effective, at) <= 0 &&
+      quorumMet(terminationRule(revision), roles) && selectGoverning(chain, effective) === digest;
   });
   return closed ? "none" : selectGoverning(chain, at);
 }
@@ -1554,8 +1739,10 @@ function projectReceipt(claims: AnyRecord, chain: any, governingDigest: string) 
   return ok({ governingMatch, chainConflict, deploymentMatched: false });
 }
 
-function receiptSigningKeys(chain: any, claimedRevision: any, role: unknown) {
-  const revisions = claimedRevision ? [claimedRevision] : chain.accepted;
+function receiptSigningKeys(chain: ChainView, claimedRevision: RevisionRecord | undefined, role: unknown, governingDigest: string) {
+  const assigned = chain.accepted.some((one) => replacements(one.value).length > 0);
+  const revisions = assigned ? chain.accepted.filter((one) => one.digest === governingDigest) :
+    claimedRevision ? [claimedRevision] : chain.accepted;
   const keys = revisions.flatMap((revision: any) =>
     revision.value.parties
       .filter((party: any) => party.role === role)
@@ -1603,7 +1790,7 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
   // forms, even when its kid names no key in the view.
   const envelopeAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (envelopeAdmission) return fail(envelopeAdmission);
-  const keys = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role);
+  const keys = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role, governingDigest);
   const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
   return preparedArtifact(decoded.value, keys, facts, "signature_invalid");
 }
@@ -1704,10 +1891,10 @@ function executeArtifactCase(one: Pick<ConformanceCase, "surface" | "input">): C
       const key = strictBase64url(input.public_key);
       if (!key.ok) return invalid(key.code);
       const kind: SigningKind = input.kind === "party_descriptor" ? "descriptor" :
-        ["acceptance", "termination", "receipt"].includes(input.kind) ? input.kind : "unknown";
+        ["acceptance", "party_replacement", "termination", "receipt"].includes(input.kind) ? input.kind : "unknown";
       const matches = kind === "descriptor" ? context.value.kind === "descriptor" :
         kind === "receipt" ? ["chain", "revision"].includes(context.value.kind) :
-        (kind === "acceptance" || kind === "termination") && context.value.kind === "set";
+        (kind === "acceptance" || kind === "party_replacement" || kind === "termination") && context.value.kind === "set";
       const prepared = prepareSigning(kind, input.kid, input.claims, encodeBase64url(key.value), matches ? context.value.value : {}, options);
       if (!prepared.ok) return invalid(prepared.code);
       return valid({ protected_segment: prepared.plan.input.protectedSegment, payload_segment: prepared.plan.input.payloadSegment, key: prepared.plan.key });
@@ -2750,7 +2937,7 @@ function signingDescriptorError(claims: AnyRecord): string | null {
 }
 
 function acceptanceClaimsError(claims: AnyRecord): string | null {
-  const shape = schemaError(claims, ACCEPTANCE_SCHEMA);
+  const shape = schemaError(claims, claims.protocol_revision === 8 ? QUORUM_ACCEPTANCE_SCHEMA : ACCEPTANCE_SCHEMA);
   if (shape) return shape;
   if ([claims.charter_id, claims.revision_digest, claims.prev_revision_digest, claims.party_descriptor_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "acceptance_invalid";
   if (!parseTimestamp(claims.accepted_at)) return "timestamp_invalid";
@@ -2759,7 +2946,7 @@ function acceptanceClaimsError(claims: AnyRecord): string | null {
 }
 
 function terminationClaimsError(claims: AnyRecord): string | null {
-  const shape = schemaError(claims, TERMINATION_SCHEMA);
+  const shape = schemaError(claims, claims.protocol_revision === 8 ? QUORUM_TERMINATION_SCHEMA : TERMINATION_SCHEMA);
   if (shape) return shape;
   if ([claims.charter_id, claims.governing_revision_digest, claims.party_descriptor_digest, claims.detail_digest].filter((value) => value !== undefined).some((value) => !validTaggedDigest(value))) return "termination_invalid";
   const issuedAt = parseTimestamp(claims.issued_at);
@@ -2883,7 +3070,7 @@ export function descriptorDigest(compact: unknown): { ok: true; digest: string }
 // nothing here ever sees a key.
 // ---------------------------------------------------------------------------
 
-export type SigningKind = "descriptor" | "acceptance" | "termination" | "receipt";
+export type SigningKind = "descriptor" | "acceptance" | "party_replacement" | "termination" | "receipt";
 export type ChainInput = { revisions: string[]; acceptances: string[]; descriptors: string[]; terminations: string[] };
 export type SigningOptions = VerificationOptions & { algorithm?: string };
 type SigningContext =
@@ -2955,7 +3142,7 @@ export function prepareSigning(
       (member("descriptor_digest") || member("digest")));
     const setContext = isRecord(context) && ["revisions", "acceptances", "descriptors", "terminations"].every(member);
     const validContext = kind === "descriptor" ? descriptorContext :
-      kind === "acceptance" || kind === "termination" ? setContext :
+      kind === "acceptance" || kind === "party_replacement" || kind === "termination" ? setContext :
       kind === "receipt" ? typeof context === "string" || setContext : false;
     if (!validContext) return fail("invalid_type");
   } catch (_error) {
@@ -2966,8 +3153,11 @@ export function prepareSigning(
   [kind, kid, claims, publicKey, options] = plain.value;
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
-  const built = buildSigningInput(kind, kid, claims, options.algorithm, settings.value.limits);
+  const artifactKind = kind === "party_replacement" ? "acceptance" : kind;
+  const built = buildSigningInput(artifactKind, kid, claims, options.algorithm, settings.value.limits);
   if (!built.ok) return built;
+  if (artifactKind === "acceptance" &&
+      (kind === "party_replacement") !== (typeof claims.replacement_role === "string")) return fail("signing_refused");
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
   try {
@@ -2988,14 +3178,14 @@ export function prepareSigning(
     if (!previous.ok) return previous;
     prepared = prepareDescriptor(provisional, previous.value, settings.value);
     verifyWith = { kind, predecessor: previous.value ? { descriptor_digest: previous.value.digest, lineage: [...previous.value.lineage!] } : null };
-  } else if (kind === "acceptance" || kind === "termination") {
+  } else if (artifactKind === "acceptance" || artifactKind === "termination") {
     // Limits cover the whole set; the caller's profile covers the routed view.
     const chain = chainFromInput(context as ChainInput, { ...settings.value, profile: DEFAULT_SETTINGS.profile });
     if (!chain.ok) return chain;
-    const refusal = kind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
+    const refusal = artifactKind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
     if (!refusal.ok) return refusal;
     const routed = signingContextFromSet(new Map(chain.value.revisions.map((one) => [one.digest, one])), chain.value.descriptors,
-      kind === "acceptance" ? claims.revision_digest : claims.governing_revision_digest, claims.party_descriptor_digest, `${kind}_claims_mismatch`);
+      artifactKind === "acceptance" ? claims.revision_digest : claims.governing_revision_digest, claims.party_descriptor_digest, `${artifactKind}_claims_mismatch`);
     if (!routed.ok) return routed;
     const revisionText = routed.value.revision.bytes.toString("utf8");
     const descriptorCompacts = routed.value.chain.descriptors.map((one) => one.compact);
@@ -3003,18 +3193,18 @@ export function prepareSigning(
     if (!revision.ok) return revision;
     const partyChain = descriptorChain(descriptorCompacts, settings.value);
     if (!partyChain.ok) return partyChain;
-    prepared = kind === "acceptance" ? prepareAcceptance(provisional, revision.value, partyChain.value, settings.value) : prepareTermination(provisional, revision.value, partyChain.value, settings.value);
-    verifyWith = { kind, revisionText, descriptorCompacts: [...descriptorCompacts] };
+    prepared = artifactKind === "acceptance" ? prepareAcceptance(provisional, revision.value, partyChain.value, settings.value) : prepareTermination(provisional, revision.value, partyChain.value, settings.value);
+    verifyWith = { kind: artifactKind, revisionText, descriptorCompacts: [...descriptorCompacts] };
   } else if (typeof context === "string") {
     const revision = revisionWithProfile(context, settings.value);
     if (!revision.ok) return revision;
     prepared = prepareReceipt(provisional, { kind: "revision", revision: revision.value }, settings.value);
-    verifyWith = { kind, context };
+    verifyWith = { kind: "receipt", context };
   } else {
     const chain = chainFromInput(context as ChainInput, settings.value);
     if (!chain.ok) return chain;
     prepared = prepareReceipt(provisional, { kind: "chain", chain: chain.value }, settings.value);
-    verifyWith = { kind, context: context as ChainInput };
+    verifyWith = { kind: "receipt", context: context as ChainInput };
   }
   if (!prepared.ok) return prepared;
   if (!prepared.value.unnamed && !prepared.value.keys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
@@ -3085,7 +3275,7 @@ function buildSigningInput(
   }
   if (integerTokenError(record, schemaForType(PRODUCER_TYPES[kind]))) return fail("signing_input_invalid");
   const revision = record.protocol_revision;
-  if (typeof revision !== "number" || !Number.isInteger(revision) || (revision !== emissions()[algorithm as string] && !(kind === "descriptor" && revision === 8))) {
+  if (typeof revision !== "number" || !Number.isInteger(revision) || (revision !== emissions()[algorithm as string] && !(revision === 8 && kind !== "receipt"))) {
     return { ok: false, code: "signing_input_invalid" };
   }
   if (typeof kid !== "string" || kid.length === 0 || kid.length > 128 || !/^[A-Za-z0-9._~-]+$/.test(kid)) {
@@ -3273,8 +3463,17 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
   if (claims.charter_id !== charterId ||
       claims.revision_number !== revision.value.revision_number ||
       (revision.value.prev_revision_digest || undefined) !== (claims.prev_revision_digest || undefined) ||
-      !refusalPartyMatches(revision, claims)) {
+      (claims.protocol_revision === 8) !== (revision.value.protocol_revision === 8) ||
+      !acceptanceBindingMatches(revision, claims)) {
     return refused();
+  }
+  if (revision.value.protocol_revision === 8) {
+    const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);
+    if (revision.value.revision_number !== 1 && (!predecessor ||
+        (revision.value.supersedes ?? []).some((digest: string) => !chain.acceptedDigests.includes(digest)))) return refused();
+    if (!acceptanceRule(revision).roles.includes(claims.party_role) &&
+        !(predecessor && acceptanceRule(predecessor).roles.includes(claims.party_role)) &&
+        replacements(revision.value).length === 0) return refused();
   }
 
   // R2 no-equivocation: no existing acceptance holds this charter/number
@@ -3322,7 +3521,8 @@ function terminationRefusalInChain(claims: AnyRecord, chain: ChainView): Refusal
   const charterId = revision.value.charter_id || revision.digest;
   if (claims.charter_id !== charterId ||
       !(revision.value.termination_rules.reason_codes as string[]).includes(claims.reason_code) ||
-      !refusalPartyMatches(revision, claims)) {
+      (claims.protocol_revision === 8) !== (revision.value.protocol_revision === 8) ||
+      !refusalPartyMatches(revision, claims) || !terminationRule(revision).roles.includes(claims.party_role)) {
     return refused();
   }
 

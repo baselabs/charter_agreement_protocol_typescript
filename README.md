@@ -229,11 +229,11 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 587 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/6c4e8971dd0d942764e27f65852bc24b334dca4d/priv/conformance).
+The current corpus contains 632 cases in 17 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/dca1f1dfb44c203f8c3c78c207bc9fa7ae948d0d/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 The [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/88009fd7f81cf9ce71355c469f5cba56b234aa30/spec/core.md) defines the lifecycle verdicts.
-Node and the browser bundle run all 587 cases. The browser uses the eleven
+Node and the browser bundle run all 632 cases. The browser uses the eleven
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

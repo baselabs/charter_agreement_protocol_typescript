@@ -59,10 +59,22 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
 test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
-  assert.equal(corpus.cases.length, 587);
+  assert.equal(corpus.cases.length, 632);
   assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 11);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
+  }
+});
+
+test("assignment facts retain incomplete party assent", () => {
+  for (const [id, status, missingAssentRoles] of [
+    ["assignment-proposed-missing-assignor", "pending", ["alpha"]],
+    ["assignment-proposed-missing-remaining-party", "pending", ["gamma"]],
+    ["assignment-all-parties-assented", "accepted", []],
+  ] as const) {
+    const result = api.verifyChain(fixture("chain-verify", id));
+    assert.ok(result.ok, id);
+    assert.deepEqual(Object.values(result.facts.assignmentStatuses), [{ status, missingAssentRoles }]);
   }
 });
 

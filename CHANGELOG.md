@@ -5,6 +5,9 @@ documented here.
 
 ## [Unreleased]
 
+- Verify revision-8 party quorums, declared assignments, and receipt ownership.
+  Prepare assignor acceptances through the same checked signing path.
+
 - Verify revision-8 descriptor commitments and unsigned current/next
   publications in Node and browser builds.
 
