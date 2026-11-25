@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "vAtSVoJTym4X7zDzNDnzVgknWn6hiooo1cgCymewoDM";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "Wa1VeoN0Ip7OnvYPBKoRw3QKWUEpYKhRR7U6JRreaU0";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -677,7 +677,7 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
 }
 
 type DecodedJws = Extract<ReturnType<typeof decodeJws>, { ok: true }>["value"];
-type PreparedArtifact<F extends AnyRecord = AnyRecord> = { decoded: DecodedJws; keys: AnyRecord[]; facts: F; missingKeyCode: string; unnamed: boolean };
+type PreparedArtifact<F extends AnyRecord = AnyRecord> = { decoded: DecodedJws; keys: AnyRecord[]; holderKeys?: AnyRecord[]; facts: F; missingKeyCode: string; unnamed: boolean };
 
 function preparedArtifact<F extends AnyRecord>(decoded: DecodedJws, keys: AnyRecord[], facts: F, missingKeyCode: string, unnamed = false): Result<PreparedArtifact<F>> {
   return ok({ decoded, keys: keys.filter((key) => key.key_id === decoded.header.kid && key.status === "active"), facts, missingKeyCode, unnamed });
@@ -698,7 +698,9 @@ function finishPreparedArtifact<F extends AnyRecord>(prepared: Result<PreparedAr
     const diagnostic = candidates.find((one) => !one.result.ok && ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"].includes(one.result.code));
     return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
   }
-  return ok(facts);
+  const holders = prepared.value.holderKeys ?? keys;
+  return holders.some((key) => verifiedPublicKeys.has(key.public_key))
+    ? ok(facts) : fail("receipt_claims_mismatch");
 }
 
 const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
@@ -1739,21 +1741,55 @@ function projectReceipt(claims: AnyRecord, chain: any, governingDigest: string) 
   return ok({ governingMatch, chainConflict, deploymentMatched: false });
 }
 
-function receiptSigningKeys(chain: ChainView, claimedRevision: RevisionRecord | undefined, role: unknown, governingDigest: string) {
-  const assigned = chain.accepted.some((one) => replacements(one.value).length > 0);
-  const revisions = assigned ? chain.accepted.filter((one) => one.digest === governingDigest) :
-    claimedRevision ? [claimedRevision] : chain.accepted;
-  const keys = revisions.flatMap((revision: any) =>
-    revision.value.parties
-      .filter((party: any) => party.role === role)
-      .flatMap((party: any) => {
-        const descriptor = chain.descriptors.descriptors.find((one: any) =>
-          one.digest === party.party_descriptor_digest
-        );
-        return descriptor?.payload.verification_keys || [];
-      })
-  );
-  return [...new Map<string, AnyRecord>(keys.map((key: any) => [canonical(key), key])).values()];
+function roleDescriptor(revision: RevisionRecord, role: string): string | undefined {
+  return (revision.value.parties as QuorumParty[]).find((party) => party.role === role)?.party_descriptor_digest;
+}
+
+function latestAssignmentRevision(chain: ChainView, role: string, at: NonNullable<ReturnType<typeof parseTimestamp>>): string | undefined {
+  const transfers = new Set(chain.accepted
+    .filter((revision) => replacements(revision.value).some((record) => record.role === role))
+    .map((revision) => revision.digest));
+  const boundaries = chain.accepted.flatMap((revision) =>
+    [revision.value.effective_from, revision.value.effective_until].map(parseTimestamp),
+  ).filter((time): time is NonNullable<typeof time> => time !== null && compareTimestamps(time, at) <= 0);
+  boundaries.sort((left, right) => compareTimestamps(right, left));
+  for (const boundary of boundaries) {
+    const digest = governing(chain, boundary);
+    if (transfers.has(digest)) return digest;
+  }
+  return undefined;
+}
+
+function receiptSigningKeys(
+  chain: ChainView, claimedRevision: RevisionRecord | undefined, claims: AnyRecord, governingDigest: string,
+) {
+  const role = claims.issuing_party_role;
+  const revisions = claimedRevision ? [claimedRevision] : chain.accepted;
+  const findDescriptor = (digest: string | undefined) =>
+    chain.descriptors.descriptors.find((entry: AnyRecord) => entry.digest === digest);
+  const descriptors = revisions.flatMap((revision) => {
+    const descriptor = findDescriptor(roleDescriptor(revision, role));
+    return descriptor ? [descriptor] : [];
+  });
+  const keysFrom = (sources: typeof descriptors) => {
+    const keys: AnyRecord[] = sources.flatMap((descriptor) => descriptor.payload.verification_keys);
+    return [...new Map(keys.map((key) => [canonical(key), key])).values()];
+  };
+  const keys = keysFrom(descriptors);
+  if (!chain.accepted.some((revision) => replacements(revision.value).length > 0)) {
+    return { keys, holderKeys: keys, holderMatch: "not_evaluated" };
+  }
+
+  const holderDigest = governingDigest === "none" ?
+    latestAssignmentRevision(chain, role, parseTimestamp(claims.occurred_at)!) : governingDigest;
+  const holderRevision = chain.accepted.find((revision) => revision.digest === holderDigest);
+  const holder = holderRevision && findDescriptor(roleDescriptor(holderRevision, role));
+  if (!holder) return { keys, holderKeys: keys, holderMatch: "undetermined" };
+
+  const owner = holder.payload.party_id ?? holder.digest;
+  const holderKeys = keysFrom(descriptors.filter((descriptor) =>
+    (descriptor.payload.party_id ?? descriptor.digest) === owner));
+  return { keys, holderKeys, holderMatch: governingDigest === "none" ? "undetermined" : "match" };
 }
 
 type RevisionRecord = { value: AnyRecord; bytes: Buffer; digest: string };
@@ -1782,7 +1818,7 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
     if (!claimedRevision) return fail("receipt_claims_mismatch");
     const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
     if (admission) return fail(admission);
-    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]);
+    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch: "not_evaluated", optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, ["signature"]);
     return preparedArtifact(decoded.value, [], facts, "signature_invalid", true);
   }
   // The envelope is admitted before any key is looked up, so an
@@ -1790,9 +1826,11 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
   // forms, even when its kid names no key in the view.
   const envelopeAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (envelopeAdmission) return fail(envelopeAdmission);
-  const keys = receiptSigningKeys(context.chain, claimedRevision, claims.issuing_party_role, governingDigest);
-  const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
-  return preparedArtifact(decoded.value, keys, facts, "signature_invalid");
+  const { keys, holderKeys, holderMatch } = receiptSigningKeys(context.chain, claimedRevision, claims, governingDigest);
+  const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  const prepared = preparedArtifact(decoded.value, keys, facts, "signature_invalid");
+  return prepared.ok ? ok({ ...prepared.value, holderKeys: holderKeys.filter((key) =>
+    key.key_id === decoded.value.header.kid && key.status === "active") }) : prepared;
 }
 
 function receiptFromCompact(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
@@ -2894,6 +2932,7 @@ export function verifyReceipt(compact: string, context: AnyRecord | string, opti
       receipt_digest: verified.value.digest,
       claims: verified.value.claims,
       governing_match: verified.value.governingMatch,
+      holder_match: verified.value.holderMatch,
       chain_conflict: verified.value.chainConflict,
       deployment_digest_matched: verified.value.deploymentMatched,
       optional_extensions_retained: verified.value.optionalExtensions,
@@ -3207,7 +3246,9 @@ export function prepareSigning(
     verifyWith = { kind: "receipt", context: context as ChainInput };
   }
   if (!prepared.ok) return prepared;
-  if (!prepared.value.unnamed && !prepared.value.keys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
+  const eligibleKeys = prepared.value.holderKeys ?? prepared.value.keys;
+  if (prepared.value.keys.length > 0 && eligibleKeys.length === 0) return fail("receipt_claims_mismatch");
+  if (!prepared.value.unnamed && !eligibleKeys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
   if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
   return { ok: true, plan: createSigningPlan(kind, built.input, prepared.value.unnamed ? "unnamed" : "matched", publicKey, verifyWith, settings.value) };
 }
