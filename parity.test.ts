@@ -59,7 +59,7 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
 test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
-  assert.equal(corpus.cases.length, 662);
+  assert.equal(corpus.cases.length, 664);
   assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 18);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
@@ -164,6 +164,13 @@ test("replacement inputs distinguish missing intent from an incorrect assignor",
   assert.equal(result.plan.kind, "party_replacement");
   const header = JSON.parse(Buffer.from(result.plan.input.protectedSegment, "base64url").toString());
   assert.equal(header.typ, "cap+acceptance");
+});
+
+test("set-aware signing inputs check the outer context before the claims", () => {
+  for (const produce of [api.acceptanceSigningInput, api.partyReplacementSigningInput, api.terminationSigningInput]) {
+    assert.deepEqual(produce("k", {}, null as never), { ok: false, code: "signing_input_invalid" });
+  }
+  assert.deepEqual(api.partyReplacementSigningInput("k", {}, {}), { ok: false, code: "signing_refused" });
 });
 
 test("browser descriptor publication helpers preserve typed limits and public facts", async () => {

@@ -4,9 +4,9 @@ Independent TypeScript verifier for the
 [Charter Agreement Protocol](https://hex.pm/packages/charter_agreement_protocol) (CAP).
 
 **CAP verifies. It never authorizes.** This package re-verifies signed,
-byte-exact evidence of what two parties agreed — party descriptor key
+byte-exact evidence of what charter parties agreed — party descriptor key
 histories (Ed25519 and, from `protocol_revision` 3, ML-DSA per RFC 9964),
-charter revisions, bilateral acceptances, termination notices, and action
+charter revisions, acceptances, termination notices, and action
 receipts — completely offline, with no network, no clock, and no central
 authority. Every verification result carries a closed floor of what was
 *not* verified: authority, execution, billing, legal validity, term
@@ -103,8 +103,9 @@ Additional exported structural types are `CanonicalValue`, `Projection`,
 The installed declarations contain their complete shapes.
 
 `prepareSigning` accepts a predecessor or `null` for a descriptor, a chain view
-(`revisions`, `acceptances`, `descriptors`, `terminations` arrays) for acceptance
-and termination, and a chain view or bare revision text for a receipt. Pass a
+(`revisions`, `acceptances`, `descriptors`, `terminations` arrays) for acceptance,
+party replacement, and termination. It accepts a chain view for a receipt,
+or bare revision text for a legacy charter. Pass a
 canonical base64url public key. Its options are `algorithm`, `limits`, and
 `profile`. Limits cover every artifact read, including the entire set. For
 acceptance and termination, the profile covers the revision, the signing party's
@@ -116,8 +117,10 @@ Sign `plan.input.message`, then pass the raw `Uint8Array` signature to
 `finishSigning`. Both signature functions accept plain and cross-realm
 `Uint8Array` bytes, including Node Buffers. `verifySignature` returns `false` for
 `ArrayBuffer` and `DataView` inputs; `finishSigning` returns `invalid_type` for
-them. A bare-revision receipt has `key: "unnamed"`; public receipt
-verification leaves its signature unchecked. `signing_key_invalid` means the
+them. A receipt prepared against a bare legacy revision has `key: "unnamed"`.
+Preparing against a bare revision-8 charter returns `signing_refused`.
+Public receipt verification against a bare revision lists `signature` in
+`not_verified` and adds `ownership` for revision 8. `signing_key_invalid` means the
 snapshot key fails the encoding or shape check; `signing_key_mismatch` means it
 matches no active candidate in the holder's own view. The plan retains private
 copies of its input, context arrays, limits, and profile. The existing producers
@@ -229,11 +232,11 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 662 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/688142f913edeac26c439bbc081bb7ff6f4127be/priv/conformance).
+The current corpus contains 664 cases in 17 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/de7be5d8ed13d6f47239368d31897754045c73d6/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 The [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/88009fd7f81cf9ce71355c469f5cba56b234aa30/spec/core.md) defines the lifecycle verdicts.
-Node and the browser bundle run all 662 cases. The browser uses the eighteen
+Node and the browser bundle run all 664 cases. The browser uses the eighteen
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

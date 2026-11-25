@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "t8P-uG4t5SbJqOl5TcYlgZ7IOEfRawQDYfHWYFYl9VQ";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "IuAU6i017LH13gBfvrYeeEILVJ-_InE38xsFpyKlWm0";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -1797,9 +1797,9 @@ function receiptSigningKeys(
 type RevisionRecord = { value: AnyRecord; bytes: Buffer; digest: string };
 type ChainView = Extract<ReturnType<typeof chainFromInput>, { ok: true }>["value"];
 
-// A receipt is checked against a verified chain view, or against one bare
-// revision. A bare revision names no signing key, so its receipt's signature
-// stays unchecked and governance cannot be decided.
+// Verification against a bare revision leaves signature and governance
+// unchecked. Revision 8 also leaves ownership unchecked and requires a
+// chain view during signing preparation.
 type ReceiptContext = { kind: "chain"; chain: ChainView } | { kind: "revision"; revision: RevisionRecord };
 
 function prepareReceipt(compact: string, context: ReceiptContext, settings: Settings = DEFAULT_SETTINGS) {
@@ -3383,41 +3383,39 @@ export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: 
   return buildSigningInput("receipt", kid, claims, algorithm);
 }
 
-// The reference producer ordering: build (shape, emission binding, framing,
-// claims schema) FIRST, then the set-aware R1-R3 refusal checks - so a
-// claims defect reports the producer code even when the view is also bad.
+// Set-aware producers check the outer context, then build the signing input
+// before validating the contents of the set and applying the refusal rules.
 export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
-  return acceptanceInput("acceptance", kid, claims, chainInput, algorithm);
+  return setSigningInput("acceptance", kid, claims, chainInput, algorithm);
 }
 
 /** Build an assignor's acceptance after checking the declared replacement. */
 export function partyReplacementSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
-  return acceptanceInput("party_replacement", kid, claims, chainInput, algorithm);
-}
-
-function acceptanceInput(
-  operation: "acceptance" | "party_replacement", kid: string, claims: AnyRecord,
-  chainInput: AnyRecord, algorithm?: string,
-): ProducerResult {
-  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1, -1, { 2: CHAIN_MEMBERS });
-  if (!plain.ok) return plain;
-  [kid, claims, chainInput, algorithm] = plain.value;
-  const built = buildSigningInput(operation, kid, claims, algorithm);
-  if (!built.ok) return built;
-  const refusal = acceptanceRefusal(claims, chainInput);
-  if (!refusal.ok) return { ok: false, code: refusal.code };
-  return built;
+  return setSigningInput("party_replacement", kid, claims, chainInput, algorithm);
 }
 
 export function terminationSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
-  const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1, -1, { 2: CHAIN_MEMBERS });
+  return setSigningInput("termination", kid, claims, chainInput, algorithm);
+}
+
+function setSigningInput(
+  operation: "acceptance" | "party_replacement" | "termination", kid: string, claims: AnyRecord,
+  chainInput: AnyRecord, algorithm?: string,
+): ProducerResult {
+  try {
+    if (!isRecord(chainInput)) return fail("signing_input_invalid");
+  } catch (_error) {
+    return fail("invalid_type");
+  }
+  const plain = plainVerificationInputs({}, [kid, claims, algorithm], 1);
   if (!plain.ok) return plain;
-  [kid, claims, chainInput, algorithm] = plain.value;
-  const built = buildSigningInput("termination", kid, claims, algorithm);
+  [kid, claims, algorithm] = plain.value;
+  const built = buildSigningInput(operation, kid, claims, algorithm);
   if (!built.ok) return built;
-  const refusal = terminationRefusal(claims, chainInput);
-  if (!refusal.ok) return { ok: false, code: refusal.code };
-  return built;
+  const refusal = operation === "termination"
+    ? terminationRefusal(claims, chainInput)
+    : acceptanceRefusal(claims, chainInput);
+  return refusal.ok ? built : refusal;
 }
 
 function decodeSigningArtifact(compact: string, limits: Limits = DEFAULT_LIMITS): Result<null> {
