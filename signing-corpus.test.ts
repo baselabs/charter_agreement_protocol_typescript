@@ -128,7 +128,7 @@ test("runner matches every certified case with typed results", async (t) => {
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
     const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
-    assert.equal(corpusCases.length, 635);
+    assert.equal(corpusCases.length, 652);
     for (const one of corpusCases) await t.test(one.id, () => {
       assert.deepEqual(executeCase(one), one.expect);
     });
@@ -252,7 +252,7 @@ test("receipt corpus runner applies caller limits to its chain context", async (
 });
 
 test("public signing preparation matches artifact corpus projections independently", async (t) => {
-  assert.equal(cases.length, 117);
+  assert.equal(cases.length, 123);
   for (const one of cases.filter((one) => !one.id.startsWith("signing-unknown-") && !Object.hasOwn(one.input, "value") &&
     (!one.input.context?.chain || Object.keys(one.input.context.chain).length === 4))) await t.test(one.id, () => {
     const input = one.input;

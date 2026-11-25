@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "Wa1VeoN0Ip7OnvYPBKoRw3QKWUEpYKhRR7U6JRreaU0";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "UHmbfncIg7dbIfAQ-YibYHpDXYUKMuVrDWlXZ3lSBsE";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -939,6 +939,10 @@ function isRecord(value: unknown): value is AnyRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Number);
 }
 
+function isCanonicalObject(value: CanonicalValue): value is { [key: string]: CanonicalValue } {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Number);
+}
+
 function field(name: string, type: FieldRule["type"], constraint?: FieldRule["constraint"], required = true): FieldRule {
   return { name, type, constraint, required };
 }
@@ -1208,7 +1212,7 @@ function revisionFromText(text: unknown, limits: Limits = DEFAULT_LIMITS): Resul
   if (typeof text !== "string") return fail("invalid_type");
   const decoded = decodeJsonText(text, limits);
   if (!decoded.ok) return decoded;
-  const schema = isRecord(decoded.value) && decoded.value.protocol_revision === 8
+  const schema = isCanonicalObject(decoded.value) && decoded.value.protocol_revision === 8
     ? QUORUM_REVISION_SCHEMA : REVISION_SCHEMA;
   const integerError = integerTokenError(decoded.value, schema);
   if (integerError) return fail(integerError);
@@ -1514,7 +1518,7 @@ function revisionAssent(revision: RevisionRecord, matches: AnyRecord[], inherite
   return { quorum, missing };
 }
 
-function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string; assignmentStatuses: Record<string, { status: string; missingAssentRoles: string[] }> }> {
+function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS): Result<{ descriptors: any; revisions: any[]; acceptances: any[]; terminations: any[]; accepted: any[]; acceptedDigests: string[]; signedDigests: string[]; supersededDigests: string[]; topology: string; charterId: string; assignmentStatuses: Record<string, { status: string; missingAssentRoles: string[] }> }> {
   if (!isRecord(input)) return fail("chain_invalid");
   const bounded = boundedArtifacts([input.revisions, input.acceptances, input.descriptors, input.terminations], settings.limits);
   if (bounded) return fail(bounded);
@@ -1597,9 +1601,8 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const matches = votesByRevision.get(revision.digest) ?? [];
     const { quorum, missing } = revisionAssent(revision, matches, previous ?? rawPrevious);
     const ready = quorum && missing.length === 0;
-    const revisionEight = value.protocol_revision === 8;
     if (ready) signed.add(revision.digest);
-    const eligible = ready && (!revisionEight || previous === rawPrevious);
+    const eligible = ready && previous === rawPrevious;
     if (eligible) acceptedSet.add(revision.digest);
     inherited.set(revision.digest, eligible ? revision : previous);
     if (replacements(value).length > 0) {
@@ -1647,7 +1650,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   };
   const linear = heads.length === 1 && ancestryCovers(heads[0].digest);
   const topology = active.length > 0 && !linear ? "forked" : "linear";
-  return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: accepted.map((one) => one.digest).sort(), supersededDigests: [...superseded].sort(), topology, charterId, assignmentStatuses }));
+  return ok(factsRecord({ descriptors: descriptors.value, revisions, acceptances, terminations, accepted, acceptedDigests: [...acceptedSet].sort(), signedDigests: [...signed].sort(), supersededDigests: [...superseded].sort(), topology, charterId, assignmentStatuses }));
 }
 
 // Both set verification and pre-sign checks route through this lookup.
@@ -3193,10 +3196,8 @@ export function prepareSigning(
   const settings = resolveOptions(options);
   if (!settings.ok) return settings;
   const artifactKind = kind === "party_replacement" ? "acceptance" : kind;
-  const built = buildSigningInput(artifactKind, kid, claims, options.algorithm, settings.value.limits);
+  const built = buildSigningInput(kind, kid, claims, options.algorithm, settings.value.limits);
   if (!built.ok) return built;
-  if (artifactKind === "acceptance" &&
-      (kind === "party_replacement") !== (typeof claims.replacement_role === "string")) return fail("signing_refused");
   const row = ALG_ROWS.find((one) => one.name === built.input.alg)!;
   if (!validPublicKey(publicKey, row)) return fail("signing_key_invalid");
   try {
@@ -3295,12 +3296,13 @@ function jsonValueError(value: unknown): boolean {
 // decode (the reference producer's exact ordering, so error precedence
 // matches too).
 function buildSigningInput(
-  kind: keyof typeof PRODUCER_TYPES,
+  operation: SigningKind,
   kid: unknown,
   claims: unknown,
   algorithm: unknown,
   limits: Limits = DEFAULT_LIMITS,
 ): ProducerResult {
+  const kind = operation === "party_replacement" ? "acceptance" : operation;
   if (typeof algorithm === "undefined") algorithm = defaultEmissionName();
   if (typeof algorithm !== "string" || !(algorithm in emissions())) {
     return { ok: false, code: "signing_input_invalid" };
@@ -3352,6 +3354,11 @@ function buildSigningInput(
   const provisional = `${protectedSegment}.${payloadSegment}.${encodeBase64url(zeroSignature)}`;
   const decoded = decodeSigningArtifact(provisional, limits);
   if (!decoded.ok) return { ok: false, code: "signing_input_invalid" };
+  if (kind === "acceptance" &&
+      (operation === "party_replacement") !== (typeof record.replacement_role === "string")) {
+    return fail("signing_refused");
+  }
+
 
   return { ok: true, input: { alg: algorithm as string, protectedSegment, payloadSegment, message } };
 }
@@ -3374,10 +3381,22 @@ export function receiptSigningInput(kid: string, claims: AnyRecord, algorithm?: 
 // claims schema) FIRST, then the set-aware R1-R3 refusal checks - so a
 // claims defect reports the producer code even when the view is also bad.
 export function acceptanceSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  return acceptanceInput("acceptance", kid, claims, chainInput, algorithm);
+}
+
+/** Build an assignor's acceptance after checking the declared replacement. */
+export function partyReplacementSigningInput(kid: string, claims: AnyRecord, chainInput: AnyRecord, algorithm?: string): ProducerResult {
+  return acceptanceInput("party_replacement", kid, claims, chainInput, algorithm);
+}
+
+function acceptanceInput(
+  operation: "acceptance" | "party_replacement", kid: string, claims: AnyRecord,
+  chainInput: AnyRecord, algorithm?: string,
+): ProducerResult {
   const plain = plainVerificationInputs({}, [kid, claims, chainInput, algorithm], 1, -1, { 2: CHAIN_MEMBERS });
   if (!plain.ok) return plain;
   [kid, claims, chainInput, algorithm] = plain.value;
-  const built = buildSigningInput("acceptance", kid, claims, algorithm);
+  const built = buildSigningInput(operation, kid, claims, algorithm);
   if (!built.ok) return built;
   const refusal = acceptanceRefusal(claims, chainInput);
   if (!refusal.ok) return { ok: false, code: refusal.code };
@@ -3508,14 +3527,13 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
       !acceptanceBindingMatches(revision, claims)) {
     return refused();
   }
-  if (revision.value.protocol_revision === 8) {
-    const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);
-    if (revision.value.revision_number !== 1 && (!predecessor ||
-        (revision.value.supersedes ?? []).some((digest: string) => !chain.acceptedDigests.includes(digest)))) return refused();
-    if (!acceptanceRule(revision).roles.includes(claims.party_role) &&
-        !(predecessor && acceptanceRule(predecessor).roles.includes(claims.party_role)) &&
-        replacements(revision.value).length === 0) return refused();
-  }
+  const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);
+  if (revision.value.revision_number !== 1 && (!predecessor ||
+      (revision.value.supersedes ?? []).some((digest: string) => !chain.acceptedDigests.includes(digest)))) return refused();
+  if (revision.value.protocol_revision === 8 &&
+      !acceptanceRule(revision).roles.includes(claims.party_role) &&
+      !(predecessor && acceptanceRule(predecessor).roles.includes(claims.party_role)) &&
+      replacements(revision.value).length === 0) return refused();
 
   // R2 no-equivocation: no existing acceptance holds this charter/number
   // coordinate for a different revision.

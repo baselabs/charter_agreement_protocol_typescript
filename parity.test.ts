@@ -59,8 +59,8 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
 test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
-  assert.equal(corpus.cases.length, 635);
-  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 11);
+  assert.equal(corpus.cases.length, 652);
+  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 18);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
   }
@@ -88,6 +88,43 @@ test("receipt facts distinguish current and undetermined holders", () => {
     const result = api.verifyReceipt(compact, chain);
     assert.ok(result.ok, id);
     assert.equal(result.facts.holder_match, holderMatch, id);
+  }
+});
+
+test("mixed revisions expose signatures across an unsigned predecessor without governing", () => {
+  const mixed = fixture("chain-verify", "quorum-mixed-unsigned-genesis");
+  const result = api.verifyChain(mixed);
+  assert.ok(result.ok);
+  assert.deepEqual(result.facts.acceptedDigests, []);
+  const signed: string[] = mixed.revisions.slice(0, 2).map((text: string) => {
+    const digest = api.revisionDigest(text);
+    assert.ok(digest.ok);
+    return digest.digest;
+  });
+  assert.deepEqual(result.facts.signedDigests, signed.sort());
+  assert.deepEqual(api.governingRevision(mixed, "2026-08-25T13:00:00Z"), { ok: true, governing: "none" });
+
+  const legacy = fixture("signing-prepare", "signing-quorum-legacy-hop-without-predecessor");
+  assert.deepEqual(api.acceptanceSigningInput(legacy.kid, legacy.claims, legacy.context.set),
+    { ok: false, code: "signing_refused" });
+});
+
+test("ordinary and replacement operations require the corresponding marker on both paths", () => {
+  const marked = fixture("signing-prepare", "signing-assignment-departing-party");
+  const ordinary = fixture("signing-prepare", "signing-assignment-incoming-party");
+  for (const [input, kind, wrong, producer, wrongProducer] of [
+    [marked, "party_replacement", "acceptance", api.partyReplacementSigningInput, api.acceptanceSigningInput],
+    [ordinary, "acceptance", "party_replacement", api.acceptanceSigningInput, api.partyReplacementSigningInput],
+  ] as const) {
+    const { kid, claims, public_key, algorithm, context: { set } } = input;
+    const raw = producer(kid, claims, set, algorithm);
+    const plan = api.prepareSigning(kind, kid, claims, public_key, set, { algorithm });
+    assert.ok(raw.ok);
+    assert.ok(plan.ok);
+    assert.deepEqual(raw.input, plan.plan.input);
+    assert.deepEqual(wrongProducer(kid, claims, set, algorithm), { ok: false, code: "signing_refused" });
+    assert.deepEqual(api.prepareSigning(wrong, kid, claims, public_key, set, { algorithm }),
+      { ok: false, code: "signing_refused" });
   }
 });
 

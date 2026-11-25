@@ -64,6 +64,7 @@ export {
   descriptorSigningInput,
   receiptSigningInput,
   acceptanceSigningInput,
+  partyReplacementSigningInput,
   terminationSigningInput,
   assembleCompact,
   governingRevision,
