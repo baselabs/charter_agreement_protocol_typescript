@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "VXoEwnA-AsDOI2I3HxwL9xHI6uwKgaBso6weEeZEmkg";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "Ggt_areMitPAlEnp36YW1BB-eIf2WiGcwiBhLsnsytY";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -3231,8 +3231,11 @@ export function retainSigningContext(
   const parameters = signingParameters(kind, context, options);
   if (!parameters.ok) return parameters;
   const retained = copySigningContext(kind, context, parameters.value.limits);
-  return ok<RetainedPreparation>((kid, claims, publicKey) =>
-    prepareWithContext(kind, kid, claims, publicKey, parameters.value.options, () => retained));
+  return ok(retainedPreparation(kind, parameters.value.options, retained));
+}
+
+function retainedPreparation(kind: SigningKind, options: SigningOptions, retained: Result<PreparationContext>): RetainedPreparation {
+  return (kid, claims, publicKey) => prepareWithContext(kind, kid, claims, publicKey, options, () => retained);
 }
 
 function signingParameters(kind: SigningKind, context: PreparationContext, options: SigningOptions):
@@ -3257,6 +3260,10 @@ function signingParameters(kind: SigningKind, context: PreparationContext, optio
 }
 
 function copySigningContext(kind: SigningKind, context: PreparationContext, limits: Limits): Result<PreparationContext> {
+  if (typeof context === "string") {
+    return context.length > limits.max_bytes || Buffer.byteLength(context) > limits.max_bytes ?
+      fail("limit_exceeded") : ok(context);
+  }
   const members = kind === "descriptor" ? PREDECESSOR_MEMBERS : CHAIN_MEMBERS;
   try {
     const retained = retainedInput(context, members);

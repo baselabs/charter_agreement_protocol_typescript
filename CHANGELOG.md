@@ -23,7 +23,7 @@ documented here.
   governing revision APIs.
 
 - Pin the canonical CAP corpus by source commit and index SHA-256. Run
-  all 670 cases through the browser bundle, including the declared
+  all 713 cases through the browser bundle, including the declared
   limited-substrate outcomes and new receipt and lifecycle verdicts.
 
 - Read CI runtime defaults and compatibility lanes only through the shared

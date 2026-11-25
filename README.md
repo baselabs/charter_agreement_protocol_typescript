@@ -137,11 +137,11 @@ producers still returns `signing_input_invalid`.
 The following public functions return typed results for malformed input and
 unreadable getters or Proxies: `verifyDescriptor`, `verifyDescriptorChain`,
 `verifyAcceptance`, `verifyTermination`, `verifyChain`, `verifyReceipt`,
-`prepareSigning`, `finishSigning`, `governingRevision`, `decodeArtifact`,
+`prepareSigning`, `retainSigningContext`, `finishSigning`, `governingRevision`, `decodeArtifact`,
 `decodeCharterRevision`, `revisionDigest`, `decodePartyDescriptor`,
 `descriptorDigest`, `checkSigningClaims`, `acceptanceRefusal`,
 `terminationRefusal`, `descriptorSigningInput`, `receiptSigningInput`,
-`acceptanceSigningInput`, `terminationSigningInput`, `assembleCompact`, and
+`acceptanceSigningInput`, `partyReplacementSigningInput`, `terminationSigningInput`, `assembleCompact`, and
 `decodeJsonText`. `verifySignature` returns `false` for malformed input.
 `canonical`, `jsonProjection`, `encodeBase64url`, `taggedDigest`, `loadCorpus`,
 and `reportFor` retain their existing return shapes and can throw on invalid
@@ -153,7 +153,7 @@ Copies check array lengths and byte sizes before allocation and bound expanded
 bytes and depth. Deep or excessively shared signing claims return
 `signing_input_invalid`.
 
-Verification options default to the full algorithm registry, revisions 1..3,
+Verification options default to the full algorithm registry, revisions 1, 2, 3, and 8,
 and `DEFAULT_LIMITS`. Profiles apply to each signed artifact after its local
 checks and before crypto; unsigned charter revisions use only the revision
 axis. Public acceptance, termination, and receipt calls re-verify their
@@ -238,15 +238,15 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 670 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/bb726995e1485b105792c61b3c21afddcabf9a09/priv/conformance).
+The current corpus contains 713 cases in 17 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/a83ea9f1774d2a39e8861f2b83730eae5de08863/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/bb726995e1485b105792c61b3c21afddcabf9a09/spec/core.md).
-Node and the browser bundle run all 670 cases. The browser uses the eighteen
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/a83ea9f1774d2a39e8861f2b83730eae5de08863/spec/core.md).
+Node and the browser bundle run all 713 cases. The browser uses the eighteen
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

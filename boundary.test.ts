@@ -316,3 +316,38 @@ test("a malformed legacy acceptance precedes duplicate coordinates", () => {
   assert.deepEqual(api.verifyChain({ ...chain, acceptances: [vote, vote, "malformed"] }),
     { ok: false, code: "compact_invalid" });
 });
+
+test("retained bare receipt text defers its UTF-8 limit until after claims and key checks", () => {
+  const { kid, claims, public_key: key } = fixture("signing-prepare", "signing-ed25519-receipt");
+  const options = { limits: { max_bytes: 4096 } };
+  for (const revision of ["x".repeat(4097), "é".repeat(2049)]) {
+    const retained = api.retainSigningContext("receipt", revision, options);
+    assert.ok(retained.ok);
+    for (const [input, publicKey, code] of [
+      [{}, key, "signing_input_invalid"],
+      [claims, "AAAA", "signing_key_invalid"],
+      [claims, key, "limit_exceeded"],
+    ] as const) {
+      assert.deepEqual(retained.value(kid, input, publicKey), { ok: false, code });
+      assert.deepEqual(api.prepareSigning("receipt", kid, input, publicKey, revision, options), { ok: false, code });
+    }
+  }
+});
+
+test("verifyChain rejects values that cannot be artifact sets", () => {
+  for (const value of [null, "revision text", 42, []]) {
+    assert.deepEqual(api.verifyChain(value as never), { ok: false, code: "invalid_type" });
+  }
+});
+
+test("set-aware producers frame legacy claims before checking list types", () => {
+  const context = { ...chain, revisions: null };
+  for (const [build, id] of [
+    [api.acceptanceSigningInput, "signing-ed25519-acceptance"],
+    [api.terminationSigningInput, "signing-ed25519-termination"],
+  ] as const) {
+    const { kid, claims } = fixture("signing-prepare", id);
+    assert.deepEqual(build(kid, {}, context), { ok: false, code: "signing_input_invalid" });
+    assert.deepEqual(build(kid, claims, context), { ok: false, code: "invalid_type" });
+  }
+});
