@@ -5,7 +5,7 @@
   "corpus_path": "priv/conformance",
   "verification_semantics": 6,
   "corpus_source": {
-    "commit": "0c5e7ace201e47795424206af102f56c975a993d",
-    "index_sha256_base64url": "UHmbfncIg7dbIfAQ-YibYHpDXYUKMuVrDWlXZ3lSBsE"
+    "commit": "dd481f7cae632abac3efb9ee93eeaff80546cbaf",
+    "index_sha256_base64url": "RbrZIuj4H4I1eqIxP7PL7tb7TJU37rQOakQfDt0PGM0"
   }
 }

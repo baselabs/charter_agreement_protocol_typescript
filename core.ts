@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "UHmbfncIg7dbIfAQ-YibYHpDXYUKMuVrDWlXZ3lSBsE";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "RbrZIuj4H4I1eqIxP7PL7tb7TJU37rQOakQfDt0PGM0";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -993,8 +993,9 @@ function integerTokenError(value: unknown, fields: FieldRule[]): string | null {
     const item = value[rule.name];
     if (rule.type === "integer" && item instanceof Number) return "invalid_type";
     if (!rule.nested) continue;
-    const items = rule.type === "array" && Array.isArray(item) ? item : [item];
-    for (const child of items) {
+    const children = rule.type === "array" ? item : [item];
+    if (!Array.isArray(children)) continue;
+    for (const child of children) {
       const error = integerTokenError(child, rule.nested);
       if (error) return error;
     }
@@ -1611,10 +1612,8 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
   }
   const accepted = revisions.filter((one) => acceptedSet.has(one.digest));
   for (const revision of revisions) {
-    const revisionEight = revision.value.protocol_revision === 8;
-    const targets = revisionEight ? signed : acceptedSet;
-    if (targets.has(revision.digest) &&
-        (revision.value.supersedes ?? []).some((digest: string) => !targets.has(digest))) return fail("chain_invalid");
+    if (signed.has(revision.digest) &&
+        (revision.value.supersedes ?? []).some((digest: string) => !signed.has(digest))) return fail("chain_invalid");
   }
   const terminations: any[] = [];
   for (const compact of ((input.terminations as string[]) || [])) {
@@ -2297,7 +2296,8 @@ export function selfChecks(): void {
   const strictPadded = strictBase64url("AQ==");
   if (strictPadded.ok || strictPadded.code !== "base64url_padded") throw new Error("base64url strictness failed");
 
-  const acceptedRevision = {
+  const acceptedRevision: RevisionRecord = {
+    bytes: Buffer.alloc(0),
     digest: "known-revision",
     value: {
       abp_bindings: [{ party_role: "agent", deployment_digest: "known-deployment" }],
@@ -2310,8 +2310,15 @@ export function selfChecks(): void {
       revision_number: 2,
     },
   };
-  const projectionChain = {
+  const projectionChain: ChainView = {
+    revisions: [acceptedRevision],
+    acceptances: [],
+    terminations: [],
     accepted: [acceptedRevision],
+    acceptedDigests: [acceptedRevision.digest],
+    signedDigests: [acceptedRevision.digest],
+    topology: "linear",
+    assignmentStatuses: {},
     descriptors: {
       descriptors: [
         { digest: "issuer-descriptor", payload: { verification_keys: [{ key_id: "issuer", public_key: "issuer-key" }] } },
@@ -2353,9 +2360,8 @@ export function selfChecks(): void {
   if (projectReceipt({ ...knownClaims, deployment_digest: "wrong" }, projectionChain, "known-revision").ok) {
     throw new Error("recognized receipt claim validation drifted");
   }
-  const issuerKeys = receiptSigningKeys(projectionChain, acceptedRevision, "issuer");
-  const issuerKey = issuerKeys[0] as AnyRecord;
-  if (issuerKeys.length !== 1 || issuerKey.public_key !== "issuer-key") {
+  const { keys: issuerKeys } = receiptSigningKeys(projectionChain, acceptedRevision, knownClaims, "known-revision");
+  if (issuerKeys.length !== 1 || issuerKeys[0].public_key !== "issuer-key") {
     throw new Error("receipt issuer-key selection drifted");
   }
   if (jsonWithinLimits({ nested: [["xx"]] }, Buffer.from('{"nested":[["xx"]]}'), { max_depth: 2 }).ok) {
