@@ -30,6 +30,8 @@ jobs:
     outputs:
       version: ${{ steps.validate.outputs.version }}
       name: ${{ steps.validate.outputs.name }}
+      archive: ${{ steps.validate.outputs.archive }}
+      docs: ${{ steps.validate.outputs.docs }}
     steps:
       - name: Validate the qualified release commit
         id: validate
@@ -48,9 +50,9 @@ jobs:
             grep -Fx "$RELEASE_COMMIT" >/dev/null || { echo "::error::release_commit has no successful qualified check"; exit 1; }
           package=$(gh api "$repo/contents/package.json?ref=$RELEASE_COMMIT" --jq '.content' | base64 --decode)
           version=$(jq -er '.version | strings' <<< "$package")
-          name=$(jq -er '.name | strings' <<< "$package")
-          [[ "$name" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "::error::release_commit does not declare the expected package name format"; exit 1; }
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::release_commit does not declare a release version"; exit 1; }
+          name=$(jq -er '.name | strings | select(length <= 214 and test("\\A(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*\\z"))' <<< "$package") ||
+            { echo "::error::release_commit does not declare a valid npm package name"; exit 1; }
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::release_commit does not declare an npm release version"; exit 1; }
           tags=$(gh api "$repo/git/matching-refs/tags/v$version" --jq '.[].ref')
           if grep -Fx "refs/tags/v$version" <<< "$tags" >/dev/null; then
             echo "::error::This release version is already tagged"
@@ -58,6 +60,9 @@ jobs:
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
+          archive_name="${name#@}"
+          archive_name="${archive_name/\//-}-$version"
+          printf 'archive=%s.tgz\ndocs=%s-docs.tar.gz\n' "$archive_name" "$archive_name" >> "$GITHUB_OUTPUT"
 
   build:
     needs: release
@@ -69,6 +74,8 @@ jobs:
     env:
       RELEASE_COMMIT: ${{ inputs.release_commit }}
       VERSION: ${{ needs.release.outputs.version }}
+      ARCHIVE_NAME: ${{ needs.release.outputs.archive }}
+      DOCS_ARCHIVE_NAME: ${{ needs.release.outputs.docs }}
     outputs:
       nodejs: ${{ steps.toolchain.outputs.nodejs }}
       state: ${{ steps.plan.outputs.state }}
@@ -162,18 +169,35 @@ jobs:
           print(f'{archive}: the packaged CHANGELOG is stamped for {version}')
           PY
 
+      - name: Assemble the inspected release archives
+        env:
+          RELEASE_NAME: ${{ needs.release.outputs.name }}
+        run: |
+          tar -xOf artifacts/package.tgz package/package.json |
+            jq -e --arg package "$RELEASE_NAME" --arg version "$VERSION" \
+              '.name == $package and .version == $version' >/dev/null
+          test -f site-dist/index.html
+          jq -n --arg package "$RELEASE_NAME" --arg version "$VERSION" --arg commit "$RELEASE_COMMIT" \
+            '{package: $package, version: $version, commit: $commit}' > site-dist/release.json
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C site-dist -cf - . |
+            gzip -n -9 > "artifacts/$DOCS_ARCHIVE_NAME"
+          mv -- artifacts/package.tgz "artifacts/$ARCHIVE_NAME"
+          cd artifacts
+          sha256sum -- "$ARCHIVE_NAME" "$DOCS_ARCHIVE_NAME" > SHA256SUMS
+
       - name: Plan only missing registry uploads
         id: plan
         env:
           RELEASE_NAME: ${{ needs.release.outputs.name }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
-        run: node "$RUNNER_TEMP/release-workflow/npm-release-state.mjs" --plan "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
+        run: node "$RUNNER_TEMP/release-workflow/npm-release-state.mjs" --plan "$RELEASE_NAME" "$RELEASE_VERSION" "./artifacts/$ARCHIVE_NAME"
       - name: Pass inspected archives to the upload job
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: inspected-release
           path: |
-            artifacts/package.tgz
+            artifacts/${{ needs.release.outputs.archive }}
+            artifacts/${{ needs.release.outputs.docs }}
             artifacts/SHA256SUMS
           if-no-files-found: error
           retention-days: 1
@@ -185,7 +209,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      contents: read
       id-token: write
+      attestations: write
     steps:
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -205,15 +231,26 @@ jobs:
 
       - name: Pin archive tooling
         run: npm install --global npm@11.19.0 --ignore-scripts
+      - name: Attest the release source commit
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/${{ needs.release.outputs.archive }}
+          predicate-type: https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/README.md#release-source-attestation
+          predicate: '{"release_commit":"${{ inputs.release_commit }}"}'
       - name: Publish to npm with trusted publishing
         if: needs.build.outputs.state == 'upload'
-        run: npm stage publish ./artifacts/package.tgz --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
+        env:
+          ARCHIVE_NAME: ${{ needs.release.outputs.archive }}
+        run: npm stage publish "./artifacts/$ARCHIVE_NAME" --provenance --ignore-scripts --access public --registry=https://registry.npmjs.org/
 
   read-back:
     needs: [release, build, upload]
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
     steps:
       - name: Check out the workflow revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,18 +275,31 @@ jobs:
         working-directory: artifacts
         run: sha256sum --check --strict SHA256SUMS
 
-      - name: Read back the served archive integrity
+      - name: Verify the served archive and its release source
         env:
           RELEASE_NAME: ${{ needs.release.outputs.name }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
-        run: node "$GITHUB_WORKSPACE/release-workflow/scripts/npm-release-state.mjs" --served "$RELEASE_NAME" "$RELEASE_VERSION" ./artifacts/package.tgz
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          ARCHIVE_NAME: ${{ needs.release.outputs.archive }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          served=$(mktemp "$RUNNER_TEMP/npm-served.XXXXXXXX.tgz")
+          trap 'rm -f "$served"' EXIT
+          node "$GITHUB_WORKSPACE/release-workflow/scripts/npm-release-state.mjs" --served \
+            "$RELEASE_NAME" "$RELEASE_VERSION" "./artifacts/$ARCHIVE_NAME" "$served"
+          gh attestation verify "$served" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" --source-ref "$GITHUB_REF" \
+            --predicate-type https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/README.md#release-source-attestation --format json |
+            jq -e --arg commit "$RELEASE_COMMIT" \
+              'any(.[]; .verificationResult.statement.predicate.release_commit == $commit)' >/dev/null
 
       - name: Upload consumer release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets
           path: |
-            artifacts/package.tgz
+            artifacts/${{ needs.release.outputs.archive }}
+            artifacts/${{ needs.release.outputs.docs }}
             artifacts/SHA256SUMS
           if-no-files-found: error
           retention-days: 7

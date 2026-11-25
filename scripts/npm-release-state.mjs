@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -37,37 +37,60 @@ export function releaseState({ name, version, integrity }, { status, packument }
   return "served";
 }
 
+const registry = "https://registry.npmjs.org";
+
 // Built-in fetch never reads npm credentials or exchanges the job's OIDC token.
+const fetchRegistry = (url, accept) => fetch(url, {
+  headers: { accept, "cache-control": "no-cache" },
+  credentials: "omit",
+  redirect: "error",
+  signal: AbortSignal.timeout(30_000),
+});
+
 export async function readPackument(name) {
-  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
-    headers: { accept: "application/json", "cache-control": "no-cache" },
-    credentials: "omit",
-    redirect: "error",
-    signal: AbortSignal.timeout(30_000),
-  });
+  const response = await fetchRegistry(`${registry}/${encodeURIComponent(name)}`, "application/json");
   return { status: response.status, packument: response.status === 200 ? await response.json() : null };
 }
 
+export function registryTarballURL(value) {
+  if (typeof value === "string" && URL.canParse(value)) {
+    const url = new URL(value);
+    if (url.protocol === "https:" && url.origin === registry && !url.username && !url.password) return url;
+  }
+  throw new Error("npm tarball URL must use credential-free registry.npmjs.org HTTPS");
+}
+
 export async function main(args) {
-  const [mode, name, version, archive] = args;
-  if (args.length !== 4 || !["--plan", "--served"].includes(mode) ||
+  const [mode, name, version, archive, servedOutput] = args;
+  if (!((mode === "--plan" && args.length === 4) || (mode === "--served" && args.length === 5)) ||
       !/^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*$/.test(name ?? "") ||
       !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version ?? "")) {
-    throw new Error("usage: node scripts/npm-release-state.mjs --plan|--served <name> <version> <tarball>");
+    throw new Error("usage: node scripts/npm-release-state.mjs (--plan NAME VERSION TARBALL | --served NAME VERSION TARBALL SERVED_OUTPUT)");
   }
+
   let state;
   try {
-    const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
-    state = releaseState({ name, version, integrity }, await readPackument(name));
+    const local = readFileSync(archive);
+    const integrity = `sha512-${createHash("sha512").update(local).digest("base64")}`;
+    const registryResult = await readPackument(name);
+    state = releaseState({ name, version, integrity }, registryResult);
+
+    if (mode === "--served") {
+      if (state !== "served") throw new Error(`${name}@${version} is not yet served`);
+      const url = registryTarballURL(registryResult.packument.versions[version].dist.tarball);
+      const response = await fetchRegistry(url, "application/octet-stream");
+      if (response.status !== 200) throw new Error(`npm tarball read failed (HTTP ${response.status})`);
+      const served = Buffer.from(await response.arrayBuffer());
+      if (!served.equals(local)) throw new Error("served npm tarball bytes differ from the inspected archive");
+      writeFileSync(servedOutput, served);
+      console.log(`${name}@${version}: served archive matches the local tarball`);
+      return;
+    }
   } catch (error) {
     if (mode === "--served") throw new Error(`${error.message}; ${heldMessage}`);
     throw error;
   }
-  if (mode === "--served") {
-    if (state !== "served") throw new Error(`${name}@${version}: ${heldMessage}`);
-    console.log(`${name}@${version}: served archive matches the local tarball`);
-    return;
-  }
+
   if (!process.env.GITHUB_OUTPUT) throw new Error("--plan requires GITHUB_OUTPUT");
   appendFileSync(process.env.GITHUB_OUTPUT, `state=${state}\n`);
   console.log(`state=${state}`);

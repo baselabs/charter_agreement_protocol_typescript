@@ -281,21 +281,35 @@ is still pending may attempt to stage again, which npm refuses without
 replacing the staged version. Approve the pending stage before dispatching
 again.
 
-The consumer-verified `package.tgz` and `SHA256SUMS` leave the job as one
-`release-assets` artifact. After a successful registry read-back, the
-maintainers' release process tags the published commit as `v<version>`,
-compares the archive with npm's bytes, and creates that version's GitHub
-release with those files. No workflow creates a release or runs on a tag.
+Read-back downloads the npm tarball and compares its bytes with the inspected
+archive. After it verifies the signed release commit, the workflow exports
+`charter-agreement-protocol-verifier-<version>.tgz`, the site docs archive and `SHA256SUMS`. The docs archive
+contains root `index.html` and `release.json`. The release operator compares the
+tarball with npm's bytes and tags the commit named by `release.json`.
 For a paired release, publish and verify the verifier first.
 
-To verify a release, download `package.tgz` and `SHA256SUMS` from the matching
-[`v<version>` GitHub release](https://github.com/baselabs/charter_agreement_protocol_typescript/releases),
-then run `sha256sum --check SHA256SUMS` in their directory. Check that the
-archive's SHA-512 matches npm's `dist.integrity`, and inspect its source and
-npm provenance for that exact version (replace `<version>` below):
+### Release source attestation
 
-```console
-npm view '@charter-agreement-protocol/verifier@<version>' repository.url dist.integrity dist.attestations
+npm provenance identifies the default-branch workflow revision. The release
+workflow also signs a predicate containing the qualified `release_commit` over
+the checked tarball's digest. Read-back checks that predicate against the
+tarball downloaded from npm.
+
+To verify a release, download the archives and `SHA256SUMS` from the matching
+[`v<version>` GitHub release](https://github.com/baselabs/charter_agreement_protocol_typescript/releases) and run
+`sha256sum --check SHA256SUMS` in their directory. Compare the tarball's SHA-512
+with npm's `dist.integrity`, then verify its release source against the tag.
+
+```sh
+published_commit=$(gh api "repos/baselabs/charter_agreement_protocol_typescript/commits/v<version>" -q .sha)
+gh attestation verify "charter-agreement-protocol-verifier-<version>.tgz" \
+  --repo baselabs/charter_agreement_protocol_typescript \
+  --signer-workflow baselabs/charter_agreement_protocol_typescript/.github/workflows/publish.yml \
+  --source-ref refs/heads/main \
+  --predicate-type 'https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/README.md#release-source-attestation' \
+  --format json |
+  jq -e --arg commit "$published_commit" \
+    'any(.[]; .verificationResult.statement.predicate.release_commit == $commit)'
 ```
 
 Site typechecking and building are required by `qualified`. The release operator dispatches

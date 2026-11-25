@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { releaseState } from "./scripts/npm-release-state.mjs";
+import { registryTarballURL, releaseState } from "./scripts/npm-release-state.mjs";
 
 // Selected fields recorded from the public registry; source URLs and dates are
 // stored alongside the JSON. These are inputs to a pure function, no fake server.
@@ -148,17 +148,52 @@ test("publication is dispatch-only and leaves releases to the maintainers", () =
   assert.match(workflow, /^    timeout-minutes: 90 # no green run yet$/m);
 });
 
+test("the release guard recognizes the real scoped package manifest", () => {
+  const manifest = readFileSync(new URL("./package.json", import.meta.url), "utf8");
+  const [validation] = jobs.release.match(/^ {10}name=\$\([^\n]+\) \|\|\n {12}\{ [^\n]+\}$/m);
+  const validate = (input) => execFileSync("bash", [
+    "-euo", "pipefail", "-c", `package=$(cat)\n${validation}\nprintf '%s' "$name"`,
+  ], { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+
+  assert.equal(validate(manifest), JSON.parse(manifest).name);
+  for (const name of ["@scope", "@scope/", "@Scope/pkg", "@scope/a/b", "@scope/.pkg", "@scope/pkg\n", "a".repeat(215)]) {
+    assert.throws(() => validate(JSON.stringify({ name })),
+      (error) => error.status === 1 && error.stdout.includes("does not declare a valid npm package name"));
+  }
+});
+
+test("served tarballs must come from the credential-free npm registry origin", () => {
+  const url = "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz";
+  assert.equal(registryTarballURL(url).href, url);
+  for (const value of [
+    null, "/pkg.tgz", "http://registry.npmjs.org/pkg.tgz", "https://npm.example/pkg.tgz",
+    "https://user@registry.npmjs.org/pkg.tgz", "https://registry.npmjs.org:444/pkg.tgz",
+    "blob:https://registry.npmjs.org/pkg.tgz",
+  ]) {
+    assert.throws(() => registryTarballURL(value), /credential-free registry\.npmjs\.org HTTPS/);
+  }
+});
+
 test("read-back publishes one pinned consumer release-assets artifact", () => {
   const assets = oneStep(/^          name: release-assets$/m);
   assert.match(assets, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\.6\.2/);
-  assert.match(assets, /^          name: release-assets$/m);
   assert.match(assets, /^          if-no-files-found: error$/m);
   assert.match(assets, /^          retention-days: 7$/m);
-  assert.match(assets, /^            artifacts\/package\.tgz$/m);
+  assert.match(assets, /^            artifacts\/\$\{\{ needs\.release\.outputs\.archive \}\}$/m);
+  assert.match(assets, /^            artifacts\/\$\{\{ needs\.release\.outputs\.docs \}\}$/m);
   assert.match(assets, /^            artifacts\/SHA256SUMS$/m);
-  assert.ok(steps.indexOf(oneStep(/run: npm run check:package/)) < steps.indexOf(assets));
-  assert.ok(steps.indexOf(oneStep(/run: sha256sum --check SHA256SUMS/)) < steps.indexOf(assets));
-  assert.ok(steps.indexOf(oneStep(/run: npm stage publish /)) < steps.indexOf(assets));
+
+  const assembled = oneStep(/name: Assemble the inspected release archives/);
+  assert.ok(jobs.release.includes('archive_name="${name#@}"'));
+  assert.ok(jobs.release.includes('archive_name="${archive_name/\\//-}-$version"'));
+  assert.match(assembled, /test -f site-dist\/index\.html/);
+  assert.match(assembled, /--arg commit "\$RELEASE_COMMIT"/);
+  assert.match(assembled, /\{package: \$package, version: \$version, commit: \$commit\}' > site-dist\/release\.json/);
+  assert.match(assembled, /-C site-dist -cf - \. \|/);
+  assert.ok(assembled.includes('mv -- artifacts/package.tgz "artifacts/$ARCHIVE_NAME"'));
+  assert.match(assembled, /sha256sum -- "\$ARCHIVE_NAME" "\$DOCS_ARCHIVE_NAME" > SHA256SUMS/);
+  assert.ok(steps.indexOf(oneStep(/name: Refuse a package whose changelog/)) < steps.indexOf(assembled));
+  assert.ok(steps.indexOf(assembled) < steps.indexOf(assets));
 });
 
 test("the exact archive is planned after inspection, staged only for upload, then read back", () => {
@@ -170,9 +205,23 @@ test("the exact archive is planned after inspection, staged only for upload, the
   for (const step of [plan, served]) {
     assert.match(step, /RELEASE_NAME: \$\{\{ needs\.release\.outputs\.name \}\}/);
     assert.match(step, /RELEASE_VERSION: \$\{\{ needs\.release\.outputs\.version \}\}/);
-    assert.match(step, /"\$RELEASE_NAME" "\$RELEASE_VERSION" \.\/artifacts\/package\.tgz/);
+    assert.match(step, /"\$RELEASE_NAME" "\$RELEASE_VERSION" "\.\/artifacts\/\$ARCHIVE_NAME"/);
   }
-  assert.match(stage, /npm stage publish \.\/artifacts\/package\.tgz --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
+  assert.match(stage, /npm stage publish "\.\/artifacts\/\$ARCHIVE_NAME" --provenance --ignore-scripts --access public --registry=https:\/\/registry\.npmjs\.org\//);
+
+  const attest = oneStep(/name: Attest the release source commit/);
+  assert.match(attest, /subject-path: artifacts\/\$\{\{ needs\.release\.outputs\.archive \}\}/);
+  assert.ok(attest.includes("predicate: '{\"release_commit\":\"${{ inputs.release_commit }}\"}'"));
+  const [, predicate] = attest.match(/predicate-type: (\S+)/);
+  assert.ok(served.includes(`--predicate-type ${predicate} --format json`));
+  assert.match(served, /"\.\/artifacts\/\$ARCHIVE_NAME" "\$served"/);
+  assert.match(served, /gh attestation verify "\$served"/);
+  assert.match(served, /--signer-workflow "\$GITHUB_REPOSITORY\/\.github\/workflows\/publish\.yml"/);
+  assert.ok(served.includes("RELEASE_COMMIT: ${{ inputs.release_commit }}"));
+  assert.ok(served.includes('jq -e --arg commit "$RELEASE_COMMIT"'));
+  assert.match(served, /\.verificationResult\.statement\.predicate\.release_commit == \$commit/);
+  assert.ok(steps.indexOf(attest) < steps.indexOf(stage));
+  assert.ok(steps.indexOf(served) < steps.indexOf(oneStep(/^          name: release-assets$/m)));
   const changelog = oneStep(/^      - name: Refuse a package whose changelog is not stamped for its version$/m);
   const archive = "./artifacts/package.tgz";
   const invocation = /python3[ \t]+-I[ \t]+-[ \t]+(["']?)(?:\.\/|\$GITHUB_WORKSPACE\/)?artifacts\/package\.tgz\1[ \t]+[^\n]*<</g;
