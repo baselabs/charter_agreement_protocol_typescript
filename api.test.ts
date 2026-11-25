@@ -1129,9 +1129,39 @@ test("descriptor publication retains the canonical bytes and complete opened pai
   assert.equal(verified.facts.canonical_bytes, text);
   assert.equal(verified.facts.publication_digest, publicApi.descriptorPublicationDigest(text));
   assert.equal(verified.facts.commitment_status, "opened");
-  assert.deepEqual(verified.facts.current_descriptor.lineage, [currentCompact]);
-  assert.deepEqual(verified.facts.next_descriptor.lineage, [nextCompact, currentCompact]);
+  const currentFacts = publicApi.verifyDescriptor(currentCompact);
+  assert.ok(currentFacts.ok);
+  const nextFacts = publicApi.verifyDescriptor(nextCompact, {
+    descriptor_digest: currentFacts.facts.descriptor_digest,
+    lineage: currentFacts.facts.lineage,
+  });
+  assert.ok(nextFacts.ok);
+  assert.deepEqual(verified.facts.current_descriptor, currentFacts.facts);
+  assert.deepEqual(verified.facts.next_descriptor, nextFacts.facts);
+  assert.equal(verified.facts.current_descriptor.descriptor_number, 1);
+  assert.equal(verified.facts.next_descriptor.descriptor_number, 2);
   assert.equal(verified.facts.not_verified.length, 12);
+});
+
+test("descriptor publication helpers return typed errors for malformed or oversized input", () => {
+  const { input } = corpusCase("descriptor_publication-verify.json", "descriptor-publication-opened");
+  const document = JSON.parse(input.text);
+  const next = publicApi.decodePartyDescriptor(document.descriptors[1]);
+  assert.ok(next.ok);
+  const keys = next.claims.verification_keys;
+  const tooLarge = Number.MAX_SAFE_INTEGER + 1;
+  const options = { limits: { max_bytes: 1 } };
+
+  assert.deepEqual(publicApi.encodeDescriptorPublication({ ...document, extra: tooLarge }),
+    { ok: false, code: "descriptor_publication_invalid" });
+  assert.deepEqual(publicApi.encodeDescriptorPublication({ ...document, descriptors: ["", document.descriptors[1]] }),
+    { ok: false, code: "descriptor_publication_invalid" });
+  assert.deepEqual(publicApi.encodeDescriptorPublication({ ...document, protocol_revision: new Number(8) }),
+    { ok: false, code: "invalid_type" });
+  assert.deepEqual(publicApi.descriptorNextKeyCommitment([{ ...keys[0], key_id: tooLarge }]),
+    { ok: false, code: "nested_invalid" });
+  assert.deepEqual(publicApi.encodeDescriptorPublication(document, options), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(publicApi.descriptorNextKeyCommitment(keys, options), { ok: false, code: "limit_exceeded" });
 });
 
 test("signed revision-8 framing is confined to party descriptors", () => {

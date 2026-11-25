@@ -2231,7 +2231,7 @@ function isUint8Array(value: unknown): value is Uint8Array {
   return ArrayBuffer.isView(value) && uint8ArrayTag.call(value) === "Uint8Array";
 }
 
-type CopyMode = "input" | "json";
+type CopyMode = "input" | "json" | "verification_json";
 const CHAIN_MEMBERS = ["revisions", "acceptances", "descriptors", "terminations"] as const;
 const PREDECESSOR_MEMBERS = ["lineage", "descriptor_digest", "digest"] as const;
 const FRAMING_MEMBERS = ["alg", "protectedSegment", "payloadSegment", "message"] as const;
@@ -2254,8 +2254,9 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
   type Frame = { source: any; target: any; keys: string[] | null; length: number; index: number; depth: number; artifacts: boolean };
   const frames: Frame[] = [];
   const active = new Set<object>();
+  const json = mode !== "input";
   let bytes = 0;
-  const maxBytes = mode === "json" ? limits.max_bytes : limits.max_artifact_set_bytes + limits.max_bytes;
+  const maxBytes = json ? limits.max_bytes : limits.max_artifact_set_bytes + limits.max_bytes;
   let artifactBytes = 0;
   function count(size: number) {
     bytes += size;
@@ -2264,12 +2265,12 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
   function copy(value: any, depth: number, artifacts = false, selectedMembers?: readonly string[]): any {
     if (typeof value === "string") {
       const size = Buffer.byteLength(value);
-      if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
-      count(mode === "json" ? Buffer.byteLength(JSON.stringify(value)) : size);
+      if (json && size > limits.max_string_bytes) throw COPY_LIMIT;
+      count(json ? Buffer.byteLength(JSON.stringify(value)) : size);
       return value;
     }
     if (value === null || typeof value !== "object") {
-      if (mode === "json") count(["number", "boolean"].includes(typeof value) || value === null ? JSON.stringify(value).length : 5);
+      if (json) count(["number", "boolean"].includes(typeof value) || value === null ? JSON.stringify(value).length : 5);
       return value;
     }
     if (ArrayBuffer.isView(value) && !isUint8Array(value)) throw new TypeError();
@@ -2286,12 +2287,12 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
     }
     if (mode === "input" && !Array.isArray(value) && !selectedMembers) throw new TypeError();
     if (active.has(value)) throw COPY_CYCLE;
-    if (depth + 1 > (mode === "json" ? limits.max_depth : LIMIT_MAXIMUMS.max_depth)) throw COPY_LIMIT;
+    if (depth + 1 > (json ? limits.max_depth : LIMIT_MAXIMUMS.max_depth)) throw COPY_LIMIT;
     const array = Array.isArray(value);
     const length = array ? value.length : 0;
     if (array && (!Number.isInteger(length) || length < 0 || length > 0xffff_ffff)) throw new TypeError();
-    if (array && length > (mode === "json" ? limits.max_array_items : limits.max_artifact_set_items)) throw COPY_LIMIT;
-    if (mode === "json") count(2);
+    if (array && length > (json ? limits.max_array_items : limits.max_artifact_set_items)) throw COPY_LIMIT;
+    if (json) count(2);
     const keys = array ? null : selectedMembers ? selectedMembers.filter((name) =>
       Object.prototype.propertyIsEnumerable.call(value, name)) : boundedMemberNames(value, limits.max_object_members);
     const target = array ? [] : Object.create(null);
@@ -2313,10 +2314,10 @@ function copyInput(input: unknown, limits: Limits, mode: CopyMode, members?: rea
       }
       const index = frame.index++;
       const key = frame.keys ? frame.keys[index] : String(index);
-      if (mode === "json" && index) count(1);
-      if (mode === "json" && frame.keys) {
+      if (json && index) count(1);
+      if (json && frame.keys) {
         const size = Buffer.byteLength(key);
-        if (mode === "json" && size > limits.max_string_bytes) throw COPY_LIMIT;
+        if (json && size > limits.max_string_bytes) throw COPY_LIMIT;
         count(Buffer.byteLength(JSON.stringify(key)) + 1);
       }
       const value = frame.source[key];
@@ -2452,18 +2453,31 @@ export function verifyDescriptor(
   if (!previous.ok) return previous;
   const verified = descriptorFromCompact(compact, previous.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  const one = verified.value;
-  return {
-    ok: true,
-    facts: factsRecord({
-      descriptor_digest: one.digest,
-      party_id: one.payload.party_id ?? one.digest,
-      descriptor_number: one.payload.descriptor_number,
-      lineage: [...one.lineage],
-      protocol_revision: one.payload.protocol_revision,
-      alg: one.header.alg,
-    }),
-  };
+  return { ok: true, facts: descriptorFacts(verified.value) };
+}
+
+function descriptorFacts(
+  descriptor: Extract<ReturnType<typeof descriptorFromCompact>, { ok: true }>["value"],
+  lineage = descriptor.lineage,
+) {
+  return factsRecord({
+    descriptor_digest: descriptor.digest,
+    party_id: descriptor.payload.party_id ?? descriptor.digest,
+    descriptor_number: descriptor.payload.descriptor_number,
+    lineage: [...lineage],
+    protocol_revision: descriptor.payload.protocol_revision,
+    alg: descriptor.header.alg,
+  });
+}
+
+function descriptorJsonInput(input: unknown, options: VerificationOptions) {
+  const plain = plainVerificationInputs(options, []);
+  if (!plain.ok) return plain;
+  const settings = resolveOptions(plain.value[0]);
+  if (!settings.ok) return settings;
+  const copied = copyInput(input, settings.value.limits, "verification_json");
+  if (!copied.ok) return copied;
+  return ok({ value: copied.value, limits: settings.value.limits });
 }
 
 /** Identify a closed verification-key declaration by its algorithm and public bytes. */
@@ -2480,19 +2494,16 @@ const KEY_SET_FIELDS = [nestedField("verification_keys", "array", VERIFICATION_K
 
 /** Commit to the complete active successor key set. */
 export function descriptorNextKeyCommitment(keys: unknown, options: VerificationOptions = {}): Result<string> {
-  const plain = plainVerificationInputs(options, [keys], 0);
+  const plain = descriptorJsonInput(keys, options);
   if (!plain.ok) return plain;
-  const [declarations, checkedOptions] = plain.value;
-  const settings = resolveOptions(checkedOptions);
-  if (!settings.ok) return settings;
+  const { value: declarations, limits } = plain.value;
   if (!Array.isArray(declarations)) return fail("invalid_type");
   if (declarations.length > 32) return fail("descriptor_invalid");
   const value = { verification_keys: declarations };
-  if (jsonValueError(value)) return fail("invalid_type");
-  const decoded = decodeJsonText(canonical(value), settings.value.limits);
-  if (!decoded.ok) return decoded;
   const shape = schemaError(value, KEY_SET_FIELDS);
   if (shape) return fail(shape);
+  const decoded = decodeJsonText(canonical(value), limits);
+  if (!decoded.ok) return decoded;
   const grammar = keyGrammarError({ ...value, protocol_revision: 8 });
   if (grammar) return fail(grammar);
   const ids = new Set(declarations.map((key) => key.key_id));
@@ -2507,33 +2518,36 @@ const PUBLICATION_MEMBERS = [
   "protocol_revision", "party_id", "current_descriptor_digest", "next_descriptor_digest", "descriptors",
 ];
 
+function validPublicationShape(value: unknown): value is AnyRecord {
+  return isRecord(value) && exactKeys(value, PUBLICATION_MEMBERS) &&
+    value.protocol_revision === 8 && validTaggedDigest(value.party_id) &&
+    validTaggedDigest(value.current_descriptor_digest) && validTaggedDigest(value.next_descriptor_digest) &&
+    Array.isArray(value.descriptors) && value.descriptors.length >= 2 && value.descriptors.length <= 4096 &&
+    value.descriptors.every((compact: unknown) => typeof compact === "string" && compact.length > 0);
+}
+
 function decodeDescriptorPublication(text: string, limits: Limits): Result<AnyRecord> {
   const parsed = decodeJsonText(text, limits);
   if (!parsed.ok) return fail(parsed.code === "limit_exceeded" ? parsed.code : "descriptor_publication_invalid");
   const value = parsed.value;
-  if (!isRecord(value) || canonicalTextError(parsed.value, text) || !exactKeys(value, PUBLICATION_MEMBERS) ||
-      value.protocol_revision !== 8 || !validTaggedDigest(value.party_id) ||
-      !validTaggedDigest(value.current_descriptor_digest) || !validTaggedDigest(value.next_descriptor_digest) ||
-      !Array.isArray(value.descriptors) || value.descriptors.length < 2 || value.descriptors.length > 4096 ||
-      !value.descriptors.every((compact: unknown) => typeof compact === "string")) {
-    return fail("descriptor_publication_invalid");
-  }
+  if (!validPublicationShape(value) || canonicalTextError(value, text)) return fail("descriptor_publication_invalid");
   const bounds = boundedArtifacts([value.descriptors], limits);
   return bounds ? fail(bounds) : ok(value);
 }
 
 /** Encode the closed, unsigned publication under caller limits. */
 export function encodeDescriptorPublication(claims: unknown, options: VerificationOptions = {}): Result<string> {
-  const plain = plainVerificationInputs(options, [claims], 0);
-  if (!plain.ok) return fail(plain.code === "invalid_type" && isRecord(claims) ? "descriptor_publication_invalid" : plain.code);
-  const [value, checkedOptions] = plain.value;
-  const settings = resolveOptions(checkedOptions);
-  if (!settings.ok) return settings;
+  const plain = descriptorJsonInput(claims, options);
+  if (!plain.ok) return plain;
+  const { value, limits } = plain.value;
   if (!isRecord(value)) return fail("invalid_type");
-  if (value.protocol_revision !== 8) return fail("descriptor_publication_invalid");
-  if (jsonValueError(value)) return fail("descriptor_publication_invalid");
+  const revision = value.protocol_revision;
+  if (revision instanceof Number || (typeof revision === "number" && Number.isFinite(revision) && !Number.isInteger(revision))) {
+    return fail("invalid_type");
+  }
+  if (!validPublicationShape(value)) return fail("descriptor_publication_invalid");
   const text = canonical(value);
-  const document = decodeDescriptorPublication(text, settings.value.limits);
+  const document = decodeDescriptorPublication(text, limits);
   return document.ok ? ok(text) : document;
 }
 
@@ -2600,8 +2614,8 @@ export function verifyDescriptorPublication(text: unknown, options: Verification
       next.payload.prev_descriptor_digest !== current.digest || compareTimestamps(currentTime, nextTime) >= 0) return invalid();
 
   const lineage = entries.map((entry) => entry.compact).reverse();
-  const currentDescriptor = { ...verified.get(current.digest)!, lineage: lineage.slice(1) };
-  const nextDescriptor = { ...verified.get(next.digest)!, lineage };
+  const currentDescriptor = descriptorFacts(verified.get(current.digest)!, lineage.slice(1));
+  const nextDescriptor = descriptorFacts(verified.get(next.digest)!, lineage);
   return { ok: true, facts: factsRecord({
     protocol_revision: 8,
     canonical_bytes: value,

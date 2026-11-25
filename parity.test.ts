@@ -66,6 +66,29 @@ test("browser bundle runs every certified case with its explicit substrate verdi
   }
 });
 
+test("browser descriptor publication helpers preserve typed limits and public facts", async () => {
+  const browser = await bundledVerifier();
+  const { text } = fixture("descriptor_publication-verify", "descriptor-publication-opened");
+  const document = JSON.parse(text);
+  const keys = claimsOf(document.descriptors[1]).verification_keys;
+  const tooLarge = Number.MAX_SAFE_INTEGER + 1;
+  const options = { limits: { max_bytes: 1 } };
+
+  assert.deepEqual(browser.encodeDescriptorPublication({ ...document, extra: tooLarge }),
+    { ok: false, code: "descriptor_publication_invalid" });
+  assert.deepEqual(browser.encodeDescriptorPublication({ ...document, protocol_revision: new Number(8) }),
+    { ok: false, code: "invalid_type" });
+  assert.deepEqual(browser.descriptorNextKeyCommitment([{ ...keys[0], key_id: tooLarge }]),
+    { ok: false, code: "nested_invalid" });
+  assert.deepEqual(browser.encodeDescriptorPublication(document, options), { ok: false, code: "limit_exceeded" });
+  assert.deepEqual(browser.descriptorNextKeyCommitment(keys, options), { ok: false, code: "limit_exceeded" });
+
+  const verified = browser.verifyDescriptorPublication(text);
+  assert.ok(verified.ok);
+  assert.equal(verified.facts.current_descriptor.descriptor_number, 1);
+  assert.equal(verified.facts.next_descriptor.descriptor_number, 2);
+});
+
 test("real web crypto diagnostics stay outside corpus verdict reports", async () => {
   const verifier = await bundledVerifier("node");
   assert.throws(() => verifier.reportFor("conformance"), /algorithm_unsupported_on_substrate/);
