@@ -1668,14 +1668,20 @@ function effectiveAt(revision: { value: AnyRecord }, at: { ticks: number; fracti
   return until !== null && compareTimestamps(at, until) < 0;
 }
 
-function governing(chain: any, at: { ticks: number; fraction: string }): string {
-  const groups = new Map<string, { digest: string; effective: { ticks: number; fraction: string }; roles: string[] }>();
+type TerminationGroup = {
+  digest: string;
+  effective: NonNullable<ReturnType<typeof parseTimestamp>>;
+  roles: string[];
+};
+
+function governing(chain: ChainView, at: { ticks: number; fraction: string }): string {
+  const groups = new Map<string, TerminationGroup>();
   for (const notice of chain.terminations) {
     const claims = notice.claims;
     const effective = parseTimestamp(claims.effective_at)!;
     const digest = claims.governing_revision_digest;
     const key = JSON.stringify([digest, claims.reason_code, effective.ticks, effective.fraction]);
-    const group = groups.get(key) ?? { digest, effective, roles: [] };
+    const group: TerminationGroup = groups.get(key) ?? { digest, effective, roles: [] };
     group.roles.push(claims.party_role);
     groups.set(key, group);
   }
@@ -2613,30 +2619,35 @@ function retainedInput(value: unknown, members: readonly string[]): Result<unkno
 }
 
 function copyChainArtifacts(input: AnyRecord, limits: Limits): Result<ChainInput> {
-  const lists = CHAIN_MEMBERS.map((name) => input[name]);
+  const lists: unknown[] = CHAIN_MEMBERS.map((name) => input[name]);
   if (!lists.every(Array.isArray)) return fail("invalid_type");
   const copied: ChainInput = { revisions: [], acceptances: [], descriptors: [], terminations: [] };
   let remainingBytes = limits.max_artifact_set_bytes;
   for (const [index, name] of CHAIN_MEMBERS.entries()) {
-    const list = lists[index];
-    const length = list.length;
-    if (!Number.isInteger(length) || length < 0 || length > 0xffff_ffff) return fail("invalid_type");
-    // Reject an oversized proxy-reported length before reading any elements.
-    // For actual arrays, the first invalid element can precede the item bound.
-    if (length > LIMIT_MAXIMUMS.max_artifact_set_items &&
-        length !== Object.getOwnPropertyDescriptor(list, "length")?.value) return fail("limit_exceeded");
-    for (let item = 0; item < length; item++) {
-      if (item >= limits.max_artifact_set_items) return fail("limit_exceeded");
-      const text = list[item];
-      if (typeof text !== "string") return fail("invalid_type");
-      if (remainingBytes >= 0) {
-        remainingBytes -= text.length > remainingBytes ? text.length : Buffer.byteLength(text);
-        if (remainingBytes >= 0) copied[name].push(text);
-      }
-    }
-    if (remainingBytes < 0) return fail("limit_exceeded");
+    const bounded = boundArtifactList(lists[index], limits, remainingBytes, copied[name]);
+    if (!bounded.ok) return bounded;
+    remainingBytes = bounded.value;
   }
   return ok(copied);
+}
+
+function boundArtifactList(list: unknown[], limits: Limits, remainingBytes: number, copy?: string[]): Result<number> {
+  const length = list.length;
+  if (!Number.isInteger(length) || length < 0 || length > 0xffff_ffff) return fail("invalid_type");
+  // Reject an oversized proxy-reported length before reading any elements.
+  // For actual arrays, the first invalid element can precede the item bound.
+  if (length > LIMIT_MAXIMUMS.max_artifact_set_items &&
+      length !== Object.getOwnPropertyDescriptor(list, "length")?.value) return fail("limit_exceeded");
+  for (let item = 0; item < length; item++) {
+    if (item >= limits.max_artifact_set_items) return fail("limit_exceeded");
+    const text = list[item];
+    if (typeof text !== "string") return fail("invalid_type");
+    if (remainingBytes >= 0) {
+      remainingBytes -= text.length > remainingBytes ? text.length : Buffer.byteLength(text);
+      if (remainingBytes >= 0) copy?.push(text);
+    }
+  }
+  return remainingBytes < 0 ? fail("limit_exceeded") : ok(remainingBytes);
 }
 
 function plainVerificationInputs<const T extends unknown[]>(options: VerificationOptions | SigningOptions, inputs: T, jsonIndex = -1, predecessorIndex = -1, inputMembers: Record<number, readonly string[]> = {}): Result<[...T, SigningOptions]> {
@@ -2809,8 +2820,8 @@ function decodeDescriptorPublication(text: string, limits: Limits): Result<Descr
   if (!parsed.ok) return fail(parsed.code === "limit_exceeded" ? parsed.code : "descriptor_publication_invalid");
   const value = parsed.value;
   if (!validPublicationShape(value) || canonicalTextError(value, text)) return fail("descriptor_publication_invalid");
-  const bounds = boundedArtifacts([value.descriptors], limits);
-  return bounds ? fail(bounds) : ok(value);
+  const bounded = boundArtifactList(value.descriptors, limits, limits.max_artifact_set_bytes);
+  return bounded.ok ? ok(value) : bounded;
 }
 
 /** Encode the closed, unsigned publication under caller limits. */
