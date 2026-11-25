@@ -54,6 +54,23 @@ test("reverse differential checks both successful projections", () => {
   assert.throws(() => compare({ transitions }, before, observed({})), /legacy-unsigned-predecessor/);
 });
 
+test("reverse differential keeps the published replacement signing error", () => {
+  const id = "signing-assignment-departing-party";
+  const operation = "signing.prepare";
+  const transitions = [{
+    operation, direction: "red_to_green",
+    witnesses: [{
+      entry_point: "corpus_runner", baselines: ["npm:1.0.0"], cases: [id],
+      from: "invalid_type", to: "valid",
+    }],
+  }];
+  const observed = (value) => new Map([[`corpus_runner/${id}`, { operation, value }]]);
+  const candidate = observed({ status: "valid", output: {} });
+  assert.equal(compare({ transitions }, observed("invalid_type"), candidate), 1);
+  assert.throws(() => compare({ transitions }, observed("unsupported"), candidate),
+    /signing-assignment-departing-party/);
+});
+
 test("a missing package name requires the owner's first-publication decision", () => {
   const name = decodeURIComponent(new URL(fixtures.missing.source).pathname.slice(1));
   assert.throws(() => releaseState({ ...input(fixtures.verifier), name }, fixtures.missing), /a first publication is the owner's decision/);

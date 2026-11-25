@@ -30,7 +30,6 @@ export async function checkReverseDifferential(root, scratch, metadata) {
     "published verifier requires ML-DSA-65");
 
   const frozen = published.loadCorpus(frozenRoot);
-  const supported = new Set(Object.keys(frozen.index.applicability));
   const fresh = frozen.cases.map((one) => ({ ...one, id: "dispatch-" + one.id }));
   checkedCorpus(published, fresh, runCase);
 
@@ -40,7 +39,7 @@ export async function checkReverseDifferential(root, scratch, metadata) {
   const checked = checkedCorpus(candidate, cases, candidate.runConformanceCase);
   const observed = new Map(cases.map((one) => [
     qualified("corpus_runner", one.id),
-    observation(one.surface, baselineCorpusOutcome(one, supported, runCase)),
+    observation(one.surface, observedCase(runCase(one))),
   ]));
   recordPublicProbes(checked, candidate, cases);
   recordPublicProbes(observed, published, cases);
@@ -87,14 +86,6 @@ function checkedCorpus(api, cases, runCase) {
   }));
 }
 
-function baselineCorpusOutcome(one, supported, runCase) {
-  // These are the two gaps in the published 1.0.0 corpus interface.
-  if (one.surface === "descriptor_publication.verify") return "unsupported";
-  assert.ok(supported.has(one.surface), "missing published dispatch for " + one.surface);
-  if (one.surface === "signing.prepare" && one.input?.kind === "party_replacement") return "unsupported";
-  return observedCase(runCase(one));
-}
-
 function recordPublicProbes(observed, api, cases) {
   const inputFor = (id) => cases.find((one) => one.id === id).input;
   const example = inputFor("signing-ed25519-party_descriptor");
@@ -135,7 +126,6 @@ function direction(from, to, outputs) {
   }
   const typed = (value) => typeof value === "string" && value.length > 0 &&
     !["valid", "raised", "unsupported"].includes(value);
-  if (from === "unsupported" && (to === "valid" || typed(to))) return "baseline_unsupported";
   if (from === "raised" && typed(to)) return "crash_to_typed";
   if (from === "valid" && typed(to)) return "green_to_red";
   if (typed(from) && to === "valid") return "red_to_green";
