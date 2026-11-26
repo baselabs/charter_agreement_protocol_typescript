@@ -335,7 +335,7 @@ test("the exact archive is planned after inspection, staged only for upload, the
   const canonical = changelog.replaceAll(/^ {6}/gm, "")
     .replace(archive, "path/to/package-archive");
 
-  // The dedented YAML from infra 6f19bd49, baselabs/docs/ci.md:360–402.
+  // The shared changelog check step, dedented, with the archive path normalized.
   assert.equal(createHash("sha256").update(canonical).digest("hex"),
     "2a912ae3e07700555d8827da491b8875207341808b4a6c1137c07129f0cbfa30");
   const inspection = oneStep(/run: npm run check:package/);
