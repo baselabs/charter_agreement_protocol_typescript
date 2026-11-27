@@ -188,7 +188,7 @@ function rawCompact(kind: string, kid: string, claims: any, algorithm: string, p
   return `${message}.${sign(null, message, privateKey).toString("base64url")}`;
 }
 
-function scopedSet(algorithm: string, kinds = ["acceptance", "descriptor", "receipt", "termination"]) {
+function scopedSet(algorithm: string, options: { emptyScopes?: boolean; issuerRole?: "arbiter" | "outside_quorum" } = {}) {
   const base = fixture("chain-verify", "chain-dual-acceptance-valid");
   const keys = ["issuer", "restricted", "acceptor"].map((kid) => {
     const pair = keyPair(algorithm);
@@ -198,8 +198,8 @@ function scopedSet(algorithm: string, kinds = ["acceptance", "descriptor", "rece
     return { ...pair, kid, declaration, thumbprint: thumbprint.value };
   });
   const [issuer, restricted, acceptor] = keys;
-  const signingScopes = [{ role: "issuer", signers: [
-    { key_thumbprint: issuer.thumbprint, artifact_kinds: kinds },
+  const signingScopes = options.emptyScopes ? [] : [{ role: "issuer", signers: [
+    { key_thumbprint: issuer.thumbprint, artifact_kinds: ["acceptance", "descriptor", "receipt", "termination"] },
     { key_thumbprint: restricted.thumbprint, artifact_kinds: [] },
   ].sort((a, b) => a.key_thumbprint < b.key_thumbprint ? -1 : 1) }];
   const descriptor = { ...claimsOf(base.descriptors[0]), protocol_revision: 8,
@@ -213,10 +213,11 @@ function scopedSet(algorithm: string, kinds = ["acceptance", "descriptor", "rece
   const rootDigest = digest(root);
   const peerDigest = digest(peer);
   const roles = ["acceptor", "issuer"];
+  const acceptanceRoles = options.issuerRole ? ["acceptor"] : roles;
   const revision = { ...JSON.parse(base.revisions[0]), protocol_revision: 8,
     parties: [peerDigest, rootDigest].map((party_descriptor_digest, index) =>
-      ({ party_descriptor_digest, role: roles[index], participation: "acceptor" })),
-    acceptance_quorum: { roles, threshold: 2 },
+      ({ party_descriptor_digest, role: roles[index], participation: index === 1 && options.issuerRole === "arbiter" ? "arbiter" : "acceptor" })),
+    acceptance_quorum: { roles: acceptanceRoles, threshold: acceptanceRoles.length },
     termination_rules: { reason_codes: ["mutual"], quorum: { roles: ["issuer"], threshold: 1 } },
   };
   const revisionText = api.canonical(revision);
@@ -234,6 +235,38 @@ function scopedSet(algorithm: string, kinds = ["acceptance", "descriptor", "rece
     acceptance, peerAcceptance, termination, receipt, chain, signAs };
 }
 
+function assignmentSet(algorithm: string, world: ReturnType<typeof scopedSet>) {
+  const { acceptor, rootDigest, revisionDigest, signAs } = world;
+  const incoming = ["incoming", "alternate"].map((kid) => {
+    const pair = keyPair(algorithm);
+    const declaration = { key_id: kid, algorithm, public_key: pair.publicKey, status: "active" };
+    const thumbprint = api.signerThumbprint(declaration);
+    assert.ok(thumbprint.ok);
+    return { ...pair, kid, declaration, thumbprint: thumbprint.value };
+  });
+  const assignee = signAs("descriptor", { ...world.descriptor, verification_keys: incoming.map((key) => key.declaration),
+    signing_scopes: [{ role: "issuer", signers: [{ key_thumbprint: incoming[0].thumbprint, artifact_kinds: ["acceptance"] }] }] }, incoming[0]);
+  const descriptor = api.descriptorDigest(assignee);
+  assert.ok(descriptor.ok);
+  const next = api.canonical({ ...world.revision,
+    charter_id: revisionDigest, prev_revision_digest: revisionDigest, revision_number: 2,
+    effective_from: "2026-08-25T13:00:00Z",
+    acceptance_quorum: { roles: ["acceptor", "issuer"], threshold: 2 },
+    parties: [world.revision.parties[0], { ...world.revision.parties[1], party_descriptor_digest: descriptor.digest }],
+    party_replacements: [{ role: "issuer", assignor_party_id: rootDigest, assignor_descriptor_digest: rootDigest,
+      assignee_descriptor_digest: descriptor.digest, assent_quorum: { roles: ["acceptor"], threshold: 1 } }],
+  });
+  const digest = api.revisionDigest(next);
+  assert.ok(digest.ok);
+  const vote = { ...world.acceptance, revision_number: 2, prev_revision_digest: revisionDigest, revision_digest: digest.digest };
+  const departing = { ...vote, replacement_role: "issuer" };
+  const arriving = { ...vote, party_descriptor_digest: descriptor.digest };
+  const remaining = signAs("acceptance", { ...vote, party_role: "acceptor",
+    party_descriptor_digest: world.revision.parties[0].party_descriptor_digest }, acceptor);
+  const chain = { ...world.chain, revisions: [...world.chain.revisions, next], descriptors: [...world.chain.descriptors, assignee] };
+  return { incoming, digest: digest.digest, departing, arriving, remaining, chain };
+}
+
 for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
   test(`signed scopes govern votes and pre-sign checks with ${algorithm}`, () => {
     const world = scopedSet(algorithm);
@@ -241,11 +274,18 @@ for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
     const options = { algorithm };
     const outside = { scope_status: "outside", signer_thumbprint: restricted.thumbprint };
     const refusal = { ok: false, code: "signing_refused" };
+    const approved = api.verifyChain(chain);
+    assert.ok(approved.ok);
+    assert.equal(approved.facts.acceptances[1].scope_status, "matched");
+    assert.equal(approved.facts.acceptances[1].credit, "not_required");
+    assert.equal(approved.facts.acceptances[1].credit_reason, null);
     const vote = signAs("acceptance", world.acceptance, restricted);
     const acceptance = api.verifyAcceptance(vote, revisionText, [root]);
     assert.ok(acceptance.ok);
     assert.equal(acceptance.facts.scope_status, outside.scope_status);
     assert.equal(acceptance.facts.signer_thumbprint, outside.signer_thumbprint);
+    assert.equal(acceptance.facts.credit, "not_evaluated");
+    assert.equal(acceptance.facts.credit_reason, null);
     const replay = api.runConformanceCase({ surface: "acceptance.verify",
       input: { compact: vote, revision_text: revisionText, descriptor_compacts: [root] } });
     assert.deepEqual(replay, { status: "valid", output: { ...outside,
@@ -254,6 +294,7 @@ for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
     const rejected = api.verifyChain({ ...chain, acceptances: [world.peerAcceptance, vote] });
     assert.ok(rejected.ok);
     assert.deepEqual(rejected.facts.acceptedDigests, []);
+    assert.deepEqual(rejected.facts.signedDigests, [revisionDigest]);
     assert.equal(rejected.facts.acceptances[1].credit, "uncredited");
     assert.equal(rejected.facts.acceptances[1].credit_reason, "signer_outside_scope");
     assert.deepEqual(api.acceptanceSigningInput(restricted.kid, world.acceptance, chain, algorithm), refusal);
@@ -262,7 +303,13 @@ for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
     const termination = api.verifyTermination(notice, revisionText, [root]);
     assert.ok(termination.ok);
     assert.equal(termination.facts.scope_status, "outside");
-    assert.deepEqual(api.governingRevision({ ...chain, terminations: [notice] }, world.termination.effective_at),
+    const outsideTermination = { ...chain, terminations: [notice] };
+    const retained = api.verifyChain(outsideTermination);
+    assert.ok(retained.ok);
+    assert.equal(retained.facts.terminations.length, 1);
+    assert.equal(retained.facts.terminations[0].scope_status, "outside");
+    assert.equal(retained.facts.terminations[0].signer_thumbprint, restricted.thumbprint);
+    assert.deepEqual(api.governingRevision(outsideTermination, world.termination.effective_at),
       { ok: true, governing: revisionDigest });
     assert.deepEqual(api.governingRevision({ ...chain, terminations: [signAs("termination", world.termination)] },
       world.termination.effective_at), { ok: true, governing: "none" });
@@ -286,103 +333,153 @@ for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
       const prepared = api.prepareSigning(kind, issuer.kid, world[kind], issuer.publicKey, chain, options);
       assert.ok(prepared.ok, JSON.stringify(prepared));
       assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, issuer.privateKey)).ok);
+      const compact = signAs(kind, world[kind]);
+      const input = kind === "receipt" ? { compact, chain } :
+        { compact, revision_text: revisionText, descriptor_compacts: [root] };
+      const result = api.runConformanceCase({ surface: `${kind}.verify`, input });
+      assert.ok(result.status === "valid");
+      const projected = result.output as { scope_status: string; signer_thumbprint: string };
+      assert.equal(projected.scope_status, "matched");
+      assert.equal(projected.signer_thumbprint, issuer.thumbprint);
     }
   });
+
+  test(`empty scopes match neither a verified acceptance nor a termination with ${algorithm}`, () => {
+    const world = scopedSet(algorithm, { emptyScopes: true });
+    for (const [kind, verify] of [["acceptance", api.verifyAcceptance], ["termination", api.verifyTermination]] as const) {
+      const result = verify(world.signAs(kind, world[kind]), world.revisionText, [world.root]);
+      assert.ok(result.ok);
+      assert.equal(result.facts.scope_status, "outside");
+      assert.equal(result.facts.signer_thumbprint, world.issuer.thumbprint);
+    }
+  });
+
+  test(`role eligibility precedes scope when evaluating acceptance credit with ${algorithm}`, () => {
+    for (const [issuerRole, reason] of [
+      ["arbiter", "arbiter_not_counted"], ["outside_quorum", "role_outside_quorum"],
+    ] as const) {
+      const { chain, acceptance, restricted, signAs } = scopedSet(algorithm, { issuerRole });
+      const verified = api.verifyChain({ ...chain,
+        acceptances: [chain.acceptances[0], signAs("acceptance", acceptance, restricted)] });
+      assert.ok(verified.ok);
+      assert.equal(verified.facts.acceptances[1].scope_status, "outside");
+      assert.equal(verified.facts.acceptances[1].credit, "uncredited");
+      assert.equal(verified.facts.acceptances[1].credit_reason, reason);
+    }
+  });
+
+  test(`an ordinary vote can remain eligible under the predecessor rule with ${algorithm}`, () => {
+    const { chain, revision, revisionDigest, acceptance, acceptor, signAs } = scopedSet(algorithm);
+    const narrowed = api.canonical({ ...revision, charter_id: revisionDigest, prev_revision_digest: revisionDigest,
+      revision_number: 2, acceptance_quorum: { roles: ["acceptor"], threshold: 1 } });
+    const digest = api.revisionDigest(narrowed);
+    assert.ok(digest.ok);
+    const vote = { ...acceptance, revision_number: 2, prev_revision_digest: revisionDigest, revision_digest: digest.digest };
+    const peer = { ...vote, party_role: "acceptor", party_descriptor_digest: revision.parties[0].party_descriptor_digest };
+    const verified = api.verifyChain({ ...chain, revisions: [...chain.revisions, narrowed],
+      acceptances: [...chain.acceptances, signAs("acceptance", peer, acceptor), signAs("acceptance", vote)] });
+    assert.ok(verified.ok);
+    assert.ok(verified.facts.acceptedDigests.includes(digest.digest));
+    assert.equal(verified.facts.acceptances[3].credit, "not_required");
+    assert.equal(verified.facts.acceptances[3].credit_reason, null);
+  });
+
+  test(`descriptor continuity uses predecessor scopes and preserves historical pins with ${algorithm}`, () => {
+    const world = scopedSet(algorithm);
+    const { issuer, restricted, acceptor, rootDigest, signAs } = world;
+    const root = api.verifyDescriptor(world.root);
+    assert.ok(root.ok);
+    const replacement = { ...world.descriptor, descriptor_number: 2, party_id: rootDigest,
+      prev_descriptor_digest: rootDigest, effective_from: "2026-08-25T11:00:00Z",
+      signing_scopes: [], verification_keys: [{ ...acceptor.declaration, key_id: "next" }] };
+    const failure = { ok: false, code: "descriptor_chain_invalid" };
+    const denied = signAs("descriptor", replacement, restricted);
+    assert.deepEqual(api.verifyDescriptor(denied, root.facts), failure);
+    assert.deepEqual(api.verifyDescriptorChain([world.root, denied]), failure);
+    assert.deepEqual(api.prepareSigning("descriptor", restricted.kid, replacement, restricted.publicKey, root.facts, { algorithm }), failure);
+    const next = signAs("descriptor", replacement);
+    assert.ok(api.prepareSigning("descriptor", issuer.kid, replacement, issuer.publicKey, root.facts, { algorithm }).ok);
+    assert.ok(api.verifyDescriptor(next, root.facts).ok);
+    const chain = { ...world.chain, descriptors: [...world.chain.descriptors, next] };
+    const acceptance = api.verifyAcceptance(signAs("acceptance", world.acceptance), world.revisionText, [world.root, next]);
+    const termination = api.verifyTermination(signAs("termination", world.termination), world.revisionText, [world.root, next]);
+    for (const result of [acceptance, termination]) {
+      assert.ok(result.ok);
+      assert.equal(result.facts.descriptor_position, "superseded");
+      assert.equal(result.facts.scope_status, "matched");
+      assert.equal(result.facts.signer_thumbprint, issuer.thumbprint);
+    }
+    const receipt = api.verifyReceipt(signAs("receipt", world.receipt), chain);
+    assert.ok(receipt.ok);
+    assert.equal(receipt.facts.scope_status, "matched");
+    assert.deepEqual(api.signerThumbprint({ ...issuer.declaration, key_id: "renamed" }), { ok: true, value: issuer.thumbprint });
+  });
+
+  test(`outside assignor and assignee votes leave an assignment pending with ${algorithm}`, () => {
+    const world = scopedSet(algorithm);
+    const { issuer, restricted, signAs } = world;
+    const { incoming, digest, departing, arriving, remaining, chain } = assignmentSet(algorithm, world);
+    for (const [assignor, assignee, status] of [
+      [issuer, incoming[0], "accepted"], [restricted, incoming[0], "pending"], [issuer, incoming[1], "pending"],
+    ] as const) {
+      const verified = api.verifyChain({ ...chain, acceptances: [...chain.acceptances, remaining,
+        signAs("acceptance", departing, assignor), signAs("acceptance", arriving, assignee)] });
+      assert.ok(verified.ok, JSON.stringify(verified));
+      assert.equal(verified.facts.assignmentStatuses[digest].status, status);
+      assert.equal(verified.facts.acceptedDigests.includes(digest), status === "accepted");
+    }
+    assert.deepEqual(api.prepareSigning("party_replacement", restricted.kid, departing, restricted.publicKey, chain, { algorithm }),
+      { ok: false, code: "signing_refused" });
+  });
+
+  test(`a replacement vote gets its credit eligibility from the predecessor with ${algorithm}`, () => {
+    const world = scopedSet(algorithm, { issuerRole: "outside_quorum" });
+    const { incoming, digest, departing, arriving, remaining, chain } = assignmentSet(algorithm, world);
+    const votes = [remaining, world.signAs("acceptance", departing), world.signAs("acceptance", arriving, incoming[0])];
+    const verified = api.verifyChain({ ...chain, acceptances: [...chain.acceptances, ...votes] });
+    assert.ok(verified.ok);
+    assert.equal(verified.facts.acceptances[3].scope_status, "matched");
+    assert.equal(verified.facts.acceptances[3].credit, "uncredited");
+    assert.equal(verified.facts.acceptances[3].credit_reason, "role_outside_quorum");
+    assert.equal(verified.facts.assignmentStatuses[digest].status, "pending");
+    assert.deepEqual(api.prepareSigning("party_replacement", world.issuer.kid, departing, world.issuer.publicKey, chain,
+      { algorithm }), { ok: false, code: "signing_refused" });
+  });
+
+  test(`scope grammar is closed and admits only sorted active thumbprints with ${algorithm}`, () => {
+    const { descriptor, issuer, restricted, signAs, signingScopes } = scopedSet(algorithm);
+    const [scope] = signingScopes;
+    const invalid = [
+      [Array.from({ length: 65 }, (_, index) => ({ role: String(index), signers: [] })), "cardinality_violation"],
+      [[{ ...scope, signers: Array(33).fill(scope.signers[0]) }], "nested_invalid"],
+      [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: Array(5).fill("descriptor") }] }], "nested_invalid"],
+      [[{ ...scope, unexpected: true }], "nested_invalid"],
+      [[{ ...scope, role: "" }], "nested_invalid"],
+      [[{ ...scope, role: "é".repeat(64) + "a" }], "nested_invalid"],
+      [[scope, scope], "descriptor_invalid"],
+      [[scope, { role: "acceptor", signers: [] }], "descriptor_invalid"],
+      [[{ ...scope, signers: [...scope.signers].reverse() }], "descriptor_invalid"],
+      [[{ ...scope, signers: [scope.signers[0], scope.signers[0]] }], "descriptor_invalid"],
+      [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: ["receipt", "acceptance"] }] }], "descriptor_invalid"],
+      [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: ["unknown"] }] }], "descriptor_invalid"],
+      [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: [null] }] }], "descriptor_invalid"],
+      [[{ ...scope, signers: [{ key_thumbprint: api.taggedDigest("signer_key", Buffer.from("absent")), artifact_kinds: [] }] }], "descriptor_invalid"],
+    ] as const;
+    for (const [signing_scopes, code] of invalid) {
+      assert.deepEqual(api.verifyDescriptor(signAs("descriptor", { ...descriptor, signing_scopes })), { ok: false, code });
+    }
+    assert.ok(api.verifyDescriptor(signAs("descriptor", {
+      ...descriptor, signing_scopes: [{ ...scope, role: "é".repeat(64) }],
+    })).ok);
+    assert.deepEqual(api.verifyDescriptor(signAs("descriptor", {
+      ...descriptor, protocol_revision: algorithm === "Ed25519" ? 2 : 3,
+    })),
+      { ok: false, code: "unknown_member" });
+    assert.deepEqual(api.verifyDescriptor(signAs("descriptor", { ...descriptor,
+      verification_keys: [issuer.declaration, { ...restricted.declaration, status: "retired" }] })),
+    { ok: false, code: "descriptor_invalid" });
+  });
 }
-
-test("descriptor continuity uses predecessor scopes and preserves historical pins", () => {
-  const world = scopedSet("Ed25519");
-  const { issuer, restricted, acceptor, rootDigest, signAs } = world;
-  const root = api.verifyDescriptor(world.root);
-  assert.ok(root.ok);
-  const replacement = { ...world.descriptor, descriptor_number: 2, party_id: rootDigest,
-    prev_descriptor_digest: rootDigest, effective_from: "2026-08-25T11:00:00Z",
-    signing_scopes: [], verification_keys: [{ ...acceptor.declaration, key_id: "next" }] };
-  const failure = { ok: false, code: "descriptor_chain_invalid" };
-  const denied = signAs("descriptor", replacement, restricted);
-  assert.deepEqual(api.verifyDescriptor(denied, root.facts), failure);
-  assert.deepEqual(api.verifyDescriptorChain([world.root, denied]), failure);
-  assert.deepEqual(api.prepareSigning("descriptor", restricted.kid, replacement, restricted.publicKey, root.facts), failure);
-  const next = signAs("descriptor", replacement);
-  assert.ok(api.prepareSigning("descriptor", issuer.kid, replacement, issuer.publicKey, root.facts).ok);
-  assert.ok(api.verifyDescriptor(next, root.facts).ok);
-  const chain = { ...world.chain, descriptors: [...world.chain.descriptors, next] };
-  const receipt = api.verifyReceipt(signAs("receipt", world.receipt), chain);
-  assert.ok(receipt.ok);
-  assert.equal(receipt.facts.scope_status, "matched");
-  assert.deepEqual(api.signerThumbprint({ ...issuer.declaration, key_id: "renamed" }), { ok: true, value: issuer.thumbprint });
-});
-
-test("outside assignor and assignee votes leave an assignment pending", () => {
-  const world = scopedSet("Ed25519");
-  const { issuer, restricted, acceptor, rootDigest, revisionDigest, signAs } = world;
-  const incoming = ["incoming", "alternate"].map((kid) => {
-    const pair = keyPair();
-    const declaration = { key_id: kid, algorithm: "Ed25519", public_key: pair.publicKey, status: "active" };
-    const thumbprint = api.signerThumbprint(declaration);
-    assert.ok(thumbprint.ok);
-    return { ...pair, kid, declaration, thumbprint: thumbprint.value };
-  });
-  const assignee = signAs("descriptor", { ...world.descriptor, verification_keys: incoming.map((key) => key.declaration),
-    signing_scopes: [{ role: "issuer", signers: [{ key_thumbprint: incoming[0].thumbprint, artifact_kinds: ["acceptance"] }] }] }, incoming[0]);
-  const descriptor = api.descriptorDigest(assignee);
-  assert.ok(descriptor.ok);
-  const next = api.canonical({ ...world.revision,
-    charter_id: revisionDigest, prev_revision_digest: revisionDigest, revision_number: 2,
-    effective_from: "2026-08-25T13:00:00Z",
-    parties: [world.revision.parties[0], { ...world.revision.parties[1], party_descriptor_digest: descriptor.digest }],
-    party_replacements: [{ role: "issuer", assignor_party_id: rootDigest, assignor_descriptor_digest: rootDigest,
-      assignee_descriptor_digest: descriptor.digest, assent_quorum: { roles: ["acceptor"], threshold: 1 } }],
-  });
-  const digest = api.revisionDigest(next);
-  assert.ok(digest.ok);
-  const vote = { ...world.acceptance, revision_number: 2, prev_revision_digest: revisionDigest, revision_digest: digest.digest };
-  const departing = { ...vote, replacement_role: "issuer" };
-  const arriving = { ...vote, party_descriptor_digest: descriptor.digest };
-  const remaining = signAs("acceptance", { ...vote, party_role: "acceptor",
-    party_descriptor_digest: world.revision.parties[0].party_descriptor_digest }, acceptor);
-  const chain = { ...world.chain, revisions: [...world.chain.revisions, next], descriptors: [...world.chain.descriptors, assignee] };
-  for (const [assignor, assignee, status] of [
-    [issuer, incoming[0], "accepted"], [restricted, incoming[0], "pending"], [issuer, incoming[1], "pending"],
-  ] as const) {
-    const verified = api.verifyChain({ ...chain, acceptances: [...chain.acceptances, remaining,
-      signAs("acceptance", departing, assignor), signAs("acceptance", arriving, assignee)] });
-    assert.ok(verified.ok, JSON.stringify(verified));
-    assert.equal(verified.facts.assignmentStatuses[digest.digest].status, status);
-    assert.equal(verified.facts.acceptedDigests.includes(digest.digest), status === "accepted");
-  }
-  assert.deepEqual(api.prepareSigning("party_replacement", restricted.kid, departing, restricted.publicKey, chain),
-    { ok: false, code: "signing_refused" });
-});
-
-test("scope grammar is closed and admits only sorted active thumbprints", () => {
-  const { descriptor, issuer, restricted, signAs, signingScopes } = scopedSet("Ed25519");
-  const [scope] = signingScopes;
-  const invalid = [
-    [Array.from({ length: 65 }, (_, index) => ({ role: String(index), signers: [] })), "cardinality_violation"],
-    [[{ ...scope, signers: Array(33).fill(scope.signers[0]) }], "nested_invalid"],
-    [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: Array(5).fill("descriptor") }] }], "nested_invalid"],
-    [[{ ...scope, unexpected: true }], "nested_invalid"],
-    [[scope, scope], "descriptor_invalid"],
-    [[{ ...scope, signers: [...scope.signers].reverse() }], "descriptor_invalid"],
-    [[{ ...scope, signers: [scope.signers[0], scope.signers[0]] }], "descriptor_invalid"],
-    [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: ["receipt", "acceptance"] }] }], "descriptor_invalid"],
-    [[{ ...scope, signers: [{ key_thumbprint: issuer.thumbprint, artifact_kinds: ["unknown"] }] }], "descriptor_invalid"],
-    [[{ ...scope, signers: [{ key_thumbprint: api.taggedDigest("signer_key", Buffer.from("absent")), artifact_kinds: [] }] }], "descriptor_invalid"],
-  ] as const;
-  for (const [signing_scopes, code] of invalid) {
-    assert.deepEqual(api.verifyDescriptor(signAs("descriptor", { ...descriptor, signing_scopes })), { ok: false, code });
-  }
-  assert.deepEqual(api.verifyDescriptor(signAs("descriptor", { ...descriptor, protocol_revision: 2 })),
-    { ok: false, code: "unknown_member" });
-  assert.deepEqual(api.verifyDescriptor(signAs("descriptor", { ...descriptor,
-    verification_keys: [issuer.declaration, { ...restricted.declaration, status: "retired" }] })),
-  { ok: false, code: "descriptor_invalid" });
-  const empty = scopedSet("Ed25519", []);
-  const view = api.verifyChain(empty.chain);
-  assert.ok(view.ok);
-  assert.deepEqual(view.facts.acceptedDigests, []);
-});
 
 for (const algorithm of ["Ed25519", "ML-DSA-65"]) test(`prepare and real finish for every kind with ${algorithm}`, () => {
   const set = mintedSet(algorithm);

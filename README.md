@@ -40,12 +40,19 @@ or `not_verified`) and `signer_thumbprint`. Bare-revision receipts and
 receipts whose named revision is unrecognized have `not_verified` scope
 and a null thumbprint.
 
-An outside acceptance remains in the verified chain with `credit` set to
-`uncredited` and `credit_reason` set to `signer_outside_scope`. Such votes
-contribute to neither assignment assent nor acceptance quorum. Outside
-termination notices remain visible and contribute no termination votes.
-Receipt scope is descriptive. Checked signing refuses outside scope with
-`signing_refused`. An outside descriptor successor returns
+Chain verification keeps every verified acceptance. It records the first
+applicable `credit_reason` in order: `arbiter_not_counted`,
+`role_outside_quorum`, and `signer_outside_scope`. A replacement vote uses
+the predecessor's acceptance rule. An ordinary vote can still count under
+the predecessor's rule when a successor narrows its quorum. A vote with a
+reason has `credit: "uncredited"` and contributes to neither assignment
+assent nor acceptance quorum. Other votes have `credit: "not_required"`
+and a null reason. Single-artifact acceptance verification returns
+`credit: "not_evaluated"` and a null reason.
+
+Outside termination notices remain visible and contribute no termination
+votes. Receipt scope is descriptive. Checked signing refuses outside scope
+with `signing_refused`. An outside descriptor successor returns
 `descriptor_chain_invalid` in verification and checked preparation.
 
 ## Install

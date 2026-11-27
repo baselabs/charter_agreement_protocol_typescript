@@ -1231,6 +1231,23 @@ function acceptanceRule(revision: RevisionRecord): QuorumRule {
   return revision.value.acceptance_quorum ?? { roles: parties.map((party) => party.role), threshold: parties.length };
 }
 
+type ParticipationReason = "arbiter_not_counted" | "role_outside_quorum";
+
+function participationReason(revision: RevisionRecord | undefined, role: string): ParticipationReason | null {
+  if (revision?.value.protocol_revision !== 8) return null;
+  const party = (revision.value.parties as QuorumParty[]).find((one) => one.role === role);
+  if (party?.participation === "arbiter") return "arbiter_not_counted";
+  return acceptanceRule(revision).roles.includes(role) ? null : "role_outside_quorum";
+}
+
+function acceptanceParticipationReason(claims: AnyRecord, revision: RevisionRecord, predecessor?: RevisionRecord): ParticipationReason | null {
+  const role = claims.party_role;
+  if (claims.replacement_role !== undefined) return participationReason(predecessor, role);
+  const reason = participationReason(revision, role);
+  if (reason === "role_outside_quorum" && predecessor && acceptanceRule(predecessor).roles.includes(role)) return null;
+  return reason;
+}
+
 function terminationRule(revision: RevisionRecord): QuorumRule {
   const parties = revision.value.parties as QuorumParty[];
   return revision.value.termination_rules.quorum ?? { roles: parties.map((party) => party.role), threshold: 1 };
@@ -1305,6 +1322,11 @@ function prepareAcceptance(compact: string, revision: RevisionRecord, chain: { d
 function acceptanceFromCompact(compact: string, revision: RevisionRecord, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   return finishPreparedArtifact(prepareAcceptance(compact, revision, chain, settings), settings);
 }
+
+type ChainAcceptance = Extract<ReturnType<typeof acceptanceFromCompact>, { ok: true }>["value"] & {
+  credit: "not_required" | "uncredited";
+  credit_reason: ParticipationReason | "signer_outside_scope" | null;
+};
 
 function prepareTermination(compact: string, revision: { value: AnyRecord; digest: string }, chain: { descriptors: { digest: string; payload: AnyRecord }[]; positions: Record<string, string> }, settings: Settings = DEFAULT_SETTINGS) {
   const decoded = decodeJws(compact, settings.limits, "cap+termination");
@@ -1599,7 +1621,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     for (const id of parties) named.add(id);
   }
   if (descriptors.value.histories.some((history) => !named.has(history.descriptors[0].payload.party_id ?? history.descriptors[0].digest))) return fail("chain_invalid");
-  const acceptances: any[] = [];
+  const acceptances: ChainAcceptance[] = [];
   for (const compact of view.acceptances) {
     const decoded = decodeJws(compact, settings.limits, "cap+acceptance");
     if (!decoded.ok) return decoded;
@@ -1608,15 +1630,12 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const { revision, chain } = routed.value;
     const verified = acceptanceFromCompact(compact, revision, chain, settings);
     if (!verified.ok) return verified;
-    const facts = verified.value;
-    const outside = facts.scope_status === "outside";
-    acceptances.push({ ...facts, credit: outside ? "uncredited" : "not_required",
-      credit_reason: outside ? "signer_outside_scope" : null });
+    acceptances.push({ ...verified.value, credit: "not_required", credit_reason: null });
   }
   const coordinates = new Set(acceptances.map(({ claims }) =>
     `${claims.revision_digest}\0${claims.party_descriptor_digest}\0${claims.party_role}`));
   if (coordinates.size !== acceptances.length) return fail("chain_invalid");
-  const votesByRevision = new Map<string, AnyRecord[]>();
+  const votesByRevision = new Map<string, ChainAcceptance[]>();
   for (const vote of acceptances) {
     const digest = vote.claims.revision_digest;
     const votes = votesByRevision.get(digest) ?? [];
@@ -1633,12 +1652,21 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const value = revision.value;
     const previous = inherited.get(value.prev_revision_digest);
     const rawPrevious = byDigest.get(value.prev_revision_digest);
+    const predecessorRule = previous ?? rawPrevious;
     const matches = votesByRevision.get(revision.digest) ?? [];
+    for (const vote of matches) {
+      const reason = acceptanceParticipationReason(vote.claims, revision, predecessorRule) ??
+        (vote.scope_status === "outside" ? "signer_outside_scope" : null);
+      if (reason !== null) {
+        vote.credit = "uncredited";
+        vote.credit_reason = reason;
+      }
+    }
     const credited = matches.filter((vote) => vote.credit !== "uncredited");
-    const signature = revisionAssent(revision, matches, previous ?? rawPrevious);
+    const signature = revisionAssent(revision, matches, predecessorRule);
     if (signature.quorum && signature.missing.length === 0) signed.add(revision.digest);
     const { quorum, missing } = credited.length === matches.length
-      ? signature : revisionAssent(revision, credited, previous ?? rawPrevious);
+      ? signature : revisionAssent(revision, credited, predecessorRule);
     const eligible = quorum && missing.length === 0 && previous === rawPrevious;
     if (eligible) acceptedSet.add(revision.digest);
     inherited.set(revision.digest, eligible ? revision : previous);
@@ -2988,7 +3016,17 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
   if (!chain.ok) return chain;
   const verified = acceptanceFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  return { ok: true, facts: factsRecord({ acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg, scope_status: verified.value.scope_status, signer_thumbprint: verified.value.signer_thumbprint }) };
+  return { ok: true, facts: factsRecord({
+    acceptance_digest: verified.value.digest,
+    claims: verified.value.claims,
+    descriptor_position: verified.value.descriptorPosition,
+    protocol_revision: verified.value.protocol_revision,
+    alg: verified.value.alg,
+    scope_status: verified.value.scope_status,
+    signer_thumbprint: verified.value.signer_thumbprint,
+    credit: "not_evaluated",
+    credit_reason: null,
+  }) };
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
@@ -3699,10 +3737,7 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
   const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);
   if (revision.value.revision_number !== 1 && (!predecessor ||
       (revision.value.supersedes ?? []).some((digest: string) => !chain.acceptedDigests.includes(digest)))) return refused();
-  if (revision.value.protocol_revision === 8 &&
-      !acceptanceRule(revision).roles.includes(claims.party_role) &&
-      !(predecessor && acceptanceRule(predecessor).roles.includes(claims.party_role)) &&
-      replacements(revision.value).length === 0) return refused();
+  if (acceptanceParticipationReason(claims, revision, predecessor) !== null) return refused();
 
   // R2 no-equivocation: no existing acceptance holds this charter/number
   // coordinate for a different revision.
