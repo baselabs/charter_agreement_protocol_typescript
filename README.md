@@ -395,7 +395,13 @@ Site typechecking and building are required by `qualified`. The release operator
 from the default branch to build and deploy the static site through GitHub's
 `github-pages` environment. A default-branch push or version tag starts neither workflow.
 
+## Contributing
+
+Contributions are licensed under Apache-2.0, as section 5 of the license describes, and
+every commit carries a Developer Certificate of Origin sign-off (`git commit -s`). See
+IPR.md.
+
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). © The Charter
-Agreement Protocol authors.
+Apache-2.0, maintained by BaseLabs Holdings LLC. See LICENSE and NOTICE, and
+IPR.md for contributions.
