@@ -59,8 +59,8 @@ test("browser bundle verifies signed descriptors and a dual acceptance chain", a
 test("browser bundle runs every certified case with its explicit substrate verdict", async () => {
   const browser = await bundledVerifier();
   const corpus = api.loadCorpus(new URL("./conformance", import.meta.url).pathname);
-  assert.equal(corpus.cases.length, 773);
-  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 18);
+  assert.equal(corpus.cases.length, 887);
+  assert.equal(corpus.cases.filter((one) => one.expect_limited).length, 47);
   for (const one of corpus.cases) {
     assert.deepEqual(browser.runConformanceCase(one), one.expect_limited ?? one.expect, one.id);
   }

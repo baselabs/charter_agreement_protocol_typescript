@@ -188,16 +188,19 @@ function rawCompact(kind: string, kid: string, claims: any, algorithm: string, p
   return `${message}.${sign(null, message, privateKey).toString("base64url")}`;
 }
 
-function scopedSet(algorithm: string, options: { emptyScopes?: boolean; issuerRole?: "arbiter" | "outside_quorum" } = {}) {
+function scopeKey(algorithm: string, kid: string) {
+  const pair = keyPair(algorithm);
+  const declaration = { key_id: kid, algorithm, public_key: pair.publicKey, status: "active" };
+  const thumbprint = api.signerThumbprint(declaration);
+  assert.ok(thumbprint.ok);
+  return { ...pair, kid, declaration, thumbprint: thumbprint.value };
+}
+
+function scopedSet(algorithm: string, options: {
+  emptyScopes?: boolean; issuerRole?: "arbiter" | "outside_quorum"; observer?: boolean;
+} = {}) {
   const base = fixture("chain-verify", "chain-dual-acceptance-valid");
-  const keys = ["issuer", "restricted", "acceptor"].map((kid) => {
-    const pair = keyPair(algorithm);
-    const declaration = { key_id: kid, algorithm, public_key: pair.publicKey, status: "active" };
-    const thumbprint = api.signerThumbprint(declaration);
-    assert.ok(thumbprint.ok);
-    return { ...pair, kid, declaration, thumbprint: thumbprint.value };
-  });
-  const [issuer, restricted, acceptor] = keys;
+  const [issuer, restricted, acceptor] = ["issuer", "restricted", "acceptor"].map((kid) => scopeKey(algorithm, kid));
   const signingScopes = options.emptyScopes ? [] : [{ role: "issuer", signers: [
     { key_thumbprint: issuer.thumbprint, artifact_kinds: ["acceptance", "descriptor", "receipt", "termination"] },
     { key_thumbprint: restricted.thumbprint, artifact_kinds: [] },
@@ -214,9 +217,21 @@ function scopedSet(algorithm: string, options: { emptyScopes?: boolean; issuerRo
   const peerDigest = digest(peer);
   const roles = ["acceptor", "issuer"];
   const acceptanceRoles = options.issuerRole ? ["acceptor"] : roles;
+  const parties = [peerDigest, rootDigest].map((party_descriptor_digest, index) =>
+    ({ party_descriptor_digest, role: roles[index], participation: index === 1 && options.issuerRole === "arbiter" ? "arbiter" : "acceptor" }));
+  const descriptors = [root, peer];
+  let observer: { signer: ReturnType<typeof scopeKey>; relay: ReturnType<typeof scopeKey>; digest: string } | undefined;
+  if (options.observer) {
+    const signer = scopeKey(algorithm, "observer");
+    const relay = scopeKey(algorithm, "relay");
+    const compact = signAs("descriptor", { ...descriptor, verification_keys: [signer.declaration, relay.declaration],
+      signing_scopes: [{ role: "observer", signers: [{ key_thumbprint: signer.thumbprint, artifact_kinds: ["acceptance"] }] }] }, signer);
+    observer = { signer, relay, digest: digest(compact) };
+    parties.push({ party_descriptor_digest: observer.digest, role: "observer", participation: "arbiter" });
+    descriptors.push(compact);
+  }
   const revision = { ...JSON.parse(base.revisions[0]), protocol_revision: 8,
-    parties: [peerDigest, rootDigest].map((party_descriptor_digest, index) =>
-      ({ party_descriptor_digest, role: roles[index], participation: index === 1 && options.issuerRole === "arbiter" ? "arbiter" : "acceptor" })),
+    parties,
     acceptance_quorum: { roles: acceptanceRoles, threshold: acceptanceRoles.length },
     termination_rules: { reason_codes: ["mutual"], quorum: { roles: ["issuer"], threshold: 1 } },
   };
@@ -229,21 +244,15 @@ function scopedSet(algorithm: string, options: { emptyScopes?: boolean; issuerRo
     charter_id: revisionDigest, governing_revision_digest: revisionDigest, party_descriptor_digest: rootDigest };
   const receipt = { ...claimsOf(fixture("receipt-verify", "receipt-signed-governing-match").compact),
     protocol_revision: algorithm === "ML-DSA-65" ? 3 : 2, charter_id: revisionDigest, revision_digest: revisionDigest };
-  const chain = { revisions: [revisionText], descriptors: [root, peer],
+  const chain = { revisions: [revisionText], descriptors,
     acceptances: [peerAcceptance, signAs("acceptance", acceptance)], terminations: [] };
   return { issuer, restricted, acceptor, descriptor, signingScopes, root, rootDigest, revision, revisionText, revisionDigest,
-    acceptance, peerAcceptance, termination, receipt, chain, signAs };
+    acceptance, peerAcceptance, termination, receipt, observer, chain, signAs };
 }
 
 function assignmentSet(algorithm: string, world: ReturnType<typeof scopedSet>) {
   const { acceptor, rootDigest, revisionDigest, signAs } = world;
-  const incoming = ["incoming", "alternate"].map((kid) => {
-    const pair = keyPair(algorithm);
-    const declaration = { key_id: kid, algorithm, public_key: pair.publicKey, status: "active" };
-    const thumbprint = api.signerThumbprint(declaration);
-    assert.ok(thumbprint.ok);
-    return { ...pair, kid, declaration, thumbprint: thumbprint.value };
-  });
+  const incoming = ["incoming", "alternate"].map((kid) => scopeKey(algorithm, kid));
   const assignee = signAs("descriptor", { ...world.descriptor, verification_keys: incoming.map((key) => key.declaration),
     signing_scopes: [{ role: "issuer", signers: [{ key_thumbprint: incoming[0].thumbprint, artifact_kinds: ["acceptance"] }] }] }, incoming[0]);
   const descriptor = api.descriptorDigest(assignee);
@@ -252,7 +261,8 @@ function assignmentSet(algorithm: string, world: ReturnType<typeof scopedSet>) {
     charter_id: revisionDigest, prev_revision_digest: revisionDigest, revision_number: 2,
     effective_from: "2026-08-25T13:00:00Z",
     acceptance_quorum: { roles: ["acceptor", "issuer"], threshold: 2 },
-    parties: [world.revision.parties[0], { ...world.revision.parties[1], party_descriptor_digest: descriptor.digest }],
+    parties: world.revision.parties.map((party: { role: string; party_descriptor_digest: string }) =>
+      party.role === "issuer" ? { ...party, party_descriptor_digest: descriptor.digest } : party),
     party_replacements: [{ role: "issuer", assignor_party_id: rootDigest, assignor_descriptor_digest: rootDigest,
       assignee_descriptor_digest: descriptor.digest, assent_quorum: { roles: ["acceptor"], threshold: 1 } }],
   });
@@ -444,6 +454,29 @@ for (const algorithm of ["Ed25519", "ML-DSA-65"]) {
     assert.equal(verified.facts.assignmentStatuses[digest].status, "pending");
     assert.deepEqual(api.prepareSigning("party_replacement", world.issuer.kid, departing, world.issuer.publicKey, chain,
       { algorithm }), { ok: false, code: "signing_refused" });
+  });
+
+  test(`ordinary assignment assent applies scope even for an arbiter with ${algorithm}`, () => {
+    const world = scopedSet(algorithm, { observer: true });
+    assert.ok(world.observer);
+    const { signer, relay, digest: observerDigest } = world.observer;
+    const { incoming, digest, departing, arriving, remaining, chain } = assignmentSet(algorithm, world);
+    const votes = [remaining, world.signAs("acceptance", departing), world.signAs("acceptance", arriving, incoming[0])];
+    const claims = { ...arriving, party_role: "observer", party_descriptor_digest: observerDigest };
+    const partial = { ...chain, acceptances: [...chain.acceptances, ...votes] };
+    for (const [key, scope, status] of [[signer, "matched", "accepted"], [relay, "outside", "pending"]] as const) {
+      const vote = world.signAs("acceptance", claims, key);
+      const verified = api.verifyChain({ ...partial, acceptances: [...partial.acceptances, vote] });
+      assert.ok(verified.ok);
+      const facts = verified.facts.acceptances.find((fact: any) => fact.claims.party_role === "observer");
+      assert.equal(facts.scope_status, scope);
+      assert.equal(facts.credit, "uncredited");
+      assert.equal(facts.credit_reason, "arbiter_not_counted");
+      assert.equal(verified.facts.assignmentStatuses[digest].status, status);
+    }
+    assert.ok(api.prepareSigning("acceptance", signer.kid, claims, signer.publicKey, partial, { algorithm }).ok);
+    assert.deepEqual(api.prepareSigning("acceptance", relay.kid, claims, relay.publicKey, partial, { algorithm }),
+      { ok: false, code: "signing_refused" });
   });
 
   test(`scope grammar is closed and admits only sorted active thumbprints with ${algorithm}`, () => {

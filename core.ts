@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "m0lyG1Uk49ESNy6ZvhUaSwP35vX80oHvJvJ2WDO0hC4";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "OnVv8xh9p4Dpl9dZB7NQB0hwjuTDpUROT0BnNlqTHds";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -1662,7 +1662,11 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
         vote.credit_reason = reason;
       }
     }
-    const credited = matches.filter((vote) => vote.credit !== "uncredited");
+    const assigning = replacements(value).length > 0;
+    // Ordinary assignment assent is required from every party. The rules
+    // select the quorum roles, and an outside key supplies neither vote.
+    const credited = matches.filter((vote) => vote.scope_status !== "outside" &&
+      (vote.credit !== "uncredited" || (assigning && vote.claims.replacement_role === undefined)));
     const signature = revisionAssent(revision, matches, predecessorRule);
     if (signature.quorum && signature.missing.length === 0) signed.add(revision.digest);
     const { quorum, missing } = credited.length === matches.length
@@ -1670,7 +1674,7 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const eligible = quorum && missing.length === 0 && previous === rawPrevious;
     if (eligible) acceptedSet.add(revision.digest);
     inherited.set(revision.digest, eligible ? revision : previous);
-    if (replacements(value).length > 0) {
+    if (assigning) {
       assignmentStatuses[revision.digest] = { status: missing.length === 0 ? "accepted" : "pending", missingAssentRoles: missing };
     }
   }
@@ -3737,7 +3741,8 @@ function acceptanceRefusalInChain(claims: AnyRecord, chain: ChainView): RefusalR
   const predecessor = chain.accepted.find((one) => one.digest === revision.value.prev_revision_digest);
   if (revision.value.revision_number !== 1 && (!predecessor ||
       (revision.value.supersedes ?? []).some((digest: string) => !chain.acceptedDigests.includes(digest)))) return refused();
-  if (acceptanceParticipationReason(claims, revision, predecessor) !== null) return refused();
+  const ordinaryAssignmentAssent = claims.replacement_role === undefined && replacements(revision.value).length > 0;
+  if (!ordinaryAssignmentAssent && acceptanceParticipationReason(claims, revision, predecessor) !== null) return refused();
 
   // R2 no-equivocation: no existing acceptance holds this charter/number
   // coordinate for a different revision.

@@ -45,9 +45,11 @@ applicable `credit_reason` in order: `arbiter_not_counted`,
 `role_outside_quorum`, and `signer_outside_scope`. A replacement vote uses
 the predecessor's acceptance rule. An ordinary vote can still count under
 the predecessor's rule when a successor narrows its quorum. A vote with a
-reason has `credit: "uncredited"` and contributes to neither assignment
-assent nor acceptance quorum. Other votes have `credit: "not_required"`
-and a null reason. Single-artifact acceptance verification returns
+reason has `credit: "uncredited"` and contributes no quorum vote.
+Every candidate party supplies ordinary assignment assent even if its role
+is outside the quorum. An outside signer cannot supply that assent.
+Eligible votes have `credit: "not_required"` and a null reason.
+Single-artifact acceptance verification returns
 `credit: "not_evaluated"` and a null reason.
 
 Outside termination notices remain visible and contribute no termination
@@ -275,8 +277,8 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 773 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/8b26769ee09cf0c779e9d23fd5f4a8aca388f7fd/priv/conformance).
+The current corpus contains 887 cases in 17 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/16e9d8f55ae2444014c26a33d63833d4535b842b/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -284,8 +286,8 @@ A signed legacy successor of an unsigned genesis can lose governing status
 on replay. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/8b26769ee09cf0c779e9d23fd5f4a8aca388f7fd/spec/core.md).
-Node and the browser bundle run all 773 cases. The browser uses the eighteen
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/16e9d8f55ae2444014c26a33d63833d4535b842b/spec/core.md).
+Node and the browser bundle run all 887 cases. The browser uses the 47
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks
