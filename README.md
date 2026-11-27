@@ -279,7 +279,7 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
 The current corpus contains 901 cases in 18 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/ea02b77560e04aba2623882349fc710ae60a0154/priv/conformance).
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/f1f2e2acd44e827d02cfeb81d26199758cc2f8dd/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -287,7 +287,7 @@ A signed legacy successor of an unsigned genesis can lose governing status
 on replay. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/ea02b77560e04aba2623882349fc710ae60a0154/spec/core.md).
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/f1f2e2acd44e827d02cfeb81d26199758cc2f8dd/spec/core.md).
 The browser bench can inspect a receipt with its retained artifact set and
 optional grant digest. Its download contains the same JSON evidence that
 `inspectReceipt` returns. The signed segments reconstruct the receipt
