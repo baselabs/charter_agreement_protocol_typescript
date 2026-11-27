@@ -19,6 +19,35 @@ revision-8 descriptors with the existing signing-input API. Pass the signed
 history to `encodeDescriptorPublication` and `verifyDescriptorPublication` to
 check the current and next pair and its opening status.
 
+## Signer scopes
+
+A revision-8 descriptor may declare `signing_scopes`, an array of up to 64
+role entries. Each entry has a `role` and up to 32 `signers`. A signer
+entry has a `key_thumbprint` from an active verification key and an
+`artifact_kinds` array drawn from `acceptance`, `descriptor`, `receipt`,
+and `termination`. Roles, thumbprints within each role, and kinds within
+each signer entry are sorted and unique. Omission leaves the descriptor
+unrestricted. An empty scope array permits no match.
+
+`signerThumbprint` identifies a descriptor key by its algorithm and public
+key bytes. Renaming its key id preserves that identity. The predecessor must
+match `descriptor` under some role for its signing key to sign a successor.
+
+Acceptances and terminations use the descriptor digest in the signed claims.
+Receipts look up the issuing role in the named accepted revision. Those
+verifiers report `scope_status` (`not_required`, `matched`, `outside`,
+or `not_verified`) and `signer_thumbprint`. Bare-revision receipts and
+receipts whose named revision is unrecognized have `not_verified` scope
+and a null thumbprint.
+
+An outside acceptance remains in the verified chain with `credit` set to
+`uncredited` and `credit_reason` set to `signer_outside_scope`. Such votes
+contribute to neither assignment assent nor acceptance quorum. Outside
+termination notices remain visible and contribute no termination votes.
+Receipt scope is descriptive. Checked signing refuses outside scope with
+`signing_refused`. An outside descriptor successor returns
+`descriptor_chain_invalid` in verification and checked preparation.
+
 ## Install
 
 ```console
@@ -81,13 +110,14 @@ cannot verify green.
 | `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
 | `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
+| `signerThumbprint(key)` | Validate a descriptor verification-key declaration and return its tagged algorithm-and-public-key identity |
 | `verifyAcceptance(compact, revisionText, descriptorCompacts, options?)` / `verifyTermination(compact, revisionText, descriptorCompacts, options?)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
 | `verifyChain(chainInput, options?)` / `verifyReceipt(compact, chainInput, options?)` | Full chain-view verification (facts include topology, verified acceptances and termination notices); receipt verification against the verified chain, with `deployment_digest_matched` and `optional_extensions_retained` in its facts |
 | `checkSigningClaims(kind, claims)` | The producer build gate's claims half (the reference `decode_for_signing`): the claims-only schema checks for the four wire artifact kinds — `descriptor \| acceptance \| termination \| receipt` — shared with the verify paths; holder-side signers run it before any key is used |
 | `decodeArtifact(compact)` / `verifySignature(message, signature, publicKey, alg, options?)` | Framing decode and the strict signature primitive; the latter retains its boolean result with optional limits and algorithm filtering |
 | `descriptorSigningInput(kid, claims, alg?)` / `receiptSigningInput(kid, claims, alg?)` | The build-only producers: the exact RFC 7515 signing input per kind (emission pair gated, claims schema gated, provisional decode) — no key, no signature |
 | `acceptanceSigningInput(kid, claims, chainInput, alg?)` / `partyReplacementSigningInput(kid, claims, chainInput, alg?)` / `terminationSigningInput(kid, claims, chainInput, alg?)` | Set-aware producers. The replacement producer frames the departing party's marked acceptance. |
-| `prepareSigning(kind, kid, claims, publicKey, context, options?)` | Check framing, claims, context, profile, limits, and the holder's own signing key before signing; return a `SigningPlan` |
+| `prepareSigning(kind, kid, claims, publicKey, context, options?)` | Check framing, claims, context, profile, limits, key membership, and signer scope before signing; return a `SigningPlan` |
 | `retainSigningContext(kind, context, options?)` | Validate options and context shape, then capture a bounded context before awaiting custody. On success, `value(kid, claims, publicKey)` prepares with the same result and error order as `prepareSigning`. |
 | `finishSigning(plan, signature)` | Assemble under the plan's limits and run public verification with its retained context |
 | `SigningPlan` / `SigningKind` | The plan class exposes `kind`, `input`, and `key` (`matched` or `unnamed`); kinds are `descriptor`, `acceptance`, `party_replacement`, `termination`, and `receipt` |

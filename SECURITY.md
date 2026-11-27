@@ -48,6 +48,8 @@ In scope: everything shipped in the npm package
 
 - Decoding, canonicalization, digests, signature checks, descriptor, chain,
   acceptance, termination and receipt verification, and the facts they return.
+- Descriptor signer-scope matching, including predecessor continuity and
+  whether verified votes count toward an assignment or quorum.
 - Signing input helpers, compact assembly, `prepareSigning` and `finishSigning`.
   The caller supplies the context, time, limits, public key and signature.
 - The corpus loader and CLI, including filesystem checks. They cap a corpus

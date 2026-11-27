@@ -12,6 +12,10 @@ documented here.
 - Verify revision-8 party quorums, declared assignments, and receipt ownership.
   Prepare assignor acceptances through the same checked signing path.
 
+- Verify per-party signer scopes on revision-8 descriptors. Retain scope
+  facts on signed artifacts, exclude outside-scope votes from quorum and
+  assignment assent, and refuse outside-scope signing preparation.
+
 - Require an accepted predecessor for every charter successor. A signed legacy
   successor of an unsigned genesis remains proposed and cannot govern.
 

@@ -677,10 +677,10 @@ function verifyDecodedJws(decoded: { header: Record<string, string>; payload: An
 }
 
 type DecodedJws = Extract<ReturnType<typeof decodeJws>, { ok: true }>["value"];
-type PreparedArtifact<F extends AnyRecord = AnyRecord> = { decoded: DecodedJws; keys: AnyRecord[]; holderKeys?: AnyRecord[]; facts: F; missingKeyCode: string; unnamed: boolean };
+type PreparedArtifact<F extends AnyRecord = AnyRecord> = { decoded: DecodedJws; keys: AnyRecord[]; holderKeys?: AnyRecord[]; facts: F; missingKeyCode: string; unnamed: boolean; scopeStatus: ScopeStatus };
 
-function preparedArtifact<F extends AnyRecord>(decoded: DecodedJws, keys: AnyRecord[], facts: F, missingKeyCode: string, unnamed = false): Result<PreparedArtifact<F>> {
-  return ok({ decoded, keys: keys.filter((key) => key.key_id === decoded.header.kid && key.status === "active"), facts, missingKeyCode, unnamed });
+function preparedArtifact<F extends AnyRecord>(decoded: DecodedJws, keys: AnyRecord[], facts: F, missingKeyCode: string, unnamed = false, scopeStatus: ScopeStatus = facts.scope_status ?? "not_required"): Result<PreparedArtifact<F>> {
+  return ok({ decoded, keys: keys.filter((key) => key.key_id === decoded.header.kid && key.status === "active"), facts, missingKeyCode, unnamed, scopeStatus });
 }
 
 function finishPreparedArtifact<F extends AnyRecord>(prepared: Result<PreparedArtifact<F>>, settings: Settings): Result<F> {
@@ -690,7 +690,9 @@ function finishPreparedArtifact<F extends AnyRecord>(prepared: Result<PreparedAr
   if (keys.length === 0) return fail(missingKeyCode);
   if (decoded.header.typ !== "cap+receipt") {
     const signature = verifyDecodedJws(decoded, decoded.header.typ, keys, settings);
-    return signature.ok ? ok(facts) : signature;
+    if (!signature.ok) return signature;
+    if (decoded.header.typ === "cap+party" && prepared.value.scopeStatus === "outside") return fail("descriptor_chain_invalid");
+    return ok(facts);
   }
   const candidates = keys.map((key) => ({ key, result: verifyDecodedJws(decoded, "cap+receipt", [key], settings) }));
   const verifiedPublicKeys = new Set(candidates.filter((one) => one.result.ok).map((one) => one.key.public_key));
@@ -775,7 +777,9 @@ function prepareDecodedDescriptor(
     return fail("timestamp_invalid");
   }
   const facts = factsRecord({ ...decoded, digest, compact, lineage: [compact, ...(predecessor?.lineage ?? [])], protocol_revision: payload.protocol_revision, alg: decoded.header.alg });
-  return preparedArtifact(decoded, keys, facts, "descriptor_key_invalid");
+  const scopeStatus = predecessor?.payload.signing_scopes === undefined ? "not_required" :
+    scopeForKey(predecessor.payload, decoded.header.kid, null, "descriptor").scope_status;
+  return preparedArtifact(decoded, keys, facts, "descriptor_key_invalid", false, scopeStatus);
 }
 
 function equalDigest(left: string, right: string): boolean {
@@ -795,6 +799,29 @@ function activeThumbprints(keys: AnyRecord[]): string[] {
 
 function commitmentDigest(keys: AnyRecord[]): string {
   return taggedHash("descriptor_next_keys", Buffer.from(canonical(activeThumbprints(keys).sort())));
+}
+
+const SCOPE_KINDS = ["acceptance", "descriptor", "receipt", "termination"] as const;
+type ScopeKind = (typeof SCOPE_KINDS)[number];
+type ScopeStatus = "not_required" | "matched" | "outside" | "not_verified";
+type ScopeFacts = { scope_status: ScopeStatus; signer_thumbprint: string | null };
+type SigningScope = { role: string; signers: { key_thumbprint: string; artifact_kinds: ScopeKind[] }[] };
+const UNVERIFIED_SCOPE: ScopeFacts = { scope_status: "not_verified", signer_thumbprint: null };
+
+function scopeForKey(descriptor: AnyRecord | undefined, kid: string, role: string | null, kind: ScopeKind): ScopeFacts {
+  const key = descriptor?.verification_keys.find((one: AnyRecord) => one.key_id === kid && one.status === "active");
+  if (!key) return UNVERIFIED_SCOPE;
+  const thumbprint = keyThumbprint(key);
+  const scopes: SigningScope[] | undefined = descriptor?.signing_scopes;
+  if (scopes === undefined) return { scope_status: "not_required", signer_thumbprint: thumbprint };
+  const matched = scopes.some((scope) => (kind === "descriptor" || scope.role === role) &&
+    scope.signers.some((signer) => signer.key_thumbprint === thumbprint && signer.artifact_kinds.includes(kind)));
+  return { scope_status: matched ? "matched" : "outside", signer_thumbprint: thumbprint };
+}
+
+function scopeProjection(facts: AnyRecord): Partial<ScopeFacts> {
+  const { scope_status, signer_thumbprint } = facts;
+  return scope_status === "matched" || scope_status === "outside" ? { scope_status, signer_thumbprint } : {};
 }
 
 function descriptorFromCompact(compact: string, predecessor: { digest: string; payload: AnyRecord; lineage?: string[] } | null = null, settings: Settings = DEFAULT_SETTINGS) {
@@ -1069,6 +1096,13 @@ const COMMITTED_DESCRIPTOR_SCHEMA = [
     ? field("protocol_revision", "integer", integerRange(8, 8))
     : rule),
   digestField("next_key_commitment", false),
+  { ...nestedField("signing_scopes", "array", [
+    roleField("role"),
+    nestedField("signers", "array", [
+      field("key_thumbprint", "string", (value) => value.length === 51 && digestPattern(value)),
+      { name: "artifact_kinds", type: "array", required: true, cardinality: [0, 4] },
+    ], [0, 32]),
+  ], [0, 64]), required: false },
 ];
 const ACCEPTANCE_SCHEMA: FieldRule[] = [
   field("protocol_revision", "integer", integerRange(1, 3)), digestField("charter_id"),
@@ -1159,15 +1193,15 @@ type PartyReplacement = {
   assent_quorum: QuorumRule;
 };
 
-function orderedRoles(roles: string[]): boolean {
-  return roles.every((role, index) => index === 0 || Buffer.compare(
-    Buffer.from(roles[index - 1]), Buffer.from(role),
+function sortedUniqueStrings(values: string[]): boolean {
+  return values.every((value, index) => index === 0 || Buffer.compare(
+    Buffer.from(values[index - 1]), Buffer.from(value),
   ) < 0);
 }
 
 function validQuorum(rule: QuorumRule, eligible: string[], minimum: number): boolean {
   return rule.roles.every((role) => typeof role === "string" && eligible.includes(role)) &&
-    orderedRoles(rule.roles) && rule.threshold >= minimum && rule.threshold <= rule.roles.length;
+    sortedUniqueStrings(rule.roles) && rule.threshold >= minimum && rule.threshold <= rule.roles.length;
 }
 
 function replacements(value: AnyRecord): PartyReplacement[] {
@@ -1182,10 +1216,10 @@ function validQuorumRevision(value: AnyRecord, roles: string[]): boolean {
     .filter((party) => party.participation === "acceptor").map((party) => party.role);
   const remaining = acceptance.roles.filter((role) => !changed.includes(role));
   const minimum = changed.length === roles.length ? 0 : 1;
-  return orderedRoles(roles) &&
+  return sortedUniqueStrings(roles) &&
     validQuorum(acceptance, acceptors, 1) &&
     validQuorum(value.termination_rules.quorum, roles, 1) &&
-    orderedRoles(changed) &&
+    sortedUniqueStrings(changed) &&
     records.every((record) => acceptance.roles.includes(record.role) &&
       validQuorum(record.assent_quorum, remaining, minimum) &&
       [record.assignor_party_id, record.assignor_descriptor_digest, record.assignee_descriptor_digest]
@@ -1263,7 +1297,8 @@ function prepareAcceptance(compact: string, revision: RevisionRecord, chain: { d
   if (!descriptor) return fail("acceptance_claims_mismatch");
   const acceptanceAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (acceptanceAdmission) return fail(acceptanceAdmission);
-  const facts = factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  const scope = scopeForKey(descriptor.payload, decoded.value.header.kid, claims.party_role, "acceptance");
+  const facts = factsRecord({ claims, digest: taggedHash("acceptance_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg, ...scope });
   return preparedArtifact(decoded.value, descriptor.payload.verification_keys, facts, "acceptance_invalid");
 }
 
@@ -1285,7 +1320,8 @@ function prepareTermination(compact: string, revision: { value: AnyRecord; diges
   if (!descriptor) return fail("termination_claims_mismatch");
   const terminationAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (terminationAdmission) return fail(terminationAdmission);
-  const facts = factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  const scope = scopeForKey(descriptor.payload, decoded.value.header.kid, claims.party_role, "termination");
+  const facts = factsRecord({ claims, digest: taggedHash("termination_content", decoded.value.payloadBytes), descriptorPosition: chain.positions[claims.party_descriptor_digest], protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg, ...scope });
   return preparedArtifact(decoded.value, descriptor.payload.verification_keys, facts, "termination_invalid");
 }
 
@@ -1572,7 +1608,10 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const { revision, chain } = routed.value;
     const verified = acceptanceFromCompact(compact, revision, chain, settings);
     if (!verified.ok) return verified;
-    acceptances.push(verified.value);
+    const facts = verified.value;
+    const outside = facts.scope_status === "outside";
+    acceptances.push({ ...facts, credit: outside ? "uncredited" : "not_required",
+      credit_reason: outside ? "signer_outside_scope" : null });
   }
   const coordinates = new Set(acceptances.map(({ claims }) =>
     `${claims.revision_digest}\0${claims.party_descriptor_digest}\0${claims.party_role}`));
@@ -1595,10 +1634,12 @@ function chainFromInput(input: AnyRecord, settings: Settings = DEFAULT_SETTINGS)
     const previous = inherited.get(value.prev_revision_digest);
     const rawPrevious = byDigest.get(value.prev_revision_digest);
     const matches = votesByRevision.get(revision.digest) ?? [];
-    const { quorum, missing } = revisionAssent(revision, matches, previous ?? rawPrevious);
-    const ready = quorum && missing.length === 0;
-    if (ready) signed.add(revision.digest);
-    const eligible = ready && previous === rawPrevious;
+    const credited = matches.filter((vote) => vote.credit !== "uncredited");
+    const signature = revisionAssent(revision, matches, previous ?? rawPrevious);
+    if (signature.quorum && signature.missing.length === 0) signed.add(revision.digest);
+    const { quorum, missing } = credited.length === matches.length
+      ? signature : revisionAssent(revision, credited, previous ?? rawPrevious);
+    const eligible = quorum && missing.length === 0 && previous === rawPrevious;
     if (eligible) acceptedSet.add(revision.digest);
     inherited.set(revision.digest, eligible ? revision : previous);
     if (replacements(value).length > 0) {
@@ -1677,6 +1718,7 @@ type TerminationGroup = {
 function governing(chain: ChainView, at: { ticks: number; fraction: string }): string {
   const groups = new Map<string, TerminationGroup>();
   for (const notice of chain.terminations) {
+    if (notice.scope_status === "outside") continue;
     const claims = notice.claims;
     const effective = parseTimestamp(claims.effective_at)!;
     const digest = claims.governing_revision_digest;
@@ -1779,20 +1821,21 @@ function receiptSigningKeys(
     return [...new Map(keys.map((key) => [canonical(key), key])).values()];
   };
   const keys = keysFrom(descriptors);
+  const scopeDescriptor: AnyRecord | undefined = claimedRevision ? descriptors[0]?.payload : undefined;
   if (!chain.accepted.some((revision) => replacements(revision.value).length > 0)) {
-    return { keys, holderKeys: keys, holderMatch: "not_evaluated" };
+    return { keys, holderKeys: keys, holderMatch: "not_evaluated", scopeDescriptor };
   }
 
   const holderDigest = governingDigest === "none" ?
     latestAssignmentRevision(chain, role, parseTimestamp(claims.occurred_at)!) : governingDigest;
   const holderRevision = chain.accepted.find((revision) => revision.digest === holderDigest);
   const holder = holderRevision && findDescriptor(roleDescriptor(holderRevision, role));
-  if (!holder) return { keys, holderKeys: keys, holderMatch: "undetermined" };
+  if (!holder) return { keys, holderKeys: keys, holderMatch: "undetermined", scopeDescriptor };
 
   const owner = holder.payload.party_id ?? holder.digest;
   const holderKeys = keysFrom(descriptors.filter((descriptor) =>
     (descriptor.payload.party_id ?? descriptor.digest) === owner));
-  return { keys, holderKeys, holderMatch: governingDigest === "none" ? "undetermined" : "match" };
+  return { keys, holderKeys, holderMatch: governingDigest === "none" ? "undetermined" : "match", scopeDescriptor };
 }
 
 type RevisionRecord = { value: AnyRecord; bytes: Buffer; digest: string };
@@ -1822,7 +1865,7 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
     const admission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
     if (admission) return fail(admission);
     const additions = context.revision.value.protocol_revision === 8 ? ["signature", "ownership"] : ["signature"];
-    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch: "not_evaluated", optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg }, additions);
+    const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch: "not_evaluated", optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg, ...UNVERIFIED_SCOPE }, additions);
     return preparedArtifact(decoded.value, [], facts, "signature_invalid", true);
   }
   // The envelope is admitted before any key is looked up, so an
@@ -1830,8 +1873,9 @@ function prepareReceipt(compact: string, context: ReceiptContext, settings: Sett
   // forms, even when its kid names no key in the view.
   const envelopeAdmission = profileError(decoded.value.header.alg, claims.protocol_revision, settings);
   if (envelopeAdmission) return fail(envelopeAdmission);
-  const { keys, holderKeys, holderMatch } = receiptSigningKeys(context.chain, claimedRevision, claims, governingDigest);
-  const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg });
+  const { keys, holderKeys, holderMatch, scopeDescriptor } = receiptSigningKeys(context.chain, claimedRevision, claims, governingDigest);
+  const scope = scopeForKey(scopeDescriptor, decoded.value.header.kid, claims.issuing_party_role, "receipt");
+  const facts = factsRecord({ claims, digest: taggedHash("receipt_content", decoded.value.payloadBytes), ...projection.value, holderMatch, optionalExtensions: Object.keys(claims.extensions?.optional || {}).sort(), protocol_revision: claims.protocol_revision, alg: decoded.value.header.alg, ...scope });
   const prepared = preparedArtifact(decoded.value, keys, facts, "signature_invalid");
   return prepared.ok ? ok({ ...prepared.value, holderKeys: holderKeys.filter((key) =>
     key.key_id === decoded.value.header.kid && key.status === "active") }) : prepared;
@@ -1961,12 +2005,12 @@ function executeArtifactCase(one: Pick<ConformanceCase, "surface" | "input">): C
       // consumers run.
       const verified = verifyAcceptance(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
       if (!verified.ok) return invalid(verified.code);
-      return valid({ acceptance_digest: verified.facts.acceptance_digest, revision_digest: verified.facts.claims.revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, descriptor_position: verified.facts.descriptor_position });
+      return valid({ acceptance_digest: verified.facts.acceptance_digest, revision_digest: verified.facts.claims.revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, descriptor_position: verified.facts.descriptor_position, ...scopeProjection(verified.facts) });
     }
     case "termination.verify": {
       const verified = verifyTermination(input.compact, input.revision_text, input.descriptor_compacts, { profile: input.profile });
       if (!verified.ok) return invalid(verified.code);
-      return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position });
+      return valid({ termination_digest: verified.facts.termination_digest, governing_revision_digest: verified.facts.claims.governing_revision_digest, party_descriptor_digest: verified.facts.claims.party_descriptor_digest, reason_code: verified.facts.claims.reason_code, descriptor_position: verified.facts.descriptor_position, ...scopeProjection(verified.facts) });
     }
     case "receipt.verify": {
       const bareRevision = Object.hasOwn(input, "revision_text");
@@ -1990,6 +2034,7 @@ function executeArtifactCase(one: Pick<ConformanceCase, "surface" | "input">): C
         governing_match: facts.governing_match,
         deployment_digest_matched: facts.deployment_digest_matched,
         optional_extensions_retained: facts.optional_extensions_retained,
+        ...scopeProjection(facts),
       });
     }
     default:
@@ -2943,7 +2988,7 @@ export function verifyAcceptance(compact: string, revisionText: string, descript
   if (!chain.ok) return chain;
   const verified = acceptanceFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  return { ok: true, facts: factsRecord({ acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg }) };
+  return { ok: true, facts: factsRecord({ acceptance_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg, scope_status: verified.value.scope_status, signer_thumbprint: verified.value.signer_thumbprint }) };
 }
 
 export function verifyTermination(compact: string, revisionText: string, descriptorCompacts: string[], options: VerificationOptions = {}): VerifyResult {
@@ -2958,7 +3003,7 @@ export function verifyTermination(compact: string, revisionText: string, descrip
   if (!chain.ok) return chain;
   const verified = terminationFromCompact(compact, revision.value, chain.value, settings.value);
   if (!verified.ok) return { ok: false, code: verified.code };
-  return { ok: true, facts: factsRecord({ termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg }) };
+  return { ok: true, facts: factsRecord({ termination_digest: verified.value.digest, claims: verified.value.claims, descriptor_position: verified.value.descriptorPosition, protocol_revision: verified.value.protocol_revision, alg: verified.value.alg, scope_status: verified.value.scope_status, signer_thumbprint: verified.value.signer_thumbprint }) };
 }
 
 export function verifyChain(chainInput: AnyRecord, options: VerificationOptions = {}): VerifyResult {
@@ -2990,6 +3035,8 @@ export function verifyReceipt(compact: string, context: AnyRecord | string, opti
       chain_conflict: verified.value.chainConflict,
       deployment_digest_matched: verified.value.deploymentMatched,
       optional_extensions_retained: verified.value.optionalExtensions,
+      scope_status: verified.value.scope_status,
+      signer_thumbprint: verified.value.signer_thumbprint,
     }, verified.value.not_verified),
   };
 }
@@ -3086,12 +3133,22 @@ function descriptorClaimsError(payload: AnyRecord): string | null {
   if (payload.protocol_revision === 8) {
     const thumbprints = activeThumbprints(payload.verification_keys);
     if (new Set(thumbprints).size !== thumbprints.length) return "descriptor_invalid";
+    const scopes: SigningScope[] | undefined = payload.signing_scopes;
+    if (scopes !== undefined && !validSigningScopes(scopes, new Set(thumbprints))) return "descriptor_invalid";
   }
   const extensions = extensionError(payload.extensions, "party_descriptor");
   if (extensions) return extensions;
   if (!parseTimestamp(payload.effective_from)) return "timestamp_invalid";
   if (payload.descriptor_number === 1 ? (payload.prev_descriptor_digest !== undefined || payload.party_id !== undefined) : (payload.prev_descriptor_digest === undefined || payload.party_id === undefined)) return "descriptor_invalid";
   return null;
+}
+
+function validSigningScopes(scopes: SigningScope[], active: Set<string>): boolean {
+  return sortedUniqueStrings(scopes.map((scope) => scope.role)) && scopes.every(({ signers }) =>
+    sortedUniqueStrings(signers.map((signer) => signer.key_thumbprint)) &&
+    signers.every(({ key_thumbprint, artifact_kinds }) =>
+      active.has(key_thumbprint) && artifact_kinds.every((kind) => SCOPE_KINDS.includes(kind)) &&
+      sortedUniqueStrings(artifact_kinds)));
 }
 
 // ---------------------------------------------------------------------------
@@ -3324,7 +3381,7 @@ function prepareWithContext(
     // Limits cover the whole set; the caller's profile covers the routed view.
     const chain = chainFromInput(context as ChainInput, { ...settings.value, profile: DEFAULT_SETTINGS.profile });
     if (!chain.ok) return chain;
-    const refusal = artifactKind === "acceptance" ? acceptanceRefusalInChain(claims, chain.value) : terminationRefusalInChain(claims, chain.value);
+    const refusal = signingRefusalInChain(artifactKind, kid, claims, chain.value);
     if (!refusal.ok) return refusal;
     const routed = signingContextFromSet(new Map(chain.value.revisions.map((one) => [one.digest, one])), chain.value.descriptors,
       artifactKind === "acceptance" ? claims.revision_digest : claims.governing_revision_digest, claims.party_descriptor_digest, `${artifactKind}_claims_mismatch`);
@@ -3354,6 +3411,7 @@ function prepareWithContext(
   if (prepared.value.keys.length > 0 && eligibleKeys.length === 0) return fail("receipt_claims_mismatch");
   if (!prepared.value.unnamed && !eligibleKeys.some((key) => keyMatchesRow(key, row) && key.public_key === publicKey)) return fail("signing_key_mismatch");
   if (!runtimeSupportsAlgorithm(row.keyAlgorithm)) return fail("algorithm_unsupported_on_substrate");
+  if (prepared.value.scopeStatus === "outside") return fail(kind === "descriptor" ? "descriptor_chain_invalid" : "signing_refused");
   return { ok: true, plan: createSigningPlan(kind, built.input, prepared.value.unnamed ? "unnamed" : "matched", publicKey, verifyWith, settings.value) };
 }
 
@@ -3507,9 +3565,12 @@ function setSigningInput(
   [kid, claims, algorithm] = plain.value;
   const built = buildSigningInput(operation, kid, claims, algorithm);
   if (!built.ok) return built;
-  const refusal = operation === "termination"
-    ? terminationRefusal(claims, chainInput)
-    : acceptanceRefusal(claims, chainInput);
+  const context = plainVerificationInputs({}, [chainInput], -1, -1, { 0: CHAIN_MEMBERS });
+  if (!context.ok) return context;
+  const resolved = refusalChain(context.value[0]);
+  if ("invalidSet" in resolved) return fail(resolved.invalidSet);
+  const kind = operation === "termination" ? "termination" : "acceptance";
+  const refusal = signingRefusalInChain(kind, kid, claims, resolved.chain);
   return refusal.ok ? built : refusal;
 }
 
@@ -3580,10 +3641,17 @@ function refusalClaimsShape(claims: AnyRecord, stringFields: string[], integerFi
 // A non-object view mirrors the reference producer's non-ArtifactSet arm
 // (the typed producer code); an object that fails the chain discipline is
 // the caller's invalid set. Neither may throw out of the refusal boundary.
-function refusalChain(chainInput: AnyRecord): { chain: any } | { invalidSet: string } {
+function refusalChain(chainInput: AnyRecord): { chain: ChainView } | { invalidSet: string } {
   if (!chainInput || typeof chainInput !== "object" || Array.isArray(chainInput)) return { invalidSet: "signing_input_invalid" };
   const chain = chainFromInput(chainInput);
   return chain.ok ? { chain: chain.value } : { invalidSet: chain.code };
+}
+
+function signingRefusalInChain(kind: "acceptance" | "termination", kid: string, claims: AnyRecord, chain: ChainView): RefusalResult {
+  const refusal = kind === "acceptance" ? acceptanceRefusalInChain(claims, chain) : terminationRefusalInChain(claims, chain);
+  if (!refusal.ok) return refusal;
+  const descriptor = chain.descriptors.descriptors.find((one: AnyRecord) => one.digest === claims.party_descriptor_digest);
+  return scopeForKey(descriptor?.payload, kid, claims.party_role, kind).scope_status === "outside" ? refused() : refusal;
 }
 
 function refusalPartyMatches(revision: { value: AnyRecord }, claims: AnyRecord): boolean {
