@@ -4,8 +4,8 @@
 
 | Version | Security fixes |
 | --- | --- |
-| 1.x | supported |
-| 0.7.x and earlier | no; upgrade to 1.x |
+| 2.x | supported |
+| Earlier releases | upgrade to 2.x |
 
 The [changelog](CHANGELOG.md) describes verification changes between releases.
 Keep the package version with stored verification results so you can check

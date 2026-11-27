@@ -60,7 +60,7 @@ with `signing_refused`. An outside descriptor successor returns
 ## Install
 
 ```console
-npm install @charter-agreement-protocol/verifier@^1.0.0
+npm install @charter-agreement-protocol/verifier@^2.0.0
 ```
 
 
@@ -90,8 +90,8 @@ process.exitCode = report.exitStatus; // 0 = all certified cases recomputed and 
 Or from the shell:
 
 ```console
-npx @charter-agreement-protocol/verifier@^1.0.0        # the vendored certified corpus
-npx @charter-agreement-protocol/verifier@^1.0.0 --corpus DIR  # any corpus directory
+npx @charter-agreement-protocol/verifier@^2.0.0        # the vendored certified corpus
+npx @charter-agreement-protocol/verifier@^2.0.0 --corpus DIR  # any corpus directory
 ```
 
 Exit `0` means every case recomputed and agreed with the certified
@@ -259,15 +259,19 @@ cross-verifies TypeScript-signed artifacts from raw bytes):
   calls `prepareSigning` before the key is used and `finishSigning` after,
   so every protocol check stays in this package.
 
-The 1.0 signer supports both the certified verifier 0.7 line and 1.x.
-Its registry lock pins published 0.7.0 for the baseline compatibility check.
-Its other check binds verifier 1.0 to the commit and exact archive integrity
-recorded from staging. For a paired release, the maintainers' release process
-publishes and verifies the verifier before publishing the signer.
+The published signer's dependency range stops before verifier 2.0.0. Check the
+signer's verifier dependency when upgrading both packages. For a paired release,
+the maintainers publish and verify the verifier before publishing the signer.
+
+## Upgrade to 2.0
+
+Add a `"party_replacement"` branch to exhaustive switches on `SigningKind`
+and `SigningPlan.kind`. This kind prepares a marked acceptance from the
+departing party for a declared assignment.
 
 ## SemVer
 
-The 1.x public JavaScript exports, TypeScript contracts and documented option
+The public JavaScript exports, TypeScript contracts and documented option
 and error shapes follow Semantic Versioning. Removing or renaming a public
 surface, or making an incompatible change to valid-input behavior, requires a
 major release. New exports and optional options or fields are minor additions. An incompatible
@@ -277,9 +281,9 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 
 ## Conformance reference and development
 
-`reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 931 cases in 18 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/55cd0662d7fa5d3a4cf7633180ea1fdd08409e28/priv/conformance).
+`reference.json` pins CAP 1.0.0 as the published archive for compatibility
+checks. Verifier 2.0.0 implements CAP 1.1.0. Its corpus has 931 cases in 18 files
+copied from the [canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/55cd0662d7fa5d3a4cf7633180ea1fdd08409e28/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -293,7 +297,7 @@ optional grant digest. Its download contains the same JSON evidence that
 `inspectReceipt` returns. The signed segments reconstruct the receipt
 exactly when joined with periods.
 
-Node and the browser bundle run all 931 cases. The browser uses the 50
+Node and the browser bundle run all 931 cases. The browser uses the corpus's
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

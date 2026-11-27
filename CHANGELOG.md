@@ -5,6 +5,8 @@ documented here.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-11-27
+
 - Inspect receipts against retained chain artifacts in Node and the browser.
   Export the original signed segments, verified provenance, grant digest
   equality, and governing agreement as JSON.
