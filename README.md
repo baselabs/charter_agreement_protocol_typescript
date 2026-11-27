@@ -278,8 +278,8 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 901 cases in 18 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/f1f2e2acd44e827d02cfeb81d26199758cc2f8dd/priv/conformance).
+The current corpus contains 931 cases in 18 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/55cd0662d7fa5d3a4cf7633180ea1fdd08409e28/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -287,13 +287,13 @@ A signed legacy successor of an unsigned genesis can lose governing status
 on replay. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/f1f2e2acd44e827d02cfeb81d26199758cc2f8dd/spec/core.md).
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/55cd0662d7fa5d3a4cf7633180ea1fdd08409e28/spec/core.md).
 The browser bench can inspect a receipt with its retained artifact set and
 optional grant digest. Its download contains the same JSON evidence that
 `inspectReceipt` returns. The signed segments reconstruct the receipt
 exactly when joined with periods.
 
-Node and the browser bundle run all 901 cases. The browser uses the 50
+Node and the browser bundle run all 931 cases. The browser uses the 50
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

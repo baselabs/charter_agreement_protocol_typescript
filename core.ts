@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "YThYf0ylU8IagbSJiJ9eH7NwY6q4iEDJSYRXD-Vba9A";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "P3HeGj26KfNYWy2LKFTPvjZZhjEU4cafd4Z2agGcc64";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -87,7 +87,7 @@ const REQUIRED = {
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
   "receipt.verify": ["valid", "maximum_plus_one", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
-  "receipt.inspect": ["valid", "invalid_type", "invalid_constraint", "signature_invalid", "chain_fork", "terminated"],
+  "receipt.inspect": ["valid", "invalid_type", "invalid_constraint", "signature_invalid", "chain_fork", "terminated", "maximum_plus_one"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
