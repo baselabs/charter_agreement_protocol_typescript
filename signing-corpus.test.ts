@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as api from "./index.ts";
+import { corpusEd25519PrivateKey } from "./test/ed25519-fixtures.ts";
 
 const corpusCases = api.loadCorpus(new URL("./conformance", import.meta.url).pathname).cases;
 const cases = corpusCases.filter((one) => one.surface === "signing.prepare");
@@ -281,15 +282,21 @@ test("public signing preparation matches artifact corpus projections independent
     } } : { status: "invalid", error_code: prepared.code };
     assert.deepEqual(actual, one.expect);
     if (prepared.ok && prepared.plan.input.alg === "Ed25519") {
-      // The mixed-order fixture supplies public bytes without a signing seed.
-      if (one.id !== "signing-ed25519-mixed-order") {
-        const privateKey = Array.from({ length: 9 }, (_, i) => createPrivateKey({
-          key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, i + 1)]),
-          format: "der", type: "pkcs8",
-        })).find((key) => createPublicKey(key).export({ format: "jwk" }).x === input.public_key);
+      let signature: Buffer;
+      if (one.id === "signing-ed25519-mixed-order") {
+        // This constructed public key uses the signature certified with it.
+        const descriptor = corpusCases.find((row) => row.id === "descriptor-ed25519-mixed-order");
+        assert.ok(descriptor, one.id);
+        const [header, payload, encoded] = descriptor.input.compact.split(".");
+        assert.equal(prepared.plan.input.message.toString("utf8"), header + "." + payload);
+        signature = Buffer.from(encoded, "base64url");
+      } else {
+        const scopeKid = one.id.startsWith("signer-scope-") ? input.kid : undefined;
+        const privateKey = corpusEd25519PrivateKey(input.public_key, scopeKid);
         assert.ok(privateKey, one.id);
-        assert.ok(api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, privateKey)).ok);
+        signature = sign(null, prepared.plan.input.message, privateKey);
       }
+      assert.ok(api.finishSigning(prepared.plan, signature).ok, one.id);
       if (prepared.plan.key === "matched") {
         assert.deepEqual(api.finishSigning(prepared.plan, Buffer.alloc(64)), { ok: false, code: "signature_invalid" });
       }

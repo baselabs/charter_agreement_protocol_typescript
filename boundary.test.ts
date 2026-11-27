@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { sign } from "node:crypto";
 import * as api from "./index.ts";
+import { corpusEd25519PrivateKey, ed25519Fixture } from "./test/ed25519-fixtures.ts";
 
 function fixture(file: string, id: string): any {
   return JSON.parse(readFileSync(new URL(`./conformance/cases/${file}.json`, import.meta.url), "utf8"))
@@ -216,10 +217,7 @@ test("predecessor history does not consume artifact set limits", () => {
   const options = { limits: { max_artifact_set_items: 0, max_artifact_set_bytes: 0 } };
   const prepared = api.prepareSigning("descriptor", successor.kid, successor.claims, successor.public_key, previous, options);
   assert.ok(prepared.ok);
-  const privateKey = Array.from({ length: 9 }, (_, i) => createPrivateKey({
-    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, i + 1)]),
-    format: "der", type: "pkcs8",
-  })).find((key) => createPublicKey(key).export({ format: "jwk" }).x === successor.public_key);
+  const privateKey = corpusEd25519PrivateKey(successor.public_key);
   assert.ok(privateKey);
   const finished = api.finishSigning(prepared.plan, sign(null, prepared.plan.input.message, privateKey));
   assert.ok(finished.ok);
@@ -267,11 +265,7 @@ test("byte APIs use the view's elements without caller conversion hooks", () => 
   assert.equal(api.taggedDigest("party_descriptor_content", wrapped(message)),
     api.taggedDigest("party_descriptor_content", message));
   assert.ok(api.verifySignature(wrapped(message), wrapped(signature), publicKey, "EdDSA"));
-  const privateKey = createPrivateKey({
-    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, 42)]),
-    format: "der", type: "pkcs8",
-  });
-  const signingKey = createPublicKey(privateKey).export({ format: "jwk" }).x!;
+  const { privateKey, publicKey: signingKey } = ed25519Fixture(42);
   const claims = { ...signing.claims, verification_keys: [
     { ...signing.claims.verification_keys[0], public_key: signingKey },
   ] };
