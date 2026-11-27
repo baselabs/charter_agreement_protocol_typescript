@@ -8,7 +8,7 @@ const REPORT_FORMAT = "charter-agreement-protocol-conformance-report";
 const MAXIMUM_CORPUS_FILES = 64;
 const MAXIMUM_CORPUS_BYTES = 33_554_432;
 // The raw index SHA-256 must also match corpus_source in reference.json.
-export const CERTIFIED_INDEX_SHA256_BASE64URL = "f5p3xsEX4uQ0BLeXMDthNt5V37cRWxGXjPrZGWEIv5o";
+export const CERTIFIED_INDEX_SHA256_BASE64URL = "F8mT6nR_ej4pbX_x5uLOSs02oHZAdv3L3dmrCBi4-UU";
 export const CERTIFIED_REGISTRY_DIGEST = "sha-256:u754joyHGcLCTm1LYV2s6eHauUUdDfJDwwyhbAbxvzc";
 // The fourth certified identity — the specification digest over the spec
 // set — is pinned in priv/release-metadata.json and enforced by the
@@ -58,7 +58,7 @@ const SURFACES = [
   "base64url.decode", "json.decode", "canonicalization.encode", "digest.hash",
   "schema.validate", "party_descriptor.verify", "descriptor_chain.verify", "descriptor_publication.verify",
   "charter_revision.decode", "acceptance.verify", "acceptance.equivocation",
-  "termination.verify", "chain.verify", "chain.verify_profile", "governing_revision", "receipt.verify",
+  "termination.verify", "chain.verify", "chain.verify_profile", "governing_revision", "receipt.verify", "receipt.inspect",
   "signing.prepare",
 ];
 
@@ -87,6 +87,7 @@ const REQUIRED = {
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
   "receipt.verify": ["valid", "maximum_plus_one", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
+  "receipt.inspect": ["valid", "invalid_type", "invalid_constraint", "signature_invalid", "chain_fork", "terminated"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
@@ -694,15 +695,21 @@ function finishPreparedArtifact<F extends AnyRecord>(prepared: Result<PreparedAr
     if (decoded.header.typ === "cap+party" && prepared.value.scopeStatus === "outside") return fail("descriptor_chain_invalid");
     return ok(facts);
   }
+  const verified = verifiedReceiptKey(prepared.value, settings);
+  return verified.ok ? ok(facts) : verified;
+}
+
+function verifiedReceiptKey(prepared: PreparedArtifact, settings: Settings): Result<AnyRecord> {
+  const { decoded, keys } = prepared;
   const candidates = keys.map((key) => ({ key, result: verifyDecodedJws(decoded, "cap+receipt", [key], settings) }));
   const verifiedPublicKeys = new Set(candidates.filter((one) => one.result.ok).map((one) => one.key.public_key));
   if (verifiedPublicKeys.size !== 1) {
     const diagnostic = candidates.find((one) => !one.result.ok && ["algorithm_outside_profile", "revision_outside_profile", "algorithm_unsupported_on_substrate"].includes(one.result.code));
     return fail(verifiedPublicKeys.size === 0 && diagnostic && !diagnostic.result.ok ? diagnostic.result.code : "signature_invalid");
   }
-  const holders = prepared.value.holderKeys ?? keys;
+  const holders = prepared.holderKeys ?? keys;
   return holders.some((key) => verifiedPublicKeys.has(key.public_key))
-    ? ok(facts) : fail("receipt_claims_mismatch");
+    ? ok(candidates.find((one) => one.result.ok)!.key) : fail("receipt_claims_mismatch");
 }
 
 const TIMESTAMP_GRAMMAR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
@@ -2069,6 +2076,13 @@ function executeArtifactCase(one: Pick<ConformanceCase, "surface" | "input">): C
         ...scopeProjection(facts),
       });
     }
+    case "receipt.inspect": {
+      if (!exactKeys(input.chain, [...CHAIN_MEMBERS])) return invalid("invalid_type");
+      const result = inspectReceipt(input.compact, input.chain, input.grant_reference, {
+        limits: input.limits, profile: input.profile,
+      });
+      return result.ok ? valid(result.inspection) : invalid(result.code);
+    }
     default:
       return null;
   }
@@ -3081,6 +3095,158 @@ export function verifyReceipt(compact: string, context: AnyRecord | string, opti
       signer_thumbprint: verified.value.signer_thumbprint,
     }, verified.value.not_verified),
   };
+}
+
+export type ReceiptInspectionClaims = {
+  protocol_revision: 1 | 2 | 3;
+  charter_id: string;
+  revision_digest: string;
+  revision_number: number;
+  issuing_party_role: string;
+  agent_party_role: string;
+  deployment_digest: string;
+  grant: { scheme: "bap" | "host"; id: string; grant_digest?: string };
+  invocation_id: string;
+  decision: "accepted" | "rejected";
+  outcome: "effect_committed" | "no_effect" | "indeterminate";
+  occurred_at: string;
+  recorded_at: string;
+  extensions: { critical: Record<string, CanonicalValue>; optional: Record<string, CanonicalValue> };
+};
+
+type ReceiptAgreementField =
+  "agent_party_role" | "deployment_digest" | "issuing_party_role" | "revision_digest" | "revision_number";
+
+type ReceiptAgreement =
+  | { status: "matches" | "differs"; reason: null; fields: ReceiptAgreementField[];
+      governing_revision_digest: string; governing_revision_number: number }
+  | { status: "not_verified"; reason: "no_governing_revision" | "contested_governing_revision";
+      fields: []; governing_revision_digest: null; governing_revision_number: null };
+
+type ReceiptGrantComparison = {
+  claimed_digest: string | null;
+  reference_digest: string | null;
+} & (
+  { status: "matches" | "differs"; reason: null } |
+  { status: "not_verified"; reason: "receipt_grant_digest_missing" | "grant_reference_missing" }
+);
+
+export type ReceiptInspection = {
+  signed: {
+    protected_segment: string;
+    payload_segment: string;
+    signature_segment: string;
+    protected_segment_digest: string;
+    payload_segment_digest: string;
+    receipt_digest: string;
+  };
+  claims: ReceiptInspectionClaims;
+  provenance: {
+    charter_id: string;
+    revision_digest: string;
+    revision_number: number;
+    issuing_party_role: string;
+    signing_key_id: string;
+    signer_thumbprint: string;
+    alg: string;
+    revision_status: "verified" | "not_verified";
+    scope_status: ScopeStatus;
+  };
+  grant: ReceiptGrantComparison;
+  agreement: ReceiptAgreement;
+  not_verified: string[];
+};
+
+export type ReceiptInspectionResult =
+  { ok: true; inspection: ReceiptInspection } | { ok: false; code: string };
+
+function receiptAgreement(chain: ChainView, claims: ReceiptInspectionClaims): ReceiptAgreement {
+  const digest = governing(chain, parseTimestamp(claims.occurred_at)!);
+  if (digest === "contested" || digest === "none") {
+    return {
+      status: "not_verified",
+      reason: digest === "contested" ? "contested_governing_revision" : "no_governing_revision",
+      fields: [],
+      governing_revision_digest: null,
+      governing_revision_number: null,
+    };
+  }
+  const revision = chain.accepted.find((one) => one.digest === digest)!.value;
+  const roles = new Set(revision.parties.map((party: QuorumParty) => party.role));
+  const fields: ReceiptAgreementField[] = [];
+  if (!roles.has(claims.agent_party_role)) fields.push("agent_party_role");
+  if (!revision.abp_bindings.some((binding: AnyRecord) =>
+    binding.party_role === claims.agent_party_role && binding.deployment_digest === claims.deployment_digest)) {
+    fields.push("deployment_digest");
+  }
+  if (!roles.has(claims.issuing_party_role)) fields.push("issuing_party_role");
+  if (digest !== claims.revision_digest) fields.push("revision_digest");
+  if (revision.revision_number !== claims.revision_number) fields.push("revision_number");
+  return {
+    status: fields.length === 0 ? "matches" : "differs",
+    reason: null,
+    fields,
+    governing_revision_digest: digest,
+    governing_revision_number: revision.revision_number,
+  };
+}
+
+function receiptGrantComparison(claimed: string | null, reference: string | null): ReceiptGrantComparison {
+  const coordinates = { claimed_digest: claimed, reference_digest: reference };
+  if (claimed === null) return { ...coordinates, status: "not_verified", reason: "receipt_grant_digest_missing" };
+  if (reference === null) return { ...coordinates, status: "not_verified", reason: "grant_reference_missing" };
+  return { ...coordinates, status: equalDigest(claimed, reference) ? "matches" : "differs", reason: null };
+}
+
+/** Inspect a signed receipt and its retained charter artifacts. CAP never authorizes. */
+export function inspectReceipt(
+  compact: string,
+  chainInput: ChainInput,
+  grantReference: string | null = null,
+  options: VerificationOptions = {},
+): ReceiptInspectionResult {
+  const plain = plainVerificationInputs(options, [compact, chainInput], -1, -1, { 1: CHAIN_MEMBERS });
+  if (!plain.ok) return plain;
+  [compact, chainInput, options] = plain.value;
+  const settings = resolveOptions(options);
+  if (!settings.ok) return settings;
+  if (grantReference !== null && typeof grantReference !== "string") return fail("invalid_type");
+  if (grantReference !== null && !validTaggedDigest(grantReference)) return fail("digest_encoding_invalid");
+  const chain = chainFromInput(chainInput, settings.value);
+  if (!chain.ok) return chain;
+  if (typeof compact !== "string") return fail("invalid_type");
+  const prepared = prepareReceipt(compact, { kind: "chain", chain: chain.value }, settings.value);
+  if (!prepared.ok) return prepared;
+  const key = verifiedReceiptKey(prepared.value, settings.value);
+  if (!key.ok) return key;
+  const { decoded, facts } = prepared.value;
+  const claims = decoded.payload as ReceiptInspectionClaims;
+  const [protected_segment, payload_segment, signature_segment] = compact.split(".");
+  return { ok: true, inspection: {
+    signed: {
+      protected_segment,
+      payload_segment,
+      signature_segment,
+      protected_segment_digest: `sha-256:${rawHash(Buffer.from(protected_segment))}`,
+      payload_segment_digest: `sha-256:${rawHash(Buffer.from(payload_segment))}`,
+      receipt_digest: facts.digest,
+    },
+    claims,
+    provenance: {
+      charter_id: claims.charter_id,
+      revision_digest: claims.revision_digest,
+      revision_number: claims.revision_number,
+      issuing_party_role: claims.issuing_party_role,
+      signing_key_id: decoded.header.kid,
+      signer_thumbprint: keyThumbprint(key.value),
+      alg: decoded.header.alg,
+      revision_status: facts.deploymentMatched ? "verified" : "not_verified",
+      scope_status: facts.scope_status,
+    },
+    grant: receiptGrantComparison(claims.grant.grant_digest ?? null, grantReference),
+    agreement: receiptAgreement(chain.value, claims),
+    not_verified: facts.not_verified,
+  } };
 }
 
 // ---------------------------------------------------------------------------

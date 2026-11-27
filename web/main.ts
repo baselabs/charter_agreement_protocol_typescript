@@ -8,10 +8,15 @@ import {
   algorithmRegistry,
   CERTIFIED_INDEX_SHA256_BASE64URL,
   CERTIFIED_REGISTRY_DIGEST,
+  DEFAULT_LIMITS,
+  MAXIMUM_LIMITS,
   decodeArtifact,
+  decodeJsonText,
+  inspectReceipt,
   verifyChain,
+  type ChainInput,
 } from "../index.js";
-import { Workshop } from "./flow.js";
+import { dg, Workshop } from "./flow.js";
 
 const workshop = new Workshop();
 let lastTamper: string | null = null;
@@ -20,6 +25,14 @@ const view = (): ChainView => workshop.view();
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const bMint = $<HTMLButtonElement>("btn-mint"), bVerify = $<HTMLButtonElement>("btn-verify");
 const tamperBtns = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tamper]"));
+const inspectionForm = $<HTMLFormElement>("receipt-inspection-form");
+const inspectionCompact = $<HTMLTextAreaElement>("inspection-compact");
+const inspectionChain = $<HTMLTextAreaElement>("inspection-chain");
+const inspectionGrant = $<HTMLInputElement>("inspection-grant");
+const inspectionDemo = $<HTMLButtonElement>("inspection-demo");
+const inspectionDownload = $<HTMLButtonElement>("inspection-download");
+const inspectionOutput = $("inspection-output");
+const inspectionStatus = $("inspection-status");
 
 
 // ---------- artifact accordions: designed, animated disclosure ----------
@@ -141,6 +154,7 @@ async function doMint(): Promise<void> {
   slot.appendChild(summary);
   renderDecode();
   bVerify.disabled = false;
+  inspectionDemo.disabled = false;
   tamperBtns.forEach((b) => (b.disabled = false));
   setVerdict("idle", "a complete charter set, minted in your browser — now judge it");
 }
@@ -181,6 +195,56 @@ function verifySet(w: ChainView): void {
 
 function doVerify(): void { lastTamper = null; verifySet(view()); }
 
+function clearInspection(): void {
+  inspectionDownload.disabled = true;
+  inspectionOutput.hidden = true;
+  inspectionOutput.textContent = "";
+  inspectionStatus.textContent = "";
+}
+
+function inspectFromForm(): void {
+  clearInspection();
+  const chain = decodeJsonText(inspectionChain.value, {
+    max_bytes: Math.min(DEFAULT_LIMITS.max_artifact_set_bytes, MAXIMUM_LIMITS.max_bytes),
+    max_string_bytes: DEFAULT_LIMITS.max_bytes,
+    max_array_items: DEFAULT_LIMITS.max_artifact_set_items,
+  });
+  if (!chain.ok) {
+    inspectionStatus.textContent = chain.code;
+    return;
+  }
+  const result = inspectReceipt(inspectionCompact.value, chain.value as ChainInput, inspectionGrant.value || null);
+  if (!result.ok) {
+    inspectionStatus.textContent = result.code;
+    return;
+  }
+  const { agreement, grant } = result.inspection;
+  inspectionStatus.textContent = `Signature verified. Governing agreement: ${agreement.reason ?? agreement.status}. Grant digest: ${grant.reason ?? grant.status}.`;
+  inspectionOutput.textContent = JSON.stringify(result.inspection, null, 2);
+  inspectionOutput.hidden = false;
+  inspectionDownload.disabled = false;
+}
+
+inspectionForm.addEventListener("input", clearInspection);
+inspectionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  inspectFromForm();
+});
+inspectionDemo.addEventListener("click", () => {
+  inspectionCompact.value = workshop.receipt;
+  inspectionChain.value = JSON.stringify(workshop.view(), null, 2);
+  inspectionGrant.value = dg("E");
+  inspectFromForm();
+});
+inspectionDownload.addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([inspectionOutput.textContent ?? ""], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "receipt-inspection.json";
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+});
+
 async function tamper(kind: string): Promise<void> {
   lastTamper = kind;
   const changed = await workshop.tampered(kind);
@@ -197,6 +261,9 @@ function renderRegistry(): void {
 async function reset(): Promise<void> {
   await workshop.reset();
   bVerify.disabled = true;
+  inspectionDemo.disabled = true;
+  inspectionForm.reset();
+  clearInspection();
   tamperBtns.forEach((b) => (b.disabled = true));
   $("facts-body").textContent = "—";
   $("decode-body").textContent = "—";

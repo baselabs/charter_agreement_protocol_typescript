@@ -118,6 +118,7 @@ cannot verify green.
 | `Profile` / `DescriptorPredecessor` | Optional capability axes and retained descriptor identity/lineage types |
 | `capabilities()` / `algorithmRegistryDigest()` | Runtime known-answer results per signature registry row, and the signature registry digest |
 | `CERTIFIED_INDEX_SHA256_BASE64URL`, `CERTIFIED_REGISTRY_DIGEST` | The certified identity pins this build carries |
+| `inspectReceipt(compact, chain, grantReference?, options?)` | Receipt bytes, verified provenance, grant digest equality, and governing agreement |
 | `verifyDescriptor(compact, predecessor?, options?)` / `verifyDescriptorChain(compacts, options?)` | Artifact-level verification: one party descriptor (with optional predecessor facts), or a full descriptor chain |
 | `signerThumbprint(key)` | Validate a descriptor verification-key declaration and return its tagged algorithm-and-public-key identity |
 | `verifyAcceptance(compact, revisionText, descriptorCompacts, options?)` / `verifyTermination(compact, revisionText, descriptorCompacts, options?)` | Artifact-level verification of an acceptance / termination notice against the named revision and the signing party's descriptor chain |
@@ -277,8 +278,8 @@ changelog. Package versions do not change an artifact's `protocol_revision`.
 ## Conformance reference and development
 
 `reference.json` pins the published Elixir CAP 1.0.0 archive and its checksum.
-The current corpus contains 887 cases in 17 files copied from the
-[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/e733d877caa9008d67ad1b2dae978d732ad0ab3b/priv/conformance).
+The current corpus contains 901 cases in 18 files copied from the
+[canonical Elixir commit](https://github.com/baselabs/charter_agreement_protocol/tree/ea02b77560e04aba2623882349fc710ae60a0154/priv/conformance).
 The verifier checks the SHA-256 of the index and every listed case file.
 Legacy revisions require assent from both parties. One qualifying notice
 can close a legacy charter. Every charter successor needs an accepted predecessor.
@@ -286,8 +287,13 @@ A signed legacy successor of an unsigned genesis can lose governing status
 on replay. Revision 8 requires the revision's acceptance
 quorum, the applicable predecessor quorum, and any required assignment
 assent. Closure requires a termination quorum for the same governing
-revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/e733d877caa9008d67ad1b2dae978d732ad0ab3b/spec/core.md).
-Node and the browser bundle run all 887 cases. The browser uses the 47
+revision, reason, and effective instant. See the [core specification](https://github.com/baselabs/charter_agreement_protocol/blob/ea02b77560e04aba2623882349fc710ae60a0154/spec/core.md).
+The browser bench can inspect a receipt with its retained artifact set and
+optional grant digest. Its download contains the same JSON evidence that
+`inspectReceipt` returns. The signed segments reconstruct the receipt
+exactly when joined with periods.
+
+Node and the browser bundle run all 901 cases. The browser uses the 50
 explicit capability-limited outcomes for ML-DSA verification.
 `npm run check:reference` fetches the exact Elixir source commit from
 `reference.json`, compares all vendored files to its Git blobs, and checks

@@ -306,3 +306,16 @@ pre.codebox { background: var(--hero); color: #a5f3fc; border-radius: 10px; padd
 .lstep.now::after { content: "this protocol"; position: absolute; top: -9px; right: 10px; background: var(--accent, #2dd4bf); color: #0f172a; font-size: .62rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; border-radius: 999px; padding: 1px 8px; }
 .larrow { display: grid; place-items: center; color: var(--muted); font-size: 1.3rem; font-weight: 300; }
 @media (max-width: 900px) { .lifecycle { grid-template-columns: 1fr; } .larrow { transform: rotate(90deg); padding: 2px 0; } }
+.inspection-form { display: grid; gap: 12px; }
+.inspection-form label { display: grid; gap: 5px; }
+.inspection-form textarea, .inspection-form input {
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  color: inherit;
+  background: var(--bg-soft);
+  font: .86rem var(--mono);
+}
+.inspection-form textarea { resize: vertical; }
+.inspection-form + .hint { margin-bottom: 8px; }

@@ -11,6 +11,23 @@ import { corpusEd25519PrivateKey } from "./test/ed25519-fixtures.ts";
 const corpusCases = api.loadCorpus(new URL("./conformance", import.meta.url).pathname).cases;
 const cases = corpusCases.filter((one) => one.surface === "signing.prepare");
 
+test("public receipt inspection reproduces the whole portable evidence record", async (t) => {
+  const inspections = corpusCases.filter((one) => one.surface === "receipt.inspect");
+  assert.equal(inspections.length, 14);
+  for (const one of inspections) await t.test(one.id, () => {
+    const { compact, chain, grant_reference } = one.input;
+    const result = api.inspectReceipt(compact, chain, grant_reference);
+    if (result.ok) {
+      const { signed } = result.inspection;
+      assert.equal([signed.protected_segment, signed.payload_segment, signed.signature_segment].join("."), compact);
+      assert.equal(api.verifyReceipt(compact, chain).ok, true);
+      assert.deepEqual({ status: "valid", output: result.inspection }, one.expect);
+    } else {
+      assert.deepEqual({ status: "invalid", error_code: result.code }, one.expect);
+    }
+  });
+});
+
 test("byte decoding preserves parser order before UTF-8 errors", async (t) => {
   const scratch = mkdtempSync(join(tmpdir(), "cap-byte-reader-"));
   try {
@@ -129,7 +146,7 @@ test("runner matches every certified case with typed results", async (t) => {
     const modulePath = join(scratch, "core.ts");
     writeFileSync(modulePath, readFileSync(new URL("./core.ts", import.meta.url), "utf8"));
     const { runConformanceCase: executeCase } = await import(pathToFileURL(modulePath).href);
-    assert.equal(corpusCases.length, 887);
+    assert.equal(corpusCases.length, 901);
     for (const one of corpusCases) await t.test(one.id, () => {
       assert.deepEqual(executeCase(one), one.expect);
     });

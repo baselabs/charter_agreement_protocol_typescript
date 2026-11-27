@@ -105,6 +105,31 @@
     <p class="hint" id="corpus-digest"></p>
   </div>
 
+  <div class="decode-row" id="receipt-inspection">
+    <div class="panel-head">
+      <div class="panel-badge"><svg class="ic"><use href="#i-doc"/></svg></div>
+      <div class="panel-titles"><h3 class="panel-title">Inspect a receipt</h3></div>
+    </div>
+    <form id="receipt-inspection-form" class="inspection-form">
+      <label>Receipt compact
+        <textarea id="inspection-compact" rows="3" required spellcheck="false"></textarea>
+      </label>
+      <label>Retained chain JSON
+        <textarea id="inspection-chain" rows="5" required spellcheck="false"></textarea>
+      </label>
+      <label>Retained grant digest (optional)
+        <input id="inspection-grant" type="text" spellcheck="false" placeholder="sha-256:…">
+      </label>
+      <div class="tamper-btns">
+        <button class="btn actorbtn verifier" type="submit">Inspect receipt</button>
+        <button class="btn subtle" type="button" id="inspection-demo" disabled>Use the minted receipt</button>
+        <button class="btn subtle" type="button" id="inspection-download" disabled>Download JSON</button>
+      </div>
+    </form>
+    <p class="hint" id="inspection-status" role="status"></p>
+    <pre class="codebox" id="inspection-output" hidden></pre>
+  </div>
+
   <div class="tamper">
     <div class="panel-head"><div class="panel-badge"><svg class="ic"><use href="#i-wire"/></svg></div><div class="panel-titles"><span class="panel-title">Tamper deck</span><span class="panel-sub">Five real attempts — five real closed refusals.</span></div></div>
     <div class="tamper-btns">

@@ -5,6 +5,10 @@ documented here.
 
 ## [Unreleased]
 
+- Inspect receipts against retained chain artifacts in Node and the browser.
+  Export the original signed segments, verified provenance, grant digest
+  equality, and governing agreement as JSON.
+
 - Breaking TypeScript change: `SigningKind` and `SigningPlan.kind` include
   `"party_replacement"`. Exhaustive switches over either type need a branch
   for the new operation.
@@ -34,7 +38,7 @@ documented here.
   governing revision APIs.
 
 - Pin the canonical CAP corpus by source commit and index SHA-256. Run
-  all 887 cases through the browser bundle, including the declared
+  all 901 cases through the browser bundle, including the declared
   limited-substrate outcomes and new receipt and lifecycle verdicts.
 
 - Read CI runtime defaults and compatibility lanes only through the shared

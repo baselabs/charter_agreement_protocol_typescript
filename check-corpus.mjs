@@ -25,6 +25,7 @@ const surfaces = [
   "chain.verify_profile",
   "governing_revision",
   "receipt.verify",
+  "receipt.inspect",
   "signing.prepare",
 ];
 
@@ -74,6 +75,7 @@ const required = {
   "json.decode": ["valid", "boundary_near", "exact_bound", "maximum_plus_one", "invalid_encoding", "invalid_type"],
   "party_descriptor.verify": ["valid", "signature_invalid", "invalid_encoding", "unknown_member", "invalid_constraint", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
   "receipt.verify": ["valid", "maximum_plus_one", "invalid_constraint", "signature_invalid", "unknown_member", "chain_fork", "terminated", "outcome_indeterminate", "extension_optional_roundtrip", "invalid_encoding", "extension_invalid", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],
+  "receipt.inspect": ["valid", "invalid_type", "invalid_constraint", "signature_invalid", "chain_fork", "terminated"],
   "schema.validate": ["valid", "invalid_type", "invalid_constraint", "invalid_cardinality", "unknown_member", "missing_required", "maximum_plus_one"],
   "signing.prepare": ["valid", "exact_bound", "maximum_plus_one", "invalid_type", "invalid_constraint", "chain_invalid", "profile_algorithm_outside", "profile_revision_outside"],
   "termination.verify": ["valid", "invalid_constraint", "signature_invalid", "unknown_member", "profile_narrow_valid", "profile_algorithm_outside", "profile_revision_outside", "invalid_type"],

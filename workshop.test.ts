@@ -14,7 +14,7 @@ test("workshop signs both acceptances and a receipt with the site's browser shim
     const outfile = join(scratch, "workshop.js");
     await build({
       ...browserBundleOptions, bundle: true, format: "iife", globalName: "WorkshopPage", outfile,
-      stdin: { contents: 'export { Workshop } from "./web/flow.ts"; export { verifyChain, verifyReceipt } from "./index.ts";', resolveDir: process.cwd() },
+      stdin: { contents: 'export { dg, Workshop } from "./web/flow.ts"; export { inspectReceipt, verifyChain, verifyReceipt } from "./index.ts";', resolveDir: process.cwd() },
     });
     const source = readFileSync(outfile, "utf8");
     for (const mode of ["WebCrypto non-extractable", "in-page (noble)"]) await t.test(mode, async () => {
@@ -35,6 +35,16 @@ test("workshop signs both acceptances and a receipt with the site's browser shim
       assert.equal(runInContext("WorkshopPage.verifyChain(workshop.view()).ok", page), true);
       assert.equal(runInContext("workshop.view().acceptances.length", page), 2);
       assert.equal(runInContext("WorkshopPage.verifyReceipt(workshop.receipt, workshop.view()).ok", page), true);
+      const inspection = JSON.parse(runInContext(
+        'JSON.stringify(WorkshopPage.inspectReceipt(workshop.receipt, workshop.view(), WorkshopPage.dg("E")))',
+        page,
+      ));
+      assert.ok(inspection.ok);
+      assert.equal(inspection.inspection.grant.status, "matches");
+      assert.equal(inspection.inspection.agreement.status, "matches");
+      const { protected_segment, payload_segment, signature_segment } = inspection.inspection.signed;
+      assert.equal([protected_segment, payload_segment, signature_segment].join("."),
+        runInContext("workshop.receipt", page));
       for (const kind of ["revision", "descriptor"]) {
         const valid = await runInContext(`workshop.tampered(${JSON.stringify(kind)}).then((view) => WorkshopPage.verifyChain(view).ok)`, page);
         assert.equal(valid, false, kind);
