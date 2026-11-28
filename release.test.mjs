@@ -321,8 +321,14 @@ test("the exact archive is planned after inspection, staged only for upload, the
   const [, predicate] = attest.match(/predicate-type: (\S+)/);
   assert.ok(served.includes(`--predicate-type ${predicate} --format json`));
   assert.match(served, /"\.\/artifacts\/\$ARCHIVE_NAME" "\$served"/);
-  assert.match(served, /gh attestation verify "\$served"/);
-  assert.match(served, /--signer-workflow "\$GITHUB_REPOSITORY\/\.github\/workflows\/publish\.yml"/);
+  assert.ok(served.includes(`trap 'rm -f -- "$served" \${bundle:+"$bundle"}' EXIT`));
+  assert.ok(served.includes([
+    '          digest=$(sha256sum < "$served")',
+    '          bundle="$RUNNER_TEMP/sha256:${digest%% *}.jsonl"',
+    '          (cd "$RUNNER_TEMP" && gh attestation download "$served" --repo "$GITHUB_REPOSITORY")',
+    '          gh attestation verify "$served" --repo "$GITHUB_REPOSITORY" --bundle "$bundle" \\',
+  ].join("\n")));
+  assert.ok(served.includes('--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" --source-ref "$GITHUB_REF"'));
   assert.ok(served.includes("RELEASE_COMMIT: ${{ inputs.release_commit }}"));
   assert.ok(served.includes('jq -e --arg commit "$RELEASE_COMMIT"'));
   assert.match(served, /\.verificationResult\.statement\.predicate\.release_commit == \$commit/);

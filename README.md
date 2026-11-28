@@ -377,11 +377,17 @@ To verify a release, download the archives and `SHA256SUMS` from the matching
 [`v<version>` GitHub release](https://github.com/baselabs/charter_agreement_protocol_typescript/releases) and run
 `sha256sum --check SHA256SUMS` in their directory. Compare the tarball's SHA-512
 with npm's `dist.integrity`, then verify its release source against the tag.
+Download the bundle first because GitHub's attestation API does not filter on
+custom predicate types.
 
 ```sh
 published_commit=$(gh api "repos/baselabs/charter_agreement_protocol_typescript/commits/v<version>" -q .sha)
-gh attestation verify "charter-agreement-protocol-verifier-<version>.tgz" \
+archive="charter-agreement-protocol-verifier-<version>.tgz"
+digest=$(sha256sum < "$archive")
+gh attestation download "$archive" --repo baselabs/charter_agreement_protocol_typescript &&
+gh attestation verify "$archive" \
   --repo baselabs/charter_agreement_protocol_typescript \
+  --bundle "sha256:${digest%% *}.jsonl" \
   --signer-workflow baselabs/charter_agreement_protocol_typescript/.github/workflows/publish.yml \
   --source-ref refs/heads/main \
   --predicate-type 'https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/README.md#release-source-attestation' \

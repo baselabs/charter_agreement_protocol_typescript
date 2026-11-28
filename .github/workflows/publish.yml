@@ -291,10 +291,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           served=$(mktemp "$RUNNER_TEMP/npm-served.XXXXXXXX.tgz")
-          trap 'rm -f "$served"' EXIT
+          trap 'rm -f -- "$served" ${bundle:+"$bundle"}' EXIT
           node "$GITHUB_WORKSPACE/release-workflow/scripts/npm-release-state.mjs" --served \
             "$RELEASE_NAME" "$RELEASE_VERSION" "./artifacts/$ARCHIVE_NAME" "$served"
-          gh attestation verify "$served" --repo "$GITHUB_REPOSITORY" \
+          digest=$(sha256sum < "$served")
+          bundle="$RUNNER_TEMP/sha256:${digest%% *}.jsonl"
+          (cd "$RUNNER_TEMP" && gh attestation download "$served" --repo "$GITHUB_REPOSITORY")
+          gh attestation verify "$served" --repo "$GITHUB_REPOSITORY" --bundle "$bundle" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" --source-ref "$GITHUB_REF" \
             --predicate-type https://github.com/baselabs/charter_agreement_protocol_typescript/blob/main/README.md#release-source-attestation --format json |
             jq -e --arg commit "$RELEASE_COMMIT" \
